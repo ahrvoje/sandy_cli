@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="sandy_logo.png" alt="Sandy Logo" width="200"/>
+  <img src="sandy_logo.png" alt="Sandy Logo" width="400"/>
 </p>
-
-<h1 align="center">Sandy</h1>
 
 <p align="center">
   <strong>A lightweight Windows AppContainer sandbox runner</strong><br/>
