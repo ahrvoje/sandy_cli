@@ -71,7 +71,7 @@ Full test run showing Sandy's isolation in action — 27 tests, all passing:
 
 ```
 === Sandy Sandbox Tests ===
-Working dir: c:\repos\sandy\x64\Debug
+Working dir: c:\repos\sandy\x64\Release
 Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 
 --- App folder (read-only) ---
