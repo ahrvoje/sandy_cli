@@ -131,14 +131,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="framework.h" />
-    <ClInclude Include="Resource.h" />
-    <ClInclude Include="sandy.h" />
-    <ClInclude Include="targetver.h" />
-    <ClInclude Include="Sandbox.h" />
+    <ClInclude Include="src\framework.h" />
+    <ClInclude Include="src\Resource.h" />
+    <ClInclude Include="src\sandy.h" />
+    <ClInclude Include="src\targetver.h" />
+    <ClInclude Include="src\Sandbox.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="sandy.cpp" />
+    <ClCompile Include="src\sandy.cpp" />
   </ItemGroup>
 
 

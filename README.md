@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="sandy_logo.png" alt="Sandy Logo" width="400"/>
+  <img src="resources/sandy_logo.png" alt="Sandy Logo" width="400"/>
 </p>
 
 <p align="center">
