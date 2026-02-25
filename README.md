@@ -13,6 +13,8 @@
 
 Sandy launches executables inside a [Windows AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) — the same isolation technology used by UWP apps and Microsoft Edge. By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
 
+A typical use case is running **agentic AI processes** — such as LLM-driven code agents, automation scripts, or tool-use pipelines — in a restricted environment where they can only touch the folders you explicitly allow. Sandy ensures that even if an agent misbehaves, it cannot read your documents, exfiltrate data over the network, or tamper with system files.
+
 You define exactly which folders the sandboxed process can access — and at what level — through a simple TOML config file.
 
 ### Key Features
@@ -36,7 +38,7 @@ sandy.exe -c <config.toml> -x <executable> [args...]
 | Flag | Description |
 |------|-------------|
 | `-c <path>` | Path to TOML config file defining folder access |
-| `-x <path>` | Path to executable to run sandboxed |
+| `-x <path>` | Path to executable to run sandboxed (`.exe`, `.bat`, `.cmd`, `.com`, etc.) |
 | `-s` | Strict isolation — block system folder reads (`C:\Windows`, `C:\Program Files`, etc.) |
 | `-n` | Allow outbound network access |
 
