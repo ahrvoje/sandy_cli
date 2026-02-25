@@ -130,6 +130,16 @@ Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 
 ---
 
+## Notes
+
+> [!WARNING]
+> **Strict mode (`-s`) blocks access to system folders.** This opts the process out of the `ALL APPLICATION PACKAGES` SID group, which means it loses read access to `C:\Windows\System32`, `C:\Program Files`, and other system directories. Most executables will fail to start because they cannot load required system DLLs. Only use `-s` if you explicitly grant the necessary runtime folders (e.g. `C:\Windows\System32`) in your TOML config.
+
+> [!NOTE]
+> **Sandy runs without elevation in most cases.** It modifies folder ACLs to grant the AppContainer access, which requires `WRITE_DAC` permission on each configured folder. Users have this permission on folders they own (e.g. under `%USERPROFILE%`). For folders owned by `SYSTEM`, `TrustedInstaller`, or other users, Sandy must be run as Administrator to modify their ACLs.
+
+---
+
 ## Building
 
 Open `sandy.sln` in Visual Studio and build the `x64 Release` configuration. No external dependencies required.
