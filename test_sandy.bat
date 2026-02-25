@@ -4,7 +4,7 @@ REM test_sandy.bat — Set up test folders and run sandbox tests
 REM Run from the sandy build/exe directory (e.g. x64\Debug)
 REM ---------------------------------------------------------------
 
-set SANDY_EXE=%~dp0x64\Debug\sandy.exe
+set SANDY_EXE=%~dp0x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
 set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 set SCRIPT=%~dp0test_sandy.py
