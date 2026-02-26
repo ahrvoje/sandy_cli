@@ -66,20 +66,20 @@ Everything is blocked unless listed in `[allow]`:
 
 ```toml
 [allow]
-system_dirs          # read C:\Windows, Program Files (needed for most executables)
-# network            # outbound internet access
-# localhost          # loopback/localhost connections          (admin)
-# lan                # local network access
+system_dirs = true   # read C:\Windows, Program Files (required for most executables)
+# network = true     # outbound internet access
+# localhost = true   # loopback/localhost connections          (admin)
+# lan = true         # local network access
 ```
 
 ### Resource Limits
 
-```toml
+```
 [limit]
 # timeout = 300      # kill process after N seconds
 # memory = 4096      # max memory in MB
 # processes = 10     # max concurrent child processes
-```
+```toml
 
 ### Example
 
@@ -94,8 +94,8 @@ Run Python inside a sandbox with read access to a project folder and a 5-minute 
 "C:\workspace"
 
 [allow]
-system_dirs
-network
+system_dirs = true
+network = true
 
 [limit]
 timeout = 300

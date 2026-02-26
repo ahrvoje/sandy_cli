@@ -152,12 +152,23 @@ namespace Sandbox {
             if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
             if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
 
-            // [allow] — keyword entries
+            // [allow] — key = true/false entries
             if (currentSection == Section::Allow) {
-                if (line == L"network")       config.allowNetwork = true;
-                else if (line == L"localhost") config.allowLocalhost = true;
-                else if (line == L"lan")       config.allowLan = true;
-                else if (line == L"system_dirs") config.allowSystemDirs = true;
+                auto eq = line.find(L'=');
+                if (eq != std::wstring::npos) {
+                    std::wstring key = line.substr(0, eq);
+                    std::wstring val = line.substr(eq + 1);
+                    auto kt = key.find_last_not_of(L" \t");
+                    if (kt != std::wstring::npos) key.resize(kt + 1);
+                    auto vs = val.find_first_not_of(L" \t");
+                    if (vs != std::wstring::npos) val = val.substr(vs);
+                    bool enabled = (val == L"true");
+
+                    if (key == L"network")          config.allowNetwork = enabled;
+                    else if (key == L"localhost")    config.allowLocalhost = enabled;
+                    else if (key == L"lan")          config.allowLan = enabled;
+                    else if (key == L"system_dirs")  config.allowSystemDirs = enabled;
+                }
                 continue;
             }
 

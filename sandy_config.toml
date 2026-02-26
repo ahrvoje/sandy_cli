@@ -22,13 +22,13 @@
 # PERMISSIONS
 # ============================================================
 # Opt-in to additional sandbox permissions.
-# Everything is blocked unless listed here.
+# Everything is blocked unless set to true.
 
 [allow]
-system_dirs          # read C:\Windows, Program Files (required for most executables)
-# network            # outbound internet access
-# localhost          # loopback/localhost connections                      (admin)
-# lan                # local network access
+system_dirs = true   # read C:\Windows, Program Files (required for most executables)
+# network = true     # outbound internet access
+# localhost = true   # loopback/localhost connections                      (admin)
+# lan = true         # local network access
 
 # ============================================================
 # RESOURCE LIMITS

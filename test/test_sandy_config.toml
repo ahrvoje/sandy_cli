@@ -13,4 +13,4 @@
 "C:\Users\H\test_RW"
 
 [allow]
-system_dirs
+system_dirs = true
