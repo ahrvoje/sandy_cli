@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>A lightweight Windows AppContainer sandbox runner</strong><br/>
-  Run any executable in an isolated sandbox with fine-grained folder access control.
+  Run any executable in an isolated sandbox with fine-grained file and folder access control.
 </p>
 
 ---
@@ -20,7 +20,7 @@ All sandbox settings — folder access, permissions, and resource limits — are
 ### Key Features
 
 - 🔒 **AppContainer isolation** — kernel-enforced sandbox, not just permissions
-- 📁 **Granular folder access** — read, write, or read+write per folder
+- 📁 **Granular access control** — read, write, or read+write per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable
 - 🛡️ **Locked down by default** — all access is opt-in via config
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
@@ -47,10 +47,10 @@ Arguments after the executable path are forwarded to it.
 
 All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`](sandy_config.toml) for a complete reference.
 
-### Folder Access
+### Access
 
 ```toml
-[folders]
+[access]
 read = [
     'C:\path\to\read\only\folder',
 ]
@@ -88,7 +88,7 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 Run Python inside a sandbox with read access to a project folder and a 5-minute timeout:
 
 ```toml
-[folders]
+[access]
 read = [
     'C:\Python314',
     'C:\projects\my_agent',

@@ -4,20 +4,23 @@
 # if not listed in [allow], they are blocked by default.
 
 # ============================================================
-# FOLDER ACCESS
+# ACCESS
 # ============================================================
-# Grant the sandboxed process access to specific folders.
+# Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
-[folders]
+[access]
 # read = [
-#     'C:\path\to\read\only\folder',
+#     'C:\data\config.json',          # single file
+#     'C:\Python314',                  # entire folder (recursive)
 # ]
 # write = [
-#     'C:\path\to\write\only\folder',
+#     'C:\logs\agent.log',            # single log file
+#     'C:\temp\output',               # output folder
 # ]
 # readwrite = [
-#     'C:\path\to\full\access\folder',
+#     'C:\workspace',                 # project folder
+#     'C:\data\state.db',             # database file
 # ]
 
 # ============================================================

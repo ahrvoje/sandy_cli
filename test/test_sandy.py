@@ -192,6 +192,39 @@ else:
     print()
 
 # ---------------------------------------------------------------------------
+# 8. FILE-LEVEL ACCESS TESTS
+#    Individual files (not folders) can also be granted specific permissions.
+#    test_file_R.txt  -> read only
+#    test_file_RW.txt -> read + write
+# ---------------------------------------------------------------------------
+print("--- File-level access tests ---")
+
+file_R = os.path.join(user, "test_file_R.txt")
+file_RW = os.path.join(user, "test_file_RW.txt")
+file_none = os.path.join(user, "test_file_NONE.txt")
+
+# -- Read-only file --
+print(f"  file_R = {file_R}")
+expect_ok("file_R: read content",
+    lambda: open(file_R).read().strip())
+expect_blocked("file_R: write (should fail)",
+    lambda: open(file_R, "w").write("x"))
+
+# -- Read+Write file --
+print(f"  file_RW = {file_RW}")
+expect_ok("file_RW: write content",
+    lambda: open(file_RW, "w").write("hello") or "written")
+expect_ok("file_RW: read content",
+    lambda: open(file_RW).read())
+
+# -- File not in config (no access) --
+expect_blocked("file_NONE: read (should fail)",
+    lambda: open(file_none).read())
+expect_blocked("file_NONE: write (should fail)",
+    lambda: open(file_none, "w").write("x"))
+print()
+
+# ---------------------------------------------------------------------------
 # SUMMARY
 # ---------------------------------------------------------------------------
 print(f"=== Results: {passed} passed, {failed} failed ===")

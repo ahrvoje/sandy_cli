@@ -146,7 +146,7 @@ namespace Sandbox {
             }
 
             // Section headers
-            if (line == L"[folders]")   { currentSection = Section::Folders;   continue; }
+            if (line == L"[access]")    { currentSection = Section::Folders;   continue; }
             if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
             if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
 
