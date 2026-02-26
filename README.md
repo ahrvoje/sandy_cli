@@ -79,6 +79,25 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # lan = true         # local network access
 ```
 
+#### What `system_dirs` exposes
+
+`system_dirs` enables the Windows `ALL_APPLICATION_PACKAGES` group, granting **read-only** access to:
+
+| Path | Access |
+|------|--------|
+| `C:\Windows` | ✅ read (115 items) |
+| `C:\Windows\System32` | ✅ read (5,028 items) |
+| `C:\Windows\SysWOW64` | ✅ read (3,105 items) |
+| `C:\Windows\Temp` | ❌ blocked |
+| `C:\Program Files` | ✅ read |
+| `C:\Program Files (x86)` | ✅ read |
+| `C:\ProgramData` | ❌ blocked |
+| `C:\Users` | ❌ blocked |
+| User profile (Desktop, Documents, Downloads) | ❌ blocked |
+| `C:\` root | ❌ blocked |
+
+Any other directory whose installer added `ALL_APPLICATION_PACKAGES` to its ACL will also be readable — for example, Python's Windows installer does this for its install folder. Writes are blocked everywhere.
+
 ### Resource Limits
 
 ```toml
@@ -264,6 +283,9 @@ Separate test suite verifying network access, resource limits, timeout, and stri
 
 > [!WARNING]
 > **Strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. Comment it out only for specialized containers where you explicitly grant the required runtime folders.
+
+> [!NOTE]
+> **Python note.** Python's Windows installer sets the `ALL_APPLICATION_PACKAGES` ACL on its install directory. This means that with `system_dirs = true`, the entire Python folder (DLLs, stdlib, `Lib/`, `Scripts/`) is readable even without an explicit `[access]` entry. You do not need to grant the Python folder — only `system_dirs = true` is required.
 
 > [!NOTE]
 > **Localhost access** requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).

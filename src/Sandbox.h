@@ -470,26 +470,6 @@ namespace Sandbox {
             return 1;
         }
 
-        // --- Grant exe folder READ access to the container ---
-        if (!GrantFolderAccess(pContainerSid, exeFolder, AccessLevel::Read)) {
-            fprintf(stderr, "[Error] Could not grant access to exe folder: %ls\n", exeFolder.c_str());
-            FreeSid(pContainerSid);
-            return 1;
-        }
-
-        // --- Also grant read access to the directory containing the target executable ---
-        std::wstring targetFolder = exePath;
-        auto slashPos = targetFolder.find_last_of(L"\\/");
-        if (slashPos != std::wstring::npos) {
-            targetFolder.resize(slashPos);
-            if (targetFolder != exeFolder) {
-                if (!GrantFolderAccess(pContainerSid, targetFolder, AccessLevel::Read)) {
-                    fprintf(stderr, "[Warning] Could not grant access to: %ls\n", targetFolder.c_str());
-                    fprintf(stderr, "          Run as Administrator to modify folder ACLs.\n");
-                }
-            }
-        }
-
         // --- Grant configured folder access ---
         bool grantFailed = false;
         for (const auto& entry : config.folders) {
