@@ -1,0 +1,41 @@
+# Sandy Sandbox Configuration
+# ============================================================
+# All sandbox settings are defined here. Permissions are opt-in:
+# if not listed in [allow], they are blocked by default.
+
+# ============================================================
+# FOLDER ACCESS
+# ============================================================
+# Grant the sandboxed process access to specific folders.
+# Paths may be quoted or unquoted. One path per line.
+
+[read]
+# "C:\path\to\read\only\folder"
+
+[write]
+# "C:\path\to\write\only\folder"
+
+[readwrite]
+# "C:\path\to\full\access\folder"
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+# Opt-in to additional sandbox permissions.
+# Everything is blocked unless listed here.
+
+[allow]
+system_dirs          # read C:\Windows, Program Files (required for most executables)
+# network            # outbound internet access
+# localhost          # loopback/localhost connections                      (admin)
+# lan                # local network access
+
+# ============================================================
+# RESOURCE LIMITS
+# ============================================================
+# Constrain resource usage. Set to 0 or comment out for unlimited.
+
+[limit]
+# timeout = 300      # kill process after N seconds
+# memory = 4096      # maximum memory in MB
+# processes = 10     # maximum concurrent child processes

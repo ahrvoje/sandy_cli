@@ -1,5 +1,5 @@
 # Sandy sandbox test configuration
-# Used by: sandy.exe -c test_sandy_config.toml -x Python\python.exe test_sandy.py
+# Used by: sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
 
 [read]
 "C:\Users\H\AppData\Local\Programs\Python\Python314"
@@ -11,3 +11,6 @@
 
 [readwrite]
 "C:\Users\H\test_RW"
+
+[allow]
+system_dirs

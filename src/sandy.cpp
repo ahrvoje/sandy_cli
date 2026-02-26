@@ -17,23 +17,17 @@ static void PrintUsage()
         "  sandy.exe -c <config.toml> -x <executable> [args...]\n"
         "\n"
         "Options:\n"
-        "  -c <path>   Path to TOML config file defining folder access grants\n"
+        "  -c <path>   Path to TOML config file (folder access, permissions, limits)\n"
         "  -x <path>   Path to executable to run sandboxed (.exe, .bat, etc.)\n"
-        "  -s          Strict isolation: also block system folder reads\n"
-        "              (C:\\Windows, C:\\Program Files, etc.)\n"
-        "  -n          Allow network access (outbound connections)\n"
         "\n"
         "Any arguments after the executable path are forwarded to it.\n"
         "\n"
-        "Config file format:\n"
-        "  [read]\n"
-        "  \"C:\\path\\to\\folder\"\n"
+        "Config file sections:\n"
+        "  [read] / [write] / [readwrite]   Folder access grants\n"
+        "  [allow]                          Opt-in permissions (network, localhost, etc.)\n"
+        "  [limit]                          Resource limits (timeout, memory, processes)\n"
         "\n"
-        "  [write]\n"
-        "  \"C:\\path\\to\\folder\"\n"
-        "\n"
-        "  [readwrite]\n"
-        "  \"C:\\path\\to\\folder\"\n"
+        "See sandy_config.toml for all available options.\n"
     );
 }
 
@@ -45,8 +39,6 @@ int wmain(int argc, wchar_t* argv[])
     std::wstring configPath;
     std::wstring exePath;
     std::wstring exeArgs;
-    bool strictIsolation = false;
-    bool allowNetwork = false;
 
     // --- Parse command-line arguments ---
     for (int i = 1; i < argc; i++) {
@@ -70,12 +62,6 @@ int wmain(int argc, wchar_t* argv[])
             }
             break; // -x consumes all remaining args
         }
-        else if (arg == L"-s") {
-            strictIsolation = true;
-        }
-        else if (arg == L"-n") {
-            allowNetwork = true;
-        }
         else {
             fprintf(stderr, "Unknown option: %ls\n\n", arg.c_str());
             PrintUsage();
@@ -98,8 +84,11 @@ int wmain(int argc, wchar_t* argv[])
         return 1;
     }
 
+    // --- Load configuration ---
+    auto config = Sandbox::LoadConfig(configPath);
+
     // --- Run sandboxed ---
-    int exitCode = Sandbox::RunSandboxed(configPath, exePath, exeArgs, strictIsolation, allowNetwork);
+    int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs);
 
     Sandbox::CleanupSandbox();
 

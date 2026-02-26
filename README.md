@@ -15,14 +15,15 @@ Sandy launches executables inside a [Windows AppContainer](https://learn.microso
 
 A typical use case is running **agentic AI processes** — such as LLM-driven code agents, automation scripts, or tool-use pipelines — in a restricted environment where they can only touch the folders you explicitly allow. Sandy ensures that even if an agent misbehaves, it cannot read your documents, exfiltrate data over the network, or tamper with system files.
 
-You define exactly which folders the sandboxed process can access — and at what level — through a simple TOML config file.
+All sandbox settings — folder access, permissions, and resource limits — are defined in a single TOML config file.
 
 ### Key Features
 
 - 🔒 **AppContainer isolation** — kernel-enforced sandbox, not just permissions
 - 📁 **Granular folder access** — read, write, or read+write per folder
-- 🌐 **Network control** — outbound connections blocked by default, opt-in with `-n`
-- 🛡️ **Strict mode** — optionally block reads to system directories (`-s`)
+- 🌐 **Network control** — internet, LAN, and localhost independently configurable
+- 🛡️ **Locked down by default** — all access is opt-in via config
+- ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
 ---
@@ -33,18 +34,20 @@ You define exactly which folders the sandboxed process can access — and at wha
 sandy.exe -c <config.toml> -x <executable> [args...]
 ```
 
-### Options
-
 | Flag | Description |
 |------|-------------|
-| `-c <path>` | Path to TOML config file defining folder access |
-| `-x <path>` | Path to executable to run sandboxed (`.exe`, `.bat`, `.cmd`, `.com`, etc.) |
-| `-s` | Strict isolation — block system folder reads (`C:\Windows`, `C:\Program Files`, etc.) |
-| `-n` | Allow outbound network access |
+| `-c <path>` | Path to TOML config file |
+| `-x <path>` | Path to executable to run sandboxed |
 
 Arguments after the executable path are forwarded to it.
 
-### Config File Format
+---
+
+## Config File
+
+All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`](sandy_config.toml) for a complete reference.
+
+### Folder Access
 
 ```toml
 [read]
@@ -57,12 +60,50 @@ Arguments after the executable path are forwarded to it.
 "C:\path\to\full\access\folder"
 ```
 
+### Permissions (opt-in)
+
+Everything is blocked unless listed in `[allow]`:
+
+```toml
+[allow]
+system_dirs          # read C:\Windows, Program Files (needed for most executables)
+# network            # outbound internet access
+# localhost          # loopback/localhost connections          (admin)
+# lan                # local network access
+```
+
+### Resource Limits
+
+```toml
+[limit]
+# timeout = 300      # kill process after N seconds
+# memory = 4096      # max memory in MB
+# processes = 10     # max concurrent child processes
+```
+
 ### Example
 
-Run Python inside a sandbox, granting read access to a project folder and read+write to a workspace:
+Run Python inside a sandbox with read access to a project folder and a 5-minute timeout:
+
+```toml
+[read]
+"C:\Python314"
+"C:\projects\my_agent"
+
+[readwrite]
+"C:\workspace"
+
+[allow]
+system_dirs
+network
+
+[limit]
+timeout = 300
+memory = 2048
+```
 
 ```
-sandy.exe -c my_config.toml -x C:\Python314\python.exe my_script.py
+sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 ```
 
 ---
@@ -133,10 +174,13 @@ Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 ## Notes
 
 > [!WARNING]
-> **Strict mode (`-s`) blocks access to system folders.** This opts the process out of the `ALL APPLICATION PACKAGES` SID group, which means it loses read access to `C:\Windows\System32`, `C:\Program Files`, and other system directories. Most executables will fail to start because they cannot load required system DLLs. Only use `-s` if you explicitly grant the necessary runtime folders (e.g. `C:\Windows\System32`) in your TOML config.
+> **Strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs` is listed in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. Comment it out only for specialized containers where you explicitly grant the required runtime folders.
 
 > [!NOTE]
-> **Sandy runs without elevation in most cases.** It modifies folder ACLs to grant the AppContainer access, which requires `WRITE_DAC` permission on each configured folder. Users have this permission on folders they own (e.g. under `%USERPROFILE%`). For folders owned by `SYSTEM`, `TrustedInstaller`, or other users, Sandy must be run as Administrator to modify their ACLs.
+> **Localhost access** requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
+
+> [!NOTE]
+> **Sandy runs without elevation in most cases.** It modifies folder ACLs to grant the AppContainer access, which requires `WRITE_DAC` permission on each configured folder. Users have this permission on folders they own (e.g. under `%USERPROFILE%`). For folders owned by `SYSTEM`, `TrustedInstaller`, or other users, Sandy must be run as Administrator.
 
 ---
 

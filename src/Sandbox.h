@@ -1,7 +1,7 @@
 #pragma once
-// Sandbox.h — AppContainer sandbox with TOML config for folder access control.
-// Creates an AppContainer, grants folder access per config, and launches a
-// target executable inside the sandbox.
+// Sandbox.h — AppContainer sandbox with TOML-based configuration.
+// All sandbox settings (folder access, permissions, resource limits) are
+// defined in a single TOML config file. The CLI only needs -c and -x.
 
 #include "framework.h"
 
@@ -19,6 +19,27 @@ namespace Sandbox {
         std::wstring path;
         AccessLevel  access;
     };
+
+    // -----------------------------------------------------------------------
+    // Full sandbox configuration (parsed from TOML)
+    // -----------------------------------------------------------------------
+    struct SandboxConfig {
+        std::vector<FolderEntry> folders;
+
+        // [allow] — opt-in permissions (default: all blocked)
+        bool allowNetwork    = false;
+        bool allowLocalhost  = false;
+        bool allowLan        = false;
+        bool allowSystemDirs = false;
+
+        // [limit] — resource constraints (0 = unlimited)
+        DWORD  timeoutSeconds = 0;
+        SIZE_T memoryLimitMB  = 0;
+        DWORD  maxProcesses   = 0;
+    };
+
+    // Track loopback state for cleanup
+    static bool g_loopbackGranted = false;
 
     // -----------------------------------------------------------------------
     // Check if the current process is already running inside an AppContainer
@@ -56,39 +77,32 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Minimal TOML parser for our config format:
+    // Load & parse TOML configuration
     //
-    //   [read]
-    //   "C:\some\path"
-    //   C:\another\path
-    //
-    //   [write]
-    //   "C:\logs"
-    //
-    //   [readwrite]
-    //   "C:\projects"
-    //
+    //   [read]  / [write]  / [readwrite]     folder access
+    //   [allow]                               opt-in permissions
+    //   [limit]                               resource constraints
     // -----------------------------------------------------------------------
-    inline std::vector<FolderEntry> LoadConfig(const std::wstring& configPath)
+    inline SandboxConfig LoadConfig(const std::wstring& configPath)
     {
-        std::vector<FolderEntry> entries;
+        SandboxConfig config;
 
         HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile == INVALID_HANDLE_VALUE)
-            return entries;
+            return config;
 
         DWORD fileSize = GetFileSize(hFile, nullptr);
         if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
             CloseHandle(hFile);
-            return entries;
+            return config;
         }
 
         std::string buf(fileSize, '\0');
         DWORD bytesRead = 0;
         if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
             CloseHandle(hFile);
-            return entries;
+            return config;
         }
         CloseHandle(hFile);
 
@@ -97,8 +111,10 @@ namespace Sandbox {
         std::wstring content(wideLen, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
 
-        // Parse line by line
-        AccessLevel currentLevel = AccessLevel::ReadWrite;
+        // Parser state
+        enum class Section { None, Read, Write, ReadWrite, Allow, Limit };
+        Section currentSection = Section::None;
+
         std::wstringstream ss(content);
         std::wstring line;
 
@@ -118,20 +134,67 @@ namespace Sandbox {
             if (line.empty() || line[0] == L'#')
                 continue;
 
+            // Strip inline comments (but not inside quotes)
+            if (line.front() != L'"') {
+                auto commentPos = line.find(L'#');
+                if (commentPos != std::wstring::npos) {
+                    line = line.substr(0, commentPos);
+                    end = line.find_last_not_of(L" \t");
+                    if (end != std::wstring::npos) line.resize(end + 1);
+                    else continue;
+                }
+            }
+
             // Section headers
-            if (line == L"[read]")      { currentLevel = AccessLevel::Read;      continue; }
-            if (line == L"[write]")     { currentLevel = AccessLevel::Write;     continue; }
-            if (line == L"[readwrite]") { currentLevel = AccessLevel::ReadWrite; continue; }
+            if (line == L"[read]")      { currentSection = Section::Read;      continue; }
+            if (line == L"[write]")     { currentSection = Section::Write;     continue; }
+            if (line == L"[readwrite]") { currentSection = Section::ReadWrite; continue; }
+            if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
+            if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
 
-            // Strip quotes if present
-            if (line.size() >= 2 && line.front() == L'"' && line.back() == L'"')
-                line = line.substr(1, line.size() - 2);
+            // [allow] — keyword entries
+            if (currentSection == Section::Allow) {
+                if (line == L"network")       config.allowNetwork = true;
+                else if (line == L"localhost") config.allowLocalhost = true;
+                else if (line == L"lan")       config.allowLan = true;
+                else if (line == L"system_dirs") config.allowSystemDirs = true;
+                continue;
+            }
 
-            if (!line.empty())
-                entries.push_back({ line, currentLevel });
+            // [limit] — key = value entries
+            if (currentSection == Section::Limit) {
+                auto eq = line.find(L'=');
+                if (eq != std::wstring::npos) {
+                    std::wstring key = line.substr(0, eq);
+                    std::wstring val = line.substr(eq + 1);
+                    // Trim
+                    auto kt = key.find_last_not_of(L" \t");
+                    if (kt != std::wstring::npos) key.resize(kt + 1);
+                    auto vs = val.find_first_not_of(L" \t");
+                    if (vs != std::wstring::npos) val = val.substr(vs);
+
+                    if (key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(_wtoi(val.c_str()));
+                    else if (key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(_wtoi(val.c_str()));
+                    else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(_wtoi(val.c_str()));
+                }
+                continue;
+            }
+
+            // Folder sections — path entries
+            if (currentSection == Section::Read || currentSection == Section::Write || currentSection == Section::ReadWrite) {
+                if (line.size() >= 2 && line.front() == L'"' && line.back() == L'"')
+                    line = line.substr(1, line.size() - 2);
+
+                AccessLevel level = AccessLevel::ReadWrite;
+                if (currentSection == Section::Read) level = AccessLevel::Read;
+                else if (currentSection == Section::Write) level = AccessLevel::Write;
+
+                if (!line.empty())
+                    config.folders.push_back({ line, level });
+            }
         }
 
-        return entries;
+        return config;
     }
 
     // -----------------------------------------------------------------------
@@ -182,15 +245,81 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Launch an executable inside an AppContainer sandbox.
-    // Waits for the child to finish, relays its stdout/stderr to our console,
-    // and returns the child's exit code.
+    // Loopback exemption — allow localhost access for AppContainer.
+    // Uses CheckNetIsolation.exe (additive, safe for other apps).
+    // Requires administrator privileges.
     // -----------------------------------------------------------------------
-    inline int RunSandboxed(const std::wstring& configPath,
+    inline bool EnableLoopback()
+    {
+        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -a -n=SandySandbox";
+
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            return false;
+
+        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+
+        g_loopbackGranted = (exitCode == 0);
+        return g_loopbackGranted;
+    }
+
+    inline void DisableLoopback()
+    {
+        if (!g_loopbackGranted) return;
+
+        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox";
+
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        {
+            WaitForSingleObject(pi.hProcess, 5000);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+        g_loopbackGranted = false;
+    }
+
+    // -----------------------------------------------------------------------
+    // Timeout watchdog — terminates child process after N seconds
+    // -----------------------------------------------------------------------
+    struct TimeoutContext {
+        HANDLE hProcess;
+        DWORD  seconds;
+        bool   timedOut;
+    };
+
+    static DWORD WINAPI TimeoutThread(LPVOID param)
+    {
+        auto* ctx = static_cast<TimeoutContext*>(param);
+        ctx->timedOut = false;
+        if (WaitForSingleObject(ctx->hProcess, ctx->seconds * 1000) == WAIT_TIMEOUT) {
+            ctx->timedOut = true;
+            TerminateProcess(ctx->hProcess, 1);
+        }
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // Launch an executable inside an AppContainer sandbox.
+    // All behavior is controlled by the SandboxConfig.
+    // -----------------------------------------------------------------------
+    inline int RunSandboxed(const SandboxConfig& config,
                             const std::wstring& exePath,
-                            const std::wstring& exeArgs,
-                            bool strictIsolation = false,
-                            bool allowNetwork = false)
+                            const std::wstring& exeArgs)
     {
         // --- Create or open the AppContainer profile ---
         PSID pContainerSid = nullptr;
@@ -235,9 +364,8 @@ namespace Sandbox {
         }
 
         // --- Grant configured folder access ---
-        auto configEntries = LoadConfig(configPath);
         bool grantFailed = false;
-        for (const auto& entry : configEntries) {
+        for (const auto& entry : config.folders) {
             if (!GrantFolderAccess(pContainerSid, entry.path, entry.access)) {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
@@ -246,30 +374,47 @@ namespace Sandbox {
         if (grantFailed)
             fprintf(stderr, "          Run as Administrator to modify folder ACLs.\n");
 
-        // --- Print config summary ---
-        printf("Sandy - AppContainer Sandbox\n");
-        printf("Config:     %ls\n", configPath.c_str());
-        printf("Executable: %ls\n", exePath.c_str());
+        // --- Enable loopback (localhost) if requested ---
+        if (config.allowLocalhost) {
+            if (!EnableLoopback()) {
+                fprintf(stderr, "[Warning] Could not enable localhost access.\n");
+                fprintf(stderr, "          Loopback exemption requires Administrator.\n");
+            }
+        }
+
+        // --- Print config summary (to stderr, keeping stdout clean) ---
+        fprintf(stderr, "Sandy - AppContainer Sandbox\n");
+        fprintf(stderr, "Executable: %ls\n", exePath.c_str());
         if (!exeArgs.empty())
-            printf("Arguments:  %ls\n", exeArgs.c_str());
-        printf("Folders:    %zu configured\n", configEntries.size());
-        for (const auto& e : configEntries) {
+            fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
+        fprintf(stderr, "Folders:    %zu configured\n", config.folders.size());
+        for (const auto& e : config.folders) {
             const char* tag = "[RW]";
             if (e.access == AccessLevel::Read) tag = "[R] ";
             else if (e.access == AccessLevel::Write) tag = "[W] ";
-            printf("  %s %ls\n", tag, e.path.c_str());
+            fprintf(stderr, "  %s %ls\n", tag, e.path.c_str());
         }
-        printf("---\n");
-        if (strictIsolation)
-            printf("Mode:       STRICT (system folders blocked)\n");
-        printf("Network:    %s\n", allowNetwork ? "ALLOWED" : "BLOCKED");
+        fprintf(stderr, "---\n");
+        if (!config.allowSystemDirs)
+            fprintf(stderr, "System:     STRICT (system folders blocked)\n");
+        fprintf(stderr, "Network:    %s\n", config.allowNetwork ? "INTERNET" :
+                                            config.allowLan     ? "LAN ONLY" : "BLOCKED");
+        if (config.allowLocalhost)
+            fprintf(stderr, "Localhost:  ALLOWED\n");
+        if (config.timeoutSeconds > 0)
+            fprintf(stderr, "Timeout:    %lu seconds\n", config.timeoutSeconds);
+        if (config.memoryLimitMB > 0)
+            fprintf(stderr, "Memory:     %zu MB\n", config.memoryLimitMB);
+        if (config.maxProcesses > 0)
+            fprintf(stderr, "Processes:  %lu max\n", config.maxProcesses);
 
         // --- Prepare capabilities ---
-        SID_AND_ATTRIBUTES caps[1] = {};
+        SID_AND_ATTRIBUTES caps[2] = {};
         DWORD capCount = 0;
         PSID pNetSid = nullptr;
+        PSID pLanSid = nullptr;
 
-        if (allowNetwork) {
+        if (config.allowNetwork) {
             SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
             if (AllocateAndInitializeSid(&appAuthority,
                 SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
@@ -277,9 +422,23 @@ namespace Sandbox {
                 SECURITY_CAPABILITY_INTERNET_CLIENT,
                 0, 0, 0, 0, 0, 0, &pNetSid))
             {
-                caps[0].Sid = pNetSid;
-                caps[0].Attributes = SE_GROUP_ENABLED;
-                capCount = 1;
+                caps[capCount].Sid = pNetSid;
+                caps[capCount].Attributes = SE_GROUP_ENABLED;
+                capCount++;
+            }
+        }
+
+        if (config.allowLan) {
+            SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
+            if (AllocateAndInitializeSid(&appAuthority,
+                SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
+                SECURITY_CAPABILITY_BASE_RID,
+                SECURITY_CAPABILITY_PRIVATE_NETWORK_CLIENT_SERVER,
+                0, 0, 0, 0, 0, 0, &pLanSid))
+            {
+                caps[capCount].Sid = pLanSid;
+                caps[capCount].Attributes = SE_GROUP_ENABLED;
+                capCount++;
             }
         }
 
@@ -287,6 +446,7 @@ namespace Sandbox {
         auto cleanup = [&]() {
             FreeSid(pContainerSid);
             if (pNetSid) FreeSid(pNetSid);
+            if (pLanSid) FreeSid(pLanSid);
         };
 
         SECURITY_CAPABILITIES sc{};
@@ -295,6 +455,7 @@ namespace Sandbox {
         sc.CapabilityCount = capCount;
 
         // --- Build STARTUPINFOEX with the container attribute ---
+        bool strictIsolation = !config.allowSystemDirs;
         DWORD attrCount = strictIsolation ? 2 : 1;
         SIZE_T attrSize = 0;
         InitializeProcThreadAttributeList(nullptr, attrCount, 0, &attrSize);
@@ -316,9 +477,7 @@ namespace Sandbox {
             return 1;
         }
 
-        // When strict isolation is enabled, opt out of ALL_APPLICATION_PACKAGES.
-        // This prevents the process from matching ACLs that grant read access to
-        // all UWP/AppContainer apps (system folders like C:\Windows, Program Files).
+        // When strict: opt out of ALL_APPLICATION_PACKAGES to block system folder reads
         DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
         if (strictIsolation) {
             if (!UpdateProcThreadAttribute(pAttrList, 0,
@@ -380,6 +539,32 @@ namespace Sandbox {
 
         CloseHandle(pi.hThread);
 
+        // --- Assign to Job Object for resource limits ---
+        HANDLE hJob = nullptr;
+        if (config.memoryLimitMB > 0 || config.maxProcesses > 0) {
+            hJob = CreateJobObjectW(nullptr, nullptr);
+            if (hJob) {
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+                if (config.memoryLimitMB > 0) {
+                    jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+                    jeli.JobMemoryLimit = config.memoryLimitMB * 1024 * 1024;
+                }
+                if (config.maxProcesses > 0) {
+                    jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                    jeli.BasicLimitInformation.ActiveProcessLimit = config.maxProcesses;
+                }
+                SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+                AssignProcessToJobObject(hJob, pi.hProcess);
+            }
+        }
+
+        // --- Start timeout watchdog thread ---
+        TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
+        HANDLE hTimeoutThread = nullptr;
+        if (config.timeoutSeconds > 0) {
+            hTimeoutThread = CreateThread(nullptr, 0, TimeoutThread, &timeoutCtx, 0, nullptr);
+        }
+
         // --- Read child output and relay to our stdout ---
         char buffer[4096];
         DWORD bytesRead = 0;
@@ -395,17 +580,29 @@ namespace Sandbox {
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD exitCode = 0;
         GetExitCodeProcess(pi.hProcess, &exitCode);
+
+        // --- Handle timeout thread ---
+        if (hTimeoutThread) {
+            WaitForSingleObject(hTimeoutThread, INFINITE);
+            CloseHandle(hTimeoutThread);
+            if (timeoutCtx.timedOut)
+                fprintf(stderr, "[Sandy] Process killed after %lu second timeout.\n", config.timeoutSeconds);
+        }
+
+        // --- Cleanup ---
         CloseHandle(pi.hProcess);
+        if (hJob) CloseHandle(hJob);
 
         cleanup();
         return static_cast<int>(exitCode);
     }
 
     // -----------------------------------------------------------------------
-    // Delete the AppContainer profile (best-effort cleanup)
+    // Delete the AppContainer profile and clean up loopback exemption
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
+        DisableLoopback();
         DeleteAppContainerProfile(kContainerName);
     }
 
