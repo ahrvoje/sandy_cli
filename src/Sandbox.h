@@ -117,6 +117,8 @@ namespace Sandbox {
                 logFile = nullptr;
             }
         }
+
+        ~SandyLogger() { Stop(); }
     };
 
     static SandyLogger g_logger;
@@ -160,11 +162,11 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Load & parse TOML configuration
+    // Parse TOML configuration string
     //
-    //   [read]  / [write]  / [readwrite]     folder access
-    //   [allow]                               opt-in permissions
-    //   [limit]                               resource constraints
+    //   [access]  read / write / readwrite arrays for folder/file access
+    //   [allow]   opt-in permissions
+    //   [limit]   resource constraints
     // -----------------------------------------------------------------------
     inline SandboxConfig ParseConfig(const std::wstring& content)
     {
@@ -207,7 +209,7 @@ namespace Sandbox {
             if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
             if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
 
-            // [folders] — key = [ 'path', ... ] arrays
+            // [access] — key = [ 'path', ... ] arrays
             if (currentSection == Section::Folders) {
                 // Detect which access level from key prefix
                 AccessLevel level = AccessLevel::ReadWrite;

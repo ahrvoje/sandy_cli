@@ -33,11 +33,13 @@ All sandbox settings — folder access, permissions, and resource limits — are
 
 ```
 sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]
+sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-c <path>` | Path to TOML config file |
+| `-s <toml>` | Inline TOML config string (alternative to `-c`) |
 | `-l <path>` | Log file for session output, config, and exit code |
 | `-x <path>` | Path to executable to run sandboxed |
 
