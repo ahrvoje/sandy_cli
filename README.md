@@ -50,48 +50,52 @@ All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`]
 ### Folder Access
 
 ```toml
-[read]
-"C:\path\to\read\only\folder"
-
-[write]
-"C:\path\to\write\only\folder"
-
-[readwrite]
-"C:\path\to\full\access\folder"
+[folders]
+read = [
+    'C:\path\to\read\only\folder',
+]
+write = [
+    'C:\path\to\write\only\folder',
+]
+readwrite = [
+    'C:\path\to\full\access\folder',
+]
 ```
 
 ### Permissions (opt-in)
 
-Everything is blocked unless listed in `[allow]`:
+Everything is blocked unless set to `true` in `[allow]`:
 
 ```toml
 [allow]
 system_dirs = true   # read C:\Windows, Program Files (required for most executables)
 # network = true     # outbound internet access
-# localhost = true   # loopback/localhost connections          (admin)
+# localhost = true   # loopback/localhost connections                      (admin)
 # lan = true         # local network access
 ```
 
 ### Resource Limits
 
-```
+```toml
 [limit]
 # timeout = 300      # kill process after N seconds
 # memory = 4096      # max memory in MB
 # processes = 10     # max concurrent child processes
-```toml
+```
 
 ### Example
 
 Run Python inside a sandbox with read access to a project folder and a 5-minute timeout:
 
 ```toml
-[read]
-"C:\Python314"
-"C:\projects\my_agent"
-
-[readwrite]
-"C:\workspace"
+[folders]
+read = [
+    'C:\Python314',
+    'C:\projects\my_agent',
+]
+readwrite = [
+    'C:\workspace',
+]
 
 [allow]
 system_dirs = true
@@ -174,7 +178,7 @@ Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 ## Notes
 
 > [!WARNING]
-> **Strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs` is listed in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. Comment it out only for specialized containers where you explicitly grant the required runtime folders.
+> **Strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. Comment it out only for specialized containers where you explicitly grant the required runtime folders.
 
 > [!NOTE]
 > **Localhost access** requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).

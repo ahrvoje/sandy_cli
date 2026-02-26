@@ -112,7 +112,7 @@ namespace Sandbox {
         MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
 
         // Parser state
-        enum class Section { None, Read, Write, ReadWrite, Allow, Limit };
+        enum class Section { None, Folders, Allow, Limit };
         Section currentSection = Section::None;
 
         std::wstringstream ss(content);
@@ -134,8 +134,8 @@ namespace Sandbox {
             if (line.empty() || line[0] == L'#')
                 continue;
 
-            // Strip inline comments (but not inside quotes)
-            if (line.front() != L'"') {
+            // Strip inline comments (outside of quotes)
+            if (line.front() != L'"' && line.front() != L'\'') {
                 auto commentPos = line.find(L'#');
                 if (commentPos != std::wstring::npos) {
                     line = line.substr(0, commentPos);
@@ -146,11 +146,58 @@ namespace Sandbox {
             }
 
             // Section headers
-            if (line == L"[read]")      { currentSection = Section::Read;      continue; }
-            if (line == L"[write]")     { currentSection = Section::Write;     continue; }
-            if (line == L"[readwrite]") { currentSection = Section::ReadWrite; continue; }
+            if (line == L"[folders]")   { currentSection = Section::Folders;   continue; }
             if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
             if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
+
+            // [folders] — key = [ 'path', ... ] arrays
+            if (currentSection == Section::Folders) {
+                // Detect which access level from key prefix
+                AccessLevel level = AccessLevel::ReadWrite;
+                if (line.find(L"readwrite") == 0) level = AccessLevel::ReadWrite;
+                else if (line.find(L"read") == 0)  level = AccessLevel::Read;
+                else if (line.find(L"write") == 0) level = AccessLevel::Write;
+
+                // Extract all quoted paths from this and continuation lines
+                // Handles both 'literal' and "basic" TOML strings
+                auto extractPaths = [&](const std::wstring& text) {
+                    size_t pos = 0;
+                    while (pos < text.size()) {
+                        // Find single or double quote
+                        auto sq = text.find(L'\'', pos);
+                        auto dq = text.find(L'"', pos);
+                        if (sq == std::wstring::npos && dq == std::wstring::npos) break;
+
+                        bool isSingle = (sq != std::wstring::npos && (dq == std::wstring::npos || sq < dq));
+                        wchar_t quote = isSingle ? L'\'' : L'"';
+                        size_t qstart = isSingle ? sq : dq;
+                        auto qend = text.find(quote, qstart + 1);
+                        if (qend == std::wstring::npos) break;
+
+                        std::wstring path = text.substr(qstart + 1, qend - qstart - 1);
+                        if (!path.empty())
+                            config.folders.push_back({ path, level });
+                        pos = qend + 1;
+                    }
+                };
+
+                extractPaths(line);
+
+                // If line contains '[' but no ']', read continuation lines
+                if (line.find(L'[') != std::wstring::npos && line.find(L']') == std::wstring::npos) {
+                    std::wstring contLine;
+                    while (std::getline(ss, contLine)) {
+                        if (!contLine.empty() && contLine.back() == L'\r') contLine.pop_back();
+                        auto cs = contLine.find_first_not_of(L" \t");
+                        if (cs == std::wstring::npos) continue;
+                        contLine = contLine.substr(cs);
+                        if (contLine[0] == L'#') continue;
+                        extractPaths(contLine);
+                        if (contLine.find(L']') != std::wstring::npos) break;
+                    }
+                }
+                continue;
+            }
 
             // [allow] — key = true/false entries
             if (currentSection == Section::Allow) {
@@ -178,7 +225,6 @@ namespace Sandbox {
                 if (eq != std::wstring::npos) {
                     std::wstring key = line.substr(0, eq);
                     std::wstring val = line.substr(eq + 1);
-                    // Trim
                     auto kt = key.find_last_not_of(L" \t");
                     if (kt != std::wstring::npos) key.resize(kt + 1);
                     auto vs = val.find_first_not_of(L" \t");
@@ -189,19 +235,6 @@ namespace Sandbox {
                     else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(_wtoi(val.c_str()));
                 }
                 continue;
-            }
-
-            // Folder sections — path entries
-            if (currentSection == Section::Read || currentSection == Section::Write || currentSection == Section::ReadWrite) {
-                if (line.size() >= 2 && line.front() == L'"' && line.back() == L'"')
-                    line = line.substr(1, line.size() - 2);
-
-                AccessLevel level = AccessLevel::ReadWrite;
-                if (currentSection == Section::Read) level = AccessLevel::Read;
-                else if (currentSection == Section::Write) level = AccessLevel::Write;
-
-                if (!line.empty())
-                    config.folders.push_back({ line, level });
             }
         }
 

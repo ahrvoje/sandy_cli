@@ -7,16 +7,18 @@
 # FOLDER ACCESS
 # ============================================================
 # Grant the sandboxed process access to specific folders.
-# Paths may be quoted or unquoted. One path per line.
+# Use single quotes for Windows paths (no backslash escaping needed).
 
-[read]
-# "C:\path\to\read\only\folder"
-
-[write]
-# "C:\path\to\write\only\folder"
-
-[readwrite]
-# "C:\path\to\full\access\folder"
+[folders]
+# read = [
+#     'C:\path\to\read\only\folder',
+# ]
+# write = [
+#     'C:\path\to\write\only\folder',
+# ]
+# readwrite = [
+#     'C:\path\to\full\access\folder',
+# ]
 
 # ============================================================
 # PERMISSIONS

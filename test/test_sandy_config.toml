@@ -1,16 +1,18 @@
 # Sandy sandbox test configuration
 # Used by: sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
 
-[read]
-"C:\Users\H\AppData\Local\Programs\Python\Python314"
-"C:\repos\sandy_cli\"
-"C:\Users\H\test_R"
-
-[write]
-"C:\Users\H\test_W"
-
-[readwrite]
-"C:\Users\H\test_RW"
+[folders]
+read = [
+    'C:\Users\H\AppData\Local\Programs\Python\Python314',
+    'C:\repos\sandy_cli\',
+    'C:\Users\H\test_R',
+]
+write = [
+    'C:\Users\H\test_W',
+]
+readwrite = [
+    'C:\Users\H\test_RW',
+]
 
 [allow]
 system_dirs = true
