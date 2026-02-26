@@ -117,7 +117,7 @@ sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 
 ## Demo
 
-Full test run showing Sandy's isolation in action — 33 tests, all passing:
+Full test run showing Sandy's isolation in action — 35 tests, all passing:
 
 ```
 === Sandy Sandbox Tests ===
@@ -177,13 +177,16 @@ Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
   file_R = C:\Users\H\test_file_R.txt
   [PASS] file_R: read content: File-level read test content
   [PASS] file_R: write (should fail): blocked -> PermissionError
+  file_W = C:\Users\H\test_file_W.txt
+  [PASS] file_W: write content: 5
+  [PASS] file_W: read (should fail): blocked -> PermissionError
   file_RW = C:\Users\H\test_file_RW.txt
   [PASS] file_RW: write content: 5
   [PASS] file_RW: read content: hello
   [PASS] file_NONE: read (should fail): blocked -> FileNotFoundError
   [PASS] file_NONE: write (should fail): blocked -> PermissionError
 
-=== Results: 33 passed, 0 failed ===
+=== Results: 35 passed, 0 failed ===
 ```
 
 ---

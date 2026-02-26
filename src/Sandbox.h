@@ -252,7 +252,7 @@ namespace Sandbox {
             permissions = FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
             break;
         case AccessLevel::Write:
-            permissions = FILE_GENERIC_WRITE;
+            permissions = FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
             break;
         case AccessLevel::ReadWrite:
             permissions = FILE_ALL_ACCESS;

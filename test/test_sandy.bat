@@ -26,8 +26,9 @@ if not exist "%USERPROFILE%\test_R\seed.txt" (
 
 REM --- Create seed files for file-level access tests ---
 echo File-level read test content> "%USERPROFILE%\test_file_R.txt"
+echo placeholder> "%USERPROFILE%\test_file_W.txt"
 echo placeholder> "%USERPROFILE%\test_file_RW.txt"
-echo Created test_file_R.txt and test_file_RW.txt
+echo Created test_file_R.txt, test_file_W.txt and test_file_RW.txt
 
 echo.
 echo --- Running sandbox tests ---
@@ -42,6 +43,7 @@ REM --- Clean up test artifacts ---
 echo Cleaning up test artifacts...
 if exist "%USERPROFILE%\test_W\written.txt"    del "%USERPROFILE%\test_W\written.txt"
 if exist "%USERPROFILE%\test_RW\rw_test.txt"   del "%USERPROFILE%\test_RW\rw_test.txt"
+if exist "%USERPROFILE%\test_file_W.txt"       del "%USERPROFILE%\test_file_W.txt"
 
 echo --- Done (exit code: %TEST_EXIT%) ---
 pause

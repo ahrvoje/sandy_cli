@@ -195,11 +195,13 @@ else:
 # 8. FILE-LEVEL ACCESS TESTS
 #    Individual files (not folders) can also be granted specific permissions.
 #    test_file_R.txt  -> read only
+#    test_file_W.txt  -> write only
 #    test_file_RW.txt -> read + write
 # ---------------------------------------------------------------------------
 print("--- File-level access tests ---")
 
 file_R = os.path.join(user, "test_file_R.txt")
+file_W = os.path.join(user, "test_file_W.txt")
 file_RW = os.path.join(user, "test_file_RW.txt")
 file_none = os.path.join(user, "test_file_NONE.txt")
 
@@ -209,6 +211,13 @@ expect_ok("file_R: read content",
     lambda: open(file_R).read().strip())
 expect_blocked("file_R: write (should fail)",
     lambda: open(file_R, "w").write("x"))
+
+# -- Write-only file --
+print(f"  file_W = {file_W}")
+expect_ok("file_W: write content",
+    lambda: open(file_W, "w").write("hello") or "written")
+expect_blocked("file_W: read (should fail)",
+    lambda: open(file_W).read())
 
 # -- Read+Write file --
 print(f"  file_RW = {file_RW}")

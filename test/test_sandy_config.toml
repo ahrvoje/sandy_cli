@@ -10,6 +10,7 @@ read = [
 ]
 write = [
     'C:\Users\H\test_W',
+    'C:\Users\H\test_file_W.txt',
 ]
 readwrite = [
     'C:\Users\H\test_RW',
