@@ -14,18 +14,19 @@ static void PrintUsage()
         "Sandy - AppContainer Sandbox Runner\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]\n"
         "\n"
         "Options:\n"
-        "  -c <path>   Path to TOML config file (folder access, permissions, limits)\n"
+        "  -c <path>   Path to TOML config file (access, permissions, limits)\n"
+        "  -l <path>   Log file for access denials, limits, and exit code (admin for ETW)\n"
         "  -x <path>   Path to executable to run sandboxed (.exe, .bat, etc.)\n"
         "\n"
         "Any arguments after the executable path are forwarded to it.\n"
         "\n"
         "Config file sections:\n"
-        "  [read] / [write] / [readwrite]   Folder access grants\n"
-        "  [allow]                          Opt-in permissions (network, localhost, etc.)\n"
-        "  [limit]                          Resource limits (timeout, memory, processes)\n"
+        "  [access]    read / write / readwrite arrays for file and folder access\n"
+        "  [allow]     Opt-in permissions (network, localhost, system_dirs, etc.)\n"
+        "  [limit]     Resource limits (timeout, memory, processes)\n"
         "\n"
         "See sandy_config.toml for all available options.\n"
     );
@@ -37,6 +38,7 @@ static void PrintUsage()
 int wmain(int argc, wchar_t* argv[])
 {
     std::wstring configPath;
+    std::wstring logPath;
     std::wstring exePath;
     std::wstring exeArgs;
 
@@ -46,6 +48,9 @@ int wmain(int argc, wchar_t* argv[])
 
         if (arg == L"-c" && i + 1 < argc) {
             configPath = argv[++i];
+        }
+        else if (arg == L"-l" && i + 1 < argc) {
+            logPath = argv[++i];
         }
         else if (arg == L"-x" && i + 1 < argc) {
             exePath = argv[++i];
@@ -86,6 +91,7 @@ int wmain(int argc, wchar_t* argv[])
 
     // --- Load configuration ---
     auto config = Sandbox::LoadConfig(configPath);
+    config.logPath = logPath;
 
     // --- Run sandboxed ---
     int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs);

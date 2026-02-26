@@ -24,6 +24,7 @@ All sandbox settings — folder access, permissions, and resource limits — are
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable
 - 🛡️ **Locked down by default** — all access is opt-in via config
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
+- 📝 **Session logging** — log config, process output, and exit code to file
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
 ---
@@ -31,12 +32,13 @@ All sandbox settings — folder access, permissions, and resource limits — are
 ## Usage
 
 ```
-sandy.exe -c <config.toml> -x <executable> [args...]
+sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-c <path>` | Path to TOML config file |
+| `-l <path>` | Log file for session output, config, and exit code |
 | `-x <path>` | Path to executable to run sandboxed |
 
 Arguments after the executable path are forwarded to it.
@@ -112,6 +114,43 @@ memory = 2048
 ```
 sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 ```
+
+---
+
+## Logging
+
+Use `-l <path>` to capture the full sandbox session — configuration, child process output, and exit status — into a log file:
+
+```
+sandy.exe -c config.toml -l session.log -x python.exe script.py
+```
+
+The log file contains:
+
+```
+=== Sandy Log ===
+
+--- Configuration ---
+Executable: C:\Python314\python.exe
+Arguments:  script.py
+Folders:    3 configured
+  [R]  C:\Python314
+  [RW] C:\workspace
+  [W]  C:\logs
+Network:     allowed
+Timeout:     300 seconds
+Memory:      2048 MB
+
+--- Process Output ---
+PID: 12345
+... (full child stdout/stderr) ...
+
+--- Process Exit ---
+Exit code: 0 (0x00000000)
+=== Log end ===
+```
+
+This is useful for post-mortem analysis — access denied errors (e.g. Python's `PermissionError`) appear in the process output section alongside all other child output.
 
 ---
 

@@ -36,7 +36,90 @@ namespace Sandbox {
         DWORD  timeoutSeconds = 0;
         SIZE_T memoryLimitMB  = 0;
         DWORD  maxProcesses   = 0;
+
+        // Logging (set via -l CLI flag, not TOML)
+        std::wstring logPath;
     };
+
+    // -----------------------------------------------------------------------
+    // Sandy Logger — Process output and sandbox event log
+    // Logs sandbox configuration, child process output, limit events,
+    // and exit code to a file specified by -l <path>.
+    // Child output already contains access denied messages from Python etc.
+    // -----------------------------------------------------------------------
+    struct SandyLogger {
+        FILE* logFile = nullptr;
+
+        bool Start(const std::wstring& logPath) {
+            _wfopen_s(&logFile, logPath.c_str(), L"w");
+            if (!logFile) {
+                fprintf(stderr, "[Warning] Could not create log file: %ls\n", logPath.c_str());
+                return false;
+            }
+            fwprintf(logFile, L"=== Sandy Log ===\n");
+            fflush(logFile);
+            return true;
+        }
+
+        void LogConfig(const SandboxConfig& config, const std::wstring& exe,
+                       const std::wstring& args) {
+            if (!logFile) return;
+            fwprintf(logFile, L"\n--- Configuration ---\n");
+            fwprintf(logFile, L"Executable: %s\n", exe.c_str());
+            if (!args.empty())
+                fwprintf(logFile, L"Arguments:  %s\n", args.c_str());
+
+            fwprintf(logFile, L"Folders:    %zu configured\n", config.folders.size());
+            for (auto& f : config.folders) {
+                const wchar_t* tag = f.access == AccessLevel::Read ? L"R" :
+                                     f.access == AccessLevel::Write ? L"W" : L"RW";
+                fwprintf(logFile, L"  [%s]  %s\n", tag, f.path.c_str());
+            }
+
+            if (config.allowSystemDirs) fwprintf(logFile, L"System dirs: allowed\n");
+            if (config.allowNetwork)    fwprintf(logFile, L"Network:     allowed\n");
+            if (config.allowLocalhost)  fwprintf(logFile, L"Localhost:   allowed\n");
+            if (config.allowLan)        fwprintf(logFile, L"LAN:         allowed\n");
+            if (config.timeoutSeconds)  fwprintf(logFile, L"Timeout:     %lu seconds\n", config.timeoutSeconds);
+            if (config.memoryLimitMB)   fwprintf(logFile, L"Memory:      %zu MB\n", config.memoryLimitMB);
+            if (config.maxProcesses)    fwprintf(logFile, L"Processes:   %lu max\n", config.maxProcesses);
+
+            fwprintf(logFile, L"\n--- Process Output ---\n");
+            fflush(logFile);
+        }
+
+        void LogOutput(const char* data, DWORD len) {
+            if (!logFile || !data || len == 0) return;
+            // Write raw child output to log file
+            fwrite(data, 1, len, logFile);
+            fflush(logFile);
+        }
+
+        void Log(const wchar_t* msg) {
+            if (!logFile) return;
+            fwprintf(logFile, L"%s\n", msg);
+            fflush(logFile);
+        }
+
+        void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
+            if (!logFile) return;
+            fwprintf(logFile, L"\n--- Process Exit ---\n");
+            if (timedOut)
+                fwprintf(logFile, L"TIMEOUT: killed after %lu seconds\n", timeoutSec);
+            fwprintf(logFile, L"Exit code: %ld (0x%08X)\n", (long)exitCode, exitCode);
+            fwprintf(logFile, L"=== Log end ===\n");
+            fflush(logFile);
+        }
+
+        void Stop() {
+            if (logFile) {
+                fclose(logFile);
+                logFile = nullptr;
+            }
+        }
+    };
+
+    static SandyLogger g_logger;
 
     // Track loopback state for cleanup
     static bool g_loopbackGranted = false;
@@ -562,6 +645,11 @@ namespace Sandbox {
         if (!exeArgs.empty())
             cmdLine += L" " + exeArgs;
 
+        // --- Start logger before launching ---
+        if (!config.logPath.empty()) {
+            g_logger.Start(config.logPath);
+        }
+
         // --- Launch the target executable ---
         PROCESS_INFORMATION pi{};
         BOOL created = CreateProcessW(
@@ -576,9 +664,24 @@ namespace Sandbox {
         if (!created) {
             DWORD err = GetLastError();
             fprintf(stderr, "[Error] Could not launch: %ls (error %lu)\n", exePath.c_str(), err);
+            if (g_logger.logFile) {
+                wchar_t msg[512];
+                swprintf(msg, 512, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
+                g_logger.Log(msg);
+                g_logger.LogSummary(err, false, 0);
+                g_logger.Stop();
+            }
             CloseHandle(hReadPipe);
             cleanup();
             return 1;
+        }
+
+        // Log configuration and PID
+        if (g_logger.logFile) {
+            g_logger.LogConfig(config, exePath, exeArgs);
+            wchar_t pidMsg[128];
+            swprintf(pidMsg, 128, L"PID: %lu", pi.dwProcessId);
+            g_logger.Log(pidMsg);
         }
 
         CloseHandle(pi.hThread);
@@ -617,6 +720,7 @@ namespace Sandbox {
         while (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
             DWORD written = 0;
             WriteFile(hStdout, buffer, bytesRead, &written, nullptr);
+            g_logger.LogOutput(buffer, bytesRead);
         }
         CloseHandle(hReadPipe);
 
@@ -631,6 +735,12 @@ namespace Sandbox {
             CloseHandle(hTimeoutThread);
             if (timeoutCtx.timedOut)
                 fprintf(stderr, "[Sandy] Process killed after %lu second timeout.\n", config.timeoutSeconds);
+        }
+
+        // --- Write log summary and stop logger ---
+        if (g_logger.logFile) {
+            g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
+            g_logger.Stop();
         }
 
         // --- Cleanup ---
