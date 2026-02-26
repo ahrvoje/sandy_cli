@@ -189,6 +189,36 @@ Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 === Results: 35 passed, 0 failed ===
 ```
 
+### Allow & Limits Tests
+
+Separate test suite verifying network access, resource limits, timeout, and strict isolation:
+
+```
+=== Sandy Allow & Limits Tests ===
+
+--- Network access (allowed) ---
+  [PASS] HTTP GET example.com: HTTP 200
+
+--- Memory limit (128 MB) ---
+  [PASS] Allocate 50 MB: 50 MB OK
+  [PASS] Allocate 1 GB (exceeds 128 MB limit): blocked -> MemoryError
+
+--- Process count limit (3 max) ---
+  [PASS] Spawn 1 child: child ok
+  [PASS] Spawn 10 children (expect limit enforcement): 2 alive, 8 blocked (limit enforced)
+
+=== Results: 5 passed, 0 failed ===
+```
+
+```
+--- Timeout test (5 second limit) ---
+  [Sandy] Process killed after 5 second timeout.
+  [PASS] Timeout: process killed in ~9s
+
+--- Strict mode (system_dirs disabled) ---
+  [PASS] Strict mode: execution blocked
+```
+
 ---
 
 ## Notes
