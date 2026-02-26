@@ -52,13 +52,16 @@ All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`]
 ```toml
 [access]
 read = [
-    'C:\path\to\read\only\folder',
+    'C:\data\config.json',             # single file
+    'C:\Python314',                     # entire folder (recursive)
 ]
 write = [
-    'C:\path\to\write\only\folder',
+    'C:\logs\agent.log',               # single log file
+    'C:\temp\output',                  # output folder
 ]
 readwrite = [
-    'C:\path\to\full\access\folder',
+    'C:\workspace',                    # project folder
+    'C:\data\state.db',                # database file
 ]
 ```
 
