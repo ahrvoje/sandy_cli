@@ -166,35 +166,9 @@ namespace Sandbox {
     //   [allow]                               opt-in permissions
     //   [limit]                               resource constraints
     // -----------------------------------------------------------------------
-    inline SandboxConfig LoadConfig(const std::wstring& configPath)
+    inline SandboxConfig ParseConfig(const std::wstring& content)
     {
         SandboxConfig config;
-
-        HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE)
-            return config;
-
-        DWORD fileSize = GetFileSize(hFile, nullptr);
-        if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
-            CloseHandle(hFile);
-            return config;
-        }
-
-        std::string buf(fileSize, '\0');
-        DWORD bytesRead = 0;
-        if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
-            CloseHandle(hFile);
-            return config;
-        }
-        CloseHandle(hFile);
-
-        // Convert UTF-8 to wide
-        int wideLen = MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
-        std::wstring content(wideLen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
-
-        // Parser state
         enum class Section { None, Folders, Allow, Limit };
         Section currentSection = Section::None;
 
@@ -322,6 +296,37 @@ namespace Sandbox {
         }
 
         return config;
+    }
+
+    // -----------------------------------------------------------------------
+    // Load config from a TOML file (reads file, then delegates to ParseConfig)
+    // -----------------------------------------------------------------------
+    inline SandboxConfig LoadConfig(const std::wstring& configPath)
+    {
+        HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile == INVALID_HANDLE_VALUE)
+            return SandboxConfig{};
+
+        DWORD fileSize = GetFileSize(hFile, nullptr);
+        if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
+            CloseHandle(hFile);
+            return SandboxConfig{};
+        }
+
+        std::string buf(fileSize, '\0');
+        DWORD bytesRead = 0;
+        if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
+            CloseHandle(hFile);
+            return SandboxConfig{};
+        }
+        CloseHandle(hFile);
+
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
+        std::wstring content(wideLen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
+
+        return ParseConfig(content);
     }
 
     // -----------------------------------------------------------------------

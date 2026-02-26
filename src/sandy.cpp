@@ -1,6 +1,7 @@
 // sandy.cpp — Sandboxed Executable Runner (CLI)
 // Launches any executable inside a Windows AppContainer sandbox.
 // Usage: sandy.exe -c <config.toml> -x <executable> [args...]
+//        sandy.exe -s "<toml string>" -x <executable> [args...]
 
 #include "framework.h"
 #include "Sandbox.h"
@@ -15,10 +16,12 @@ static void PrintUsage()
         "\n"
         "Usage:\n"
         "  sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]\n"
+        "  sandy.exe -s \"<toml>\"      [-l <logfile>] -x <executable> [args...]\n"
         "\n"
         "Options:\n"
         "  -c <path>   Path to TOML config file (access, permissions, limits)\n"
-        "  -l <path>   Log file for access denials, limits, and exit code (admin for ETW)\n"
+        "  -s <toml>   Inline TOML config string (alternative to -c)\n"
+        "  -l <path>   Log file for session output, config, and exit code\n"
         "  -x <path>   Path to executable to run sandboxed (.exe, .bat, etc.)\n"
         "\n"
         "Any arguments after the executable path are forwarded to it.\n"
@@ -38,6 +41,7 @@ static void PrintUsage()
 int wmain(int argc, wchar_t* argv[])
 {
     std::wstring configPath;
+    std::wstring configString;
     std::wstring logPath;
     std::wstring exePath;
     std::wstring exeArgs;
@@ -48,6 +52,9 @@ int wmain(int argc, wchar_t* argv[])
 
         if (arg == L"-c" && i + 1 < argc) {
             configPath = argv[++i];
+        }
+        else if (arg == L"-s" && i + 1 < argc) {
+            configString = argv[++i];
         }
         else if (arg == L"-l" && i + 1 < argc) {
             logPath = argv[++i];
@@ -75,22 +82,31 @@ int wmain(int argc, wchar_t* argv[])
     }
 
     // --- Validate required options ---
-    if (configPath.empty() || exePath.empty()) {
+    if ((configPath.empty() && configString.empty()) || exePath.empty()) {
         if (argc > 1)
-            fprintf(stderr, "Error: Both -c and -x are required.\n\n");
+            fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
         PrintUsage();
         return 1;
     }
 
-    // --- Verify config file exists ---
-    DWORD attrs = GetFileAttributesW(configPath.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-        fprintf(stderr, "Error: Config file not found: %ls\n", configPath.c_str());
+    if (!configPath.empty() && !configString.empty()) {
+        fprintf(stderr, "Error: -c and -s are mutually exclusive.\n\n");
+        PrintUsage();
         return 1;
     }
 
     // --- Load configuration ---
-    auto config = Sandbox::LoadConfig(configPath);
+    Sandbox::SandboxConfig config;
+    if (!configString.empty()) {
+        config = Sandbox::ParseConfig(configString);
+    } else {
+        DWORD attrs = GetFileAttributesW(configPath.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "Error: Config file not found: %ls\n", configPath.c_str());
+            return 1;
+        }
+        config = Sandbox::LoadConfig(configPath);
+    }
     config.logPath = logPath;
 
     // --- Run sandboxed ---
