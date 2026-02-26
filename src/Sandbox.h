@@ -7,6 +7,9 @@
 
 namespace Sandbox {
 
+    // Container identity — used for both creation and cleanup
+    constexpr const wchar_t* kContainerName = L"SandySandbox";
+
     // -----------------------------------------------------------------------
     // Folder access level
     // -----------------------------------------------------------------------
@@ -39,9 +42,13 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline std::wstring GetExeFolder()
     {
-        wchar_t path[MAX_PATH]{};
-        GetModuleFileNameW(nullptr, path, MAX_PATH);
-        std::wstring folder(path);
+        wchar_t buf[MAX_PATH]{};
+        DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) {
+            fprintf(stderr, "[Error] Could not determine exe path.\n");
+            return {};
+        }
+        std::wstring folder(buf, len);
         auto pos = folder.find_last_of(L"\\/");
         if (pos != std::wstring::npos)
             folder.resize(pos);
@@ -71,21 +78,24 @@ namespace Sandbox {
         if (hFile == INVALID_HANDLE_VALUE)
             return entries;
 
-        // Read entire file
         DWORD fileSize = GetFileSize(hFile, nullptr);
         if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
             CloseHandle(hFile);
             return entries;
         }
+
         std::string buf(fileSize, '\0');
         DWORD bytesRead = 0;
-        ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr);
+        if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
+            CloseHandle(hFile);
+            return entries;
+        }
         CloseHandle(hFile);
 
         // Convert UTF-8 to wide
-        int wideLen = MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), (int)bytesRead, nullptr, 0);
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
         std::wstring content(wideLen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), (int)bytesRead, &content[0], wideLen);
+        MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
 
         // Parse line by line
         AccessLevel currentLevel = AccessLevel::ReadWrite;
@@ -109,26 +119,16 @@ namespace Sandbox {
                 continue;
 
             // Section headers
-            if (line == L"[read]") {
-                currentLevel = AccessLevel::Read;
-                continue;
-            }
-            if (line == L"[write]") {
-                currentLevel = AccessLevel::Write;
-                continue;
-            }
-            if (line == L"[readwrite]") {
-                currentLevel = AccessLevel::ReadWrite;
-                continue;
-            }
+            if (line == L"[read]")      { currentLevel = AccessLevel::Read;      continue; }
+            if (line == L"[write]")     { currentLevel = AccessLevel::Write;     continue; }
+            if (line == L"[readwrite]") { currentLevel = AccessLevel::ReadWrite; continue; }
 
             // Strip quotes if present
             if (line.size() >= 2 && line.front() == L'"' && line.back() == L'"')
                 line = line.substr(1, line.size() - 2);
 
-            if (!line.empty()) {
+            if (!line.empty())
                 entries.push_back({ line, currentLevel });
-            }
         }
 
         return entries;
@@ -170,7 +170,7 @@ namespace Sandbox {
 
         PACL pNewDacl = nullptr;
         rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
-        if (pSD) LocalFree(pSD);
+        LocalFree(pSD);
         if (rc != ERROR_SUCCESS)
             return false;
 
@@ -185,7 +185,6 @@ namespace Sandbox {
     // Launch an executable inside an AppContainer sandbox.
     // Waits for the child to finish, relays its stdout/stderr to our console,
     // and returns the child's exit code.
-    // If we are already inside the container, just launch directly.
     // -----------------------------------------------------------------------
     inline int RunSandboxed(const std::wstring& configPath,
                             const std::wstring& exePath,
@@ -193,26 +192,29 @@ namespace Sandbox {
                             bool strictIsolation = false,
                             bool allowNetwork = false)
     {
-        const wchar_t* kContainerName = L"SandyPythonSandbox";
-        const wchar_t* kDisplayName   = L"Sandy Sandbox";
-        const wchar_t* kDescription   = L"Sandboxed environment for running executables";
-
         // --- Create or open the AppContainer profile ---
         PSID pContainerSid = nullptr;
         HRESULT hr = CreateAppContainerProfile(
-            kContainerName, kDisplayName, kDescription,
+            kContainerName, L"Sandy Sandbox",
+            L"Sandboxed environment for running executables",
             nullptr, 0, &pContainerSid);
 
-        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
+        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS)
             hr = DeriveAppContainerSidFromAppContainerName(kContainerName, &pContainerSid);
-        }
+
         if (FAILED(hr) || !pContainerSid) {
             fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
             return 1;
         }
 
-        // --- Grant exe folder READ access to the container ---
+        // --- Determine working directory (folder containing sandy.exe) ---
         std::wstring exeFolder = GetExeFolder();
+        if (exeFolder.empty()) {
+            FreeSid(pContainerSid);
+            return 1;
+        }
+
+        // --- Grant exe folder READ access to the container ---
         if (!GrantFolderAccess(pContainerSid, exeFolder, AccessLevel::Read)) {
             fprintf(stderr, "[Error] Could not grant access to exe folder: %ls\n", exeFolder.c_str());
             FreeSid(pContainerSid);
@@ -235,24 +237,23 @@ namespace Sandbox {
         // --- Grant configured folder access ---
         auto configEntries = LoadConfig(configPath);
         bool grantFailed = false;
-        for (auto& entry : configEntries) {
+        for (const auto& entry : configEntries) {
             if (!GrantFolderAccess(pContainerSid, entry.path, entry.access)) {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
             }
         }
-        if (grantFailed) {
+        if (grantFailed)
             fprintf(stderr, "          Run as Administrator to modify folder ACLs.\n");
-        }
 
-        // Print config summary
+        // --- Print config summary ---
         printf("Sandy - AppContainer Sandbox\n");
         printf("Config:     %ls\n", configPath.c_str());
         printf("Executable: %ls\n", exePath.c_str());
         if (!exeArgs.empty())
             printf("Arguments:  %ls\n", exeArgs.c_str());
         printf("Folders:    %zu configured\n", configEntries.size());
-        for (auto& e : configEntries) {
+        for (const auto& e : configEntries) {
             const char* tag = "[RW]";
             if (e.access == AccessLevel::Read) tag = "[R] ";
             else if (e.access == AccessLevel::Write) tag = "[W] ";
@@ -264,14 +265,13 @@ namespace Sandbox {
         printf("Network:    %s\n", allowNetwork ? "ALLOWED" : "BLOCKED");
 
         // --- Prepare capabilities ---
-        // internetClient capability SID for network access
         SID_AND_ATTRIBUTES caps[1] = {};
         DWORD capCount = 0;
         PSID pNetSid = nullptr;
 
         if (allowNetwork) {
             SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
-            if (AllocateAndInitializeSid(&appAuthority, 
+            if (AllocateAndInitializeSid(&appAuthority,
                 SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
                 SECURITY_CAPABILITY_BASE_RID,
                 SECURITY_CAPABILITY_INTERNET_CLIENT,
@@ -283,13 +283,18 @@ namespace Sandbox {
             }
         }
 
+        // --- Helper: free all SIDs on exit ---
+        auto cleanup = [&]() {
+            FreeSid(pContainerSid);
+            if (pNetSid) FreeSid(pNetSid);
+        };
+
         SECURITY_CAPABILITIES sc{};
         sc.AppContainerSid = pContainerSid;
         sc.Capabilities = capCount > 0 ? caps : nullptr;
         sc.CapabilityCount = capCount;
 
         // --- Build STARTUPINFOEX with the container attribute ---
-        // With strict isolation, we need 2 attributes: security capabilities + opt-out
         DWORD attrCount = strictIsolation ? 2 : 1;
         SIZE_T attrSize = 0;
         InitializeProcThreadAttributeList(nullptr, attrCount, 0, &attrSize);
@@ -297,7 +302,7 @@ namespace Sandbox {
         auto pAttrList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuf.data());
         if (!InitializeProcThreadAttributeList(pAttrList, attrCount, 0, &attrSize)) {
             fprintf(stderr, "[Error] InitializeProcThreadAttributeList failed.\n");
-            FreeSid(pContainerSid);
+            cleanup();
             return 1;
         }
 
@@ -307,7 +312,7 @@ namespace Sandbox {
         {
             fprintf(stderr, "[Error] UpdateProcThreadAttribute (security) failed.\n");
             DeleteProcThreadAttributeList(pAttrList);
-            FreeSid(pContainerSid);
+            cleanup();
             return 1;
         }
 
@@ -322,7 +327,7 @@ namespace Sandbox {
             {
                 fprintf(stderr, "[Error] UpdateProcThreadAttribute (isolation policy) failed.\n");
                 DeleteProcThreadAttributeList(pAttrList);
-                FreeSid(pContainerSid);
+                cleanup();
                 return 1;
             }
         }
@@ -331,13 +336,12 @@ namespace Sandbox {
         SECURITY_ATTRIBUTES sa{};
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = TRUE;
-        sa.lpSecurityDescriptor = nullptr;
 
         HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
         if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
             fprintf(stderr, "[Error] Could not create output pipe.\n");
             DeleteProcThreadAttributeList(pAttrList);
-            FreeSid(pContainerSid);
+            cleanup();
             return 1;
         }
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
@@ -352,9 +356,8 @@ namespace Sandbox {
 
         // --- Build command line ---
         std::wstring cmdLine = L"\"" + exePath + L"\"";
-        if (!exeArgs.empty()) {
+        if (!exeArgs.empty())
             cmdLine += L" " + exeArgs;
-        }
 
         // --- Launch the target executable ---
         PROCESS_INFORMATION pi{};
@@ -371,7 +374,7 @@ namespace Sandbox {
             DWORD err = GetLastError();
             fprintf(stderr, "[Error] Could not launch: %ls (error %lu)\n", exePath.c_str(), err);
             CloseHandle(hReadPipe);
-            FreeSid(pContainerSid);
+            cleanup();
             return 1;
         }
 
@@ -394,9 +397,7 @@ namespace Sandbox {
         GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hProcess);
 
-        FreeSid(pContainerSid);
-        if (pNetSid) FreeSid(pNetSid);
-
+        cleanup();
         return static_cast<int>(exitCode);
     }
 
@@ -405,7 +406,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
-        DeleteAppContainerProfile(L"SandyPythonSandbox");
+        DeleteAppContainerProfile(kContainerName);
     }
 
 } // namespace Sandbox

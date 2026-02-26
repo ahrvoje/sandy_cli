@@ -17,7 +17,6 @@
 // Additional headers for Sandy
 #include <string>
 #include <vector>
-#include <thread>
 #include <sstream>
 #include <userenv.h>
 #include <sddl.h>
