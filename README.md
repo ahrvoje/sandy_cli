@@ -53,7 +53,7 @@ All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`]
 [access]
 read = [
     'C:\data\config.json',             # single file
-    'C:\Python314',                     # entire folder (recursive)
+    'C:\Python314',                    # entire folder (recursive)
 ]
 write = [
     'C:\logs\agent.log',               # single log file
