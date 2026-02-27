@@ -117,7 +117,17 @@ inherit = false                          # don't inherit parent env vars
 pass = ['PATH', 'PYTHONPATH', 'HOME']    # specific vars to pass through
 ```
 
-When `inherit = false`, only essential Windows vars (`SYSTEMROOT`, `SYSTEMDRIVE`, `TEMP`, `TMP`) and the vars listed in `pass` are provided to the child process.
+When `inherit = false`, the following essential Windows vars are always passed regardless of `pass`:
+
+| Category | Variables |
+|----------|-----------|
+| System | `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `OS` |
+| Temp | `TEMP`, `TMP` |
+| Shell | `COMSPEC`, `PATHEXT` |
+| User dirs | `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` |
+| Hardware | `PROCESSOR_ARCHITECTURE`, `NUMBER_OF_PROCESSORS` |
+
+Any additional vars listed in `pass` are added on top of these.
 
 ### Resource Limits
 

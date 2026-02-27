@@ -555,16 +555,23 @@ namespace Sandbox {
     {
         std::vector<wchar_t> block;
 
-        if (config.envInherit && config.envPass.empty())
+        if (config.envInherit)
             return block;  // empty = pass nullptr to CreateProcessW (inherit all)
 
         // Collect environment variables
+        // Hidden vars (starting with '=', e.g. =C:=C:\path) are drive-letter
+        // assignments required by the Windows loader — always include them.
+        std::vector<std::wstring> hiddenVars;
         std::vector<std::pair<std::wstring, std::wstring>> env;
 
         LPWCH envStrings = GetEnvironmentStringsW();
         if (envStrings) {
             for (LPCWSTR p = envStrings; *p; p += wcslen(p) + 1) {
                 std::wstring entry(p);
+                if (entry[0] == L'=') {
+                    hiddenVars.push_back(entry);
+                    continue;
+                }
                 auto eq = entry.find(L'=');
                 if (eq != std::wstring::npos && eq > 0)
                     env.push_back({ entry.substr(0, eq), entry.substr(eq + 1) });
@@ -576,11 +583,19 @@ namespace Sandbox {
             // Keep only essential vars + explicitly passed vars
             std::vector<std::pair<std::wstring, std::wstring>> filtered;
             auto isAllowed = [&](const std::wstring& name) {
-                // Always pass essential Windows vars
-                if (_wcsicmp(name.c_str(), L"SYSTEMROOT") == 0) return true;
-                if (_wcsicmp(name.c_str(), L"SYSTEMDRIVE") == 0) return true;
-                if (_wcsicmp(name.c_str(), L"TEMP") == 0) return true;
-                if (_wcsicmp(name.c_str(), L"TMP") == 0) return true;
+                // Always pass essential Windows vars needed by the loader
+                static const wchar_t* essential[] = {
+                    L"SYSTEMROOT", L"SYSTEMDRIVE", L"WINDIR",
+                    L"TEMP", L"TMP",
+                    L"COMSPEC", L"PATHEXT",
+                    L"LOCALAPPDATA", L"APPDATA",
+                    L"USERPROFILE", L"HOMEDRIVE", L"HOMEPATH",
+                    L"PROCESSOR_ARCHITECTURE", L"NUMBER_OF_PROCESSORS",
+                    L"OS",
+                };
+                for (auto* e : essential) {
+                    if (_wcsicmp(name.c_str(), e) == 0) return true;
+                }
                 // Check pass list
                 for (auto& allowed : config.envPass) {
                     if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
@@ -593,7 +608,18 @@ namespace Sandbox {
             env = std::move(filtered);
         }
 
-        // Serialize: KEY=VALUE\0KEY=VALUE\0\0
+        // Sort regular vars alphabetically by name (required by Windows)
+        std::sort(env.begin(), env.end(),
+            [](const std::pair<std::wstring, std::wstring>& a,
+               const std::pair<std::wstring, std::wstring>& b) {
+                return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
+            });
+
+        // Serialize: hidden vars first, then KEY=VALUE\0...\0
+        for (auto& h : hiddenVars) {
+            block.insert(block.end(), h.begin(), h.end());
+            block.push_back(L'\0');
+        }
         for (auto& p : env) {
             std::wstring line = p.first + L"=" + p.second;
             block.insert(block.end(), line.begin(), line.end());

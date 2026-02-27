@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <algorithm>
 #include <cwchar>
 #include <userenv.h>
 #include <sddl.h>
