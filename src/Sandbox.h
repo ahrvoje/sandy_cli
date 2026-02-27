@@ -210,6 +210,22 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Helper: parse 'key = value' from a TOML line
+    // -----------------------------------------------------------------------
+    struct KeyValue { std::wstring key, val; bool ok; };
+    inline KeyValue ParseKeyValue(const std::wstring& line) {
+        auto eq = line.find(L'=');
+        if (eq == std::wstring::npos) return { {}, {}, false };
+        std::wstring key = line.substr(0, eq);
+        std::wstring val = line.substr(eq + 1);
+        auto kt = key.find_last_not_of(L" \t");
+        if (kt != std::wstring::npos) key.resize(kt + 1);
+        auto vs = val.find_first_not_of(L" \t");
+        if (vs != std::wstring::npos) val = val.substr(vs);
+        return { key, val, true };
+    }
+
+    // -----------------------------------------------------------------------
     // Parse TOML configuration string
     //
     //   [access]      read / write / execute / append / delete / all
@@ -313,54 +329,40 @@ namespace Sandbox {
 
             // [allow] — key = true/false entries
             if (currentSection == Section::Allow) {
-                auto eq = line.find(L'=');
-                if (eq != std::wstring::npos) {
-                    std::wstring key = line.substr(0, eq);
-                    std::wstring val = line.substr(eq + 1);
-                    auto kt = key.find_last_not_of(L" \t");
-                    if (kt != std::wstring::npos) key.resize(kt + 1);
-                    auto vs = val.find_first_not_of(L" \t");
-                    if (vs != std::wstring::npos) val = val.substr(vs);
-                    bool enabled = (val == L"true");
-
-                    if (key == L"network")          config.allowNetwork = enabled;
-                    else if (key == L"localhost")    config.allowLocalhost = enabled;
-                    else if (key == L"lan")          config.allowLan = enabled;
-                    else if (key == L"system_dirs")  config.allowSystemDirs = enabled;
-                    else if (key == L"registry")     config.allowRegistry = enabled;
-                    else if (key == L"pipes")        config.allowPipes = enabled;
-                    else if (key == L"stdin")        config.allowStdin = enabled;
+                auto kv = ParseKeyValue(line);
+                if (kv.ok) {
+                    bool enabled = (kv.val == L"true");
+                    if (kv.key == L"network")          config.allowNetwork = enabled;
+                    else if (kv.key == L"localhost")    config.allowLocalhost = enabled;
+                    else if (kv.key == L"lan")          config.allowLan = enabled;
+                    else if (kv.key == L"system_dirs")  config.allowSystemDirs = enabled;
+                    else if (kv.key == L"registry")     config.allowRegistry = enabled;
+                    else if (kv.key == L"pipes")        config.allowPipes = enabled;
+                    else if (kv.key == L"stdin")        config.allowStdin = enabled;
                 }
                 continue;
             }
 
             // [environment] — inherit and pass entries
             if (currentSection == Section::Environment) {
-                auto eq = line.find(L'=');
-                if (eq != std::wstring::npos) {
-                    std::wstring key = line.substr(0, eq);
-                    std::wstring val = line.substr(eq + 1);
-                    auto kt = key.find_last_not_of(L" \t");
-                    if (kt != std::wstring::npos) key.resize(kt + 1);
-                    auto vs = val.find_first_not_of(L" \t");
-                    if (vs != std::wstring::npos) val = val.substr(vs);
-
-                    if (key == L"inherit") {
-                        config.envInherit = (val == L"true");
+                auto kv = ParseKeyValue(line);
+                if (kv.ok) {
+                    if (kv.key == L"inherit") {
+                        config.envInherit = (kv.val == L"true");
                     }
-                    else if (key == L"pass") {
+                    else if (kv.key == L"pass") {
                         // Extract quoted var names from array
                         size_t pos = 0;
-                        while (pos < val.size()) {
-                            auto sq = val.find(L'\'', pos);
-                            auto dq = val.find(L'"', pos);
+                        while (pos < kv.val.size()) {
+                            auto sq = kv.val.find(L'\'', pos);
+                            auto dq = kv.val.find(L'"', pos);
                             if (sq == std::wstring::npos && dq == std::wstring::npos) break;
                             bool isSingle = (sq != std::wstring::npos && (dq == std::wstring::npos || sq < dq));
                             wchar_t quote = isSingle ? L'\'' : L'"';
                             size_t qstart = isSingle ? sq : dq;
-                            auto qend = val.find(quote, qstart + 1);
+                            auto qend = kv.val.find(quote, qstart + 1);
                             if (qend == std::wstring::npos) break;
-                            std::wstring varName = val.substr(qstart + 1, qend - qstart - 1);
+                            std::wstring varName = kv.val.substr(qstart + 1, qend - qstart - 1);
                             if (!varName.empty())
                                 config.envPass.push_back(varName);
                             pos = qend + 1;
@@ -372,18 +374,11 @@ namespace Sandbox {
 
             // [limit] — key = value entries
             if (currentSection == Section::Limit) {
-                auto eq = line.find(L'=');
-                if (eq != std::wstring::npos) {
-                    std::wstring key = line.substr(0, eq);
-                    std::wstring val = line.substr(eq + 1);
-                    auto kt = key.find_last_not_of(L" \t");
-                    if (kt != std::wstring::npos) key.resize(kt + 1);
-                    auto vs = val.find_first_not_of(L" \t");
-                    if (vs != std::wstring::npos) val = val.substr(vs);
-
-                    if (key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(_wtoi(val.c_str()));
-                    else if (key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(_wtoi(val.c_str()));
-                    else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(_wtoi(val.c_str()));
+                auto kv = ParseKeyValue(line);
+                if (kv.ok) {
+                    if (kv.key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(_wtoi(kv.val.c_str()));
+                    else if (kv.key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(_wtoi(kv.val.c_str()));
+                    else if (kv.key == L"processes") config.maxProcesses = static_cast<DWORD>(_wtoi(kv.val.c_str()));
                 }
                 continue;
             }
@@ -579,34 +574,32 @@ namespace Sandbox {
             FreeEnvironmentStringsW(envStrings);
         }
 
-        if (!config.envInherit) {
-            // Keep only essential vars + explicitly passed vars
-            std::vector<std::pair<std::wstring, std::wstring>> filtered;
-            auto isAllowed = [&](const std::wstring& name) {
-                // Always pass essential Windows vars needed by the loader
-                static const wchar_t* essential[] = {
-                    L"SYSTEMROOT", L"SYSTEMDRIVE", L"WINDIR",
-                    L"TEMP", L"TMP",
-                    L"COMSPEC", L"PATHEXT",
-                    L"LOCALAPPDATA", L"APPDATA",
-                    L"USERPROFILE", L"HOMEDRIVE", L"HOMEPATH",
-                    L"PROCESSOR_ARCHITECTURE", L"NUMBER_OF_PROCESSORS",
-                    L"OS",
-                };
-                for (auto* e : essential) {
-                    if (_wcsicmp(name.c_str(), e) == 0) return true;
-                }
-                // Check pass list
-                for (auto& allowed : config.envPass) {
-                    if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
-                }
-                return false;
+        // Keep only essential vars + explicitly passed vars
+        std::vector<std::pair<std::wstring, std::wstring>> filtered;
+        auto isAllowed = [&](const std::wstring& name) {
+            // Always pass essential Windows vars needed by the loader
+            static const wchar_t* essential[] = {
+                L"SYSTEMROOT", L"SYSTEMDRIVE", L"WINDIR",
+                L"TEMP", L"TMP",
+                L"COMSPEC", L"PATHEXT",
+                L"LOCALAPPDATA", L"APPDATA",
+                L"USERPROFILE", L"HOMEDRIVE", L"HOMEPATH",
+                L"PROCESSOR_ARCHITECTURE", L"NUMBER_OF_PROCESSORS",
+                L"OS",
             };
-            for (auto& p : env) {
-                if (isAllowed(p.first)) filtered.push_back(p);
+            for (auto* e : essential) {
+                if (_wcsicmp(name.c_str(), e) == 0) return true;
             }
-            env = std::move(filtered);
+            // Check pass list
+            for (auto& allowed : config.envPass) {
+                if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
+            }
+            return false;
+        };
+        for (auto& p : env) {
+            if (isAllowed(p.first)) filtered.push_back(p);
         }
+        env = std::move(filtered);
 
         // Sort regular vars alphabetically by name (required by Windows)
         std::sort(env.begin(), env.end(),
@@ -808,8 +801,8 @@ namespace Sandbox {
         }
 
         // When strict: opt out of ALL_APPLICATION_PACKAGES to block system folder reads
-        DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
         if (strictIsolation) {
+            DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
             if (!UpdateProcThreadAttribute(pAttrList, 0,
                 PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
                 &allAppPackagesPolicy, sizeof(allAppPackagesPolicy), nullptr, nullptr))
@@ -832,11 +825,10 @@ namespace Sandbox {
         std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
         {
             wchar_t msg[256];
-            if (envBlock.empty())
+            if (config.envInherit)
                 swprintf(msg, 256, L"ENV: inherit all");
             else
-                swprintf(msg, 256, L"ENV: filtered (inherit=%s, pass=%zu vars)",
-                         config.envInherit ? L"true" : L"false", config.envPass.size());
+                swprintf(msg, 256, L"ENV: filtered (pass=%zu vars)", config.envPass.size());
             g_logger.Log(msg);
         }
 
@@ -876,8 +868,6 @@ namespace Sandbox {
         if (!exeArgs.empty())
             cmdLine += L" " + exeArgs;
 
-        // --- Start logger before launching ---
-        // (Logger already started before grants for forensic logging)
 
         // --- Launch the target executable ---
         PROCESS_INFORMATION pi{};
@@ -908,8 +898,8 @@ namespace Sandbox {
         }
 
         // Forensic: log launch
-        if (g_logger.active) {
-            g_logger.LogConfig(config, exePath, exeArgs);
+        g_logger.LogConfig(config, exePath, exeArgs);
+        {
             wchar_t pidMsg[256];
             swprintf(pidMsg, 256, L"LAUNCH: PID %lu, cmd=\"%s\"", pi.dwProcessId, cmdLine.c_str());
             g_logger.Log(pidMsg);
@@ -977,10 +967,8 @@ namespace Sandbox {
         }
 
         // --- Write log summary and stop logger ---
-        if (g_logger.active) {
-            g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
-            g_logger.Stop();
-        }
+        g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
+        g_logger.Stop();
 
         // --- Cleanup ---
         CloseHandle(pi.hProcess);
