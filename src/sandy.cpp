@@ -6,32 +6,57 @@
 #include "framework.h"
 #include "Sandbox.h"
 
+constexpr const char* kVersion = "0.7";
+
 // -----------------------------------------------------------------------
-// Print usage help
+// Print usage help (full reference including TOML config example)
 // -----------------------------------------------------------------------
 static void PrintUsage()
 {
     printf(
-        "Sandy - AppContainer Sandbox Runner\n"
+        "Sandy - AppContainer Sandbox Runner  v%s\n"
         "\n"
         "Usage:\n"
         "  sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] -x <executable> [args...]\n"
         "\n"
         "Options:\n"
-        "  -c <path>   Path to TOML config file (access, permissions, limits)\n"
-        "  -s <toml>   Inline TOML config string (alternative to -c)\n"
-        "  -l <path>   Log file for session output, config, and exit code\n"
-        "  -x <path>   Path to executable to run sandboxed (.exe, .bat, etc.)\n"
+        "  -c <path>      Path to TOML config file (access, permissions, limits)\n"
+        "  -s <toml>      Inline TOML config string (alternative to -c)\n"
+        "  -l <path>      Log file for session output, config, and exit code\n"
+        "  -x <path>      Path to executable to run sandboxed (.exe, .bat, etc.)\n"
+        "  -v, --version  Print version and exit\n"
+        "  -h, --help     Print this help text and exit\n"
         "\n"
         "Any arguments after the executable path are forwarded to it.\n"
         "\n"
-        "Config file sections:\n"
-        "  [access]    read / write / readwrite arrays for file and folder access\n"
-        "  [allow]     Opt-in permissions (network, localhost, system_dirs, etc.)\n"
-        "  [limit]     Resource limits (timeout, memory, processes)\n"
+        "Config file reference:\n"
         "\n"
-        "See sandy_config.toml for all available options.\n"
+        "  [access]\n"
+        "  read = [\n"
+        "      'C:\\data\\config.json',             # single file\n"
+        "      'C:\\Python314',                     # entire folder (recursive)\n"
+        "  ]\n"
+        "  write = [\n"
+        "      'C:\\logs\\agent.log',                # single log file\n"
+        "      'C:\\temp\\output',                   # output folder\n"
+        "  ]\n"
+        "  readwrite = [\n"
+        "      'C:\\workspace',                     # project folder\n"
+        "      'C:\\data\\state.db',                 # database file\n"
+        "  ]\n"
+        "\n"
+        "  [allow]\n"
+        "  system_dirs = true   # read C:\\Windows, Program Files (required for most exes)\n"
+        "  # network = true     # outbound internet access\n"
+        "  # localhost = true   # loopback/localhost connections (admin required)\n"
+        "  # lan = true         # local network access\n"
+        "\n"
+        "  [limit]\n"
+        "  # timeout = 300      # kill process after N seconds\n"
+        "  # memory = 4096      # maximum memory in MB\n"
+        "  # processes = 10     # maximum concurrent child processes\n",
+        kVersion
     );
 }
 
@@ -50,6 +75,14 @@ int wmain(int argc, wchar_t* argv[])
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
 
+        if (arg == L"-v" || arg == L"--version") {
+            printf("sandy v%s\n", kVersion);
+            return 0;
+        }
+        if (arg == L"-h" || arg == L"--help") {
+            PrintUsage();
+            return 0;
+        }
         if (arg == L"-c" && i + 1 < argc) {
             configPath = argv[++i];
         }
@@ -116,3 +149,4 @@ int wmain(int argc, wchar_t* argv[])
 
     return exitCode;
 }
+

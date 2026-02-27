@@ -48,76 +48,99 @@ namespace Sandbox {
     // Child output already contains access denied messages from Python etc.
     // -----------------------------------------------------------------------
     struct SandyLogger {
-        FILE* logFile = nullptr;
+        std::wstring logFilePath;
+        bool active = false;
+
+        // ISO 8601 timestamp with millisecond precision (UTC)
+        static std::wstring Timestamp() {
+            SYSTEMTIME st;
+            GetSystemTime(&st);
+            wchar_t buf[32];
+            swprintf(buf, 32, L"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                     st.wYear, st.wMonth, st.wDay,
+                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            return buf;
+        }
 
         bool Start(const std::wstring& logPath) {
-            _wfopen_s(&logFile, logPath.c_str(), L"w");
-            if (!logFile) {
+            // Truncate/create the file and write header
+            FILE* f = nullptr;
+            _wfopen_s(&f, logPath.c_str(), L"w");
+            if (!f) {
                 fprintf(stderr, "[Warning] Could not create log file: %ls\n", logPath.c_str());
                 return false;
             }
-            fwprintf(logFile, L"=== Sandy Log ===\n");
-            fflush(logFile);
+            fwprintf(f, L"[%s] === Sandy Log ===\n", Timestamp().c_str());
+            fclose(f);
+            logFilePath = logPath;
+            active = true;
             return true;
         }
 
         void LogConfig(const SandboxConfig& config, const std::wstring& exe,
                        const std::wstring& args) {
-            if (!logFile) return;
-            fwprintf(logFile, L"\n--- Configuration ---\n");
-            fwprintf(logFile, L"Executable: %s\n", exe.c_str());
+            if (!active) return;
+            FILE* f = nullptr;
+            _wfopen_s(&f, logFilePath.c_str(), L"a");
+            if (!f) return;
+            auto ts = Timestamp();
+            fwprintf(f, L"[%s] --- Configuration ---\n", ts.c_str());
+            fwprintf(f, L"[%s] Executable: %s\n", ts.c_str(), exe.c_str());
             if (!args.empty())
-                fwprintf(logFile, L"Arguments:  %s\n", args.c_str());
+                fwprintf(f, L"[%s] Arguments:  %s\n", ts.c_str(), args.c_str());
 
-            fwprintf(logFile, L"Folders:    %zu configured\n", config.folders.size());
-            for (auto& f : config.folders) {
-                const wchar_t* tag = f.access == AccessLevel::Read ? L"R" :
-                                     f.access == AccessLevel::Write ? L"W" : L"RW";
-                fwprintf(logFile, L"  [%s]  %s\n", tag, f.path.c_str());
+            fwprintf(f, L"[%s] Folders:    %zu configured\n", ts.c_str(), config.folders.size());
+            for (auto& entry : config.folders) {
+                const wchar_t* tag = entry.access == AccessLevel::Read ? L"R" :
+                                     entry.access == AccessLevel::Write ? L"W" : L"RW";
+                fwprintf(f, L"[%s]   [%s]  %s\n", ts.c_str(), tag, entry.path.c_str());
             }
 
-            if (config.allowSystemDirs) fwprintf(logFile, L"System dirs: allowed\n");
-            if (config.allowNetwork)    fwprintf(logFile, L"Network:     allowed\n");
-            if (config.allowLocalhost)  fwprintf(logFile, L"Localhost:   allowed\n");
-            if (config.allowLan)        fwprintf(logFile, L"LAN:         allowed\n");
-            if (config.timeoutSeconds)  fwprintf(logFile, L"Timeout:     %lu seconds\n", config.timeoutSeconds);
-            if (config.memoryLimitMB)   fwprintf(logFile, L"Memory:      %zu MB\n", config.memoryLimitMB);
-            if (config.maxProcesses)    fwprintf(logFile, L"Processes:   %lu max\n", config.maxProcesses);
+            if (config.allowSystemDirs) fwprintf(f, L"[%s] System dirs: allowed\n", ts.c_str());
+            if (config.allowNetwork)    fwprintf(f, L"[%s] Network:     allowed\n", ts.c_str());
+            if (config.allowLocalhost)  fwprintf(f, L"[%s] Localhost:   allowed\n", ts.c_str());
+            if (config.allowLan)        fwprintf(f, L"[%s] LAN:         allowed\n", ts.c_str());
+            if (config.timeoutSeconds)  fwprintf(f, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
+            if (config.memoryLimitMB)   fwprintf(f, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
+            if (config.maxProcesses)    fwprintf(f, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
 
-            fwprintf(logFile, L"\n--- Process Output ---\n");
-            fflush(logFile);
+            fwprintf(f, L"[%s] --- Process Output ---\n", ts.c_str());
+            fclose(f);
         }
 
         void LogOutput(const char* data, DWORD len) {
-            if (!logFile || !data || len == 0) return;
-            // Write raw child output to log file
-            fwrite(data, 1, len, logFile);
-            fflush(logFile);
+            if (!active || !data || len == 0) return;
+            FILE* f = nullptr;
+            _wfopen_s(&f, logFilePath.c_str(), L"ab");
+            if (!f) return;
+            fwrite(data, 1, len, f);
+            fclose(f);
         }
 
         void Log(const wchar_t* msg) {
-            if (!logFile) return;
-            fwprintf(logFile, L"%s\n", msg);
-            fflush(logFile);
+            if (!active) return;
+            FILE* f = nullptr;
+            _wfopen_s(&f, logFilePath.c_str(), L"a");
+            if (!f) return;
+            fwprintf(f, L"[%s] %s\n", Timestamp().c_str(), msg);
+            fclose(f);
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
-            if (!logFile) return;
-            fwprintf(logFile, L"\n--- Process Exit ---\n");
+            if (!active) return;
+            FILE* f = nullptr;
+            _wfopen_s(&f, logFilePath.c_str(), L"a");
+            if (!f) return;
+            auto ts = Timestamp();
+            fwprintf(f, L"[%s] --- Process Exit ---\n", ts.c_str());
             if (timedOut)
-                fwprintf(logFile, L"TIMEOUT: killed after %lu seconds\n", timeoutSec);
-            fwprintf(logFile, L"Exit code: %ld (0x%08X)\n", (long)exitCode, exitCode);
-            fwprintf(logFile, L"=== Log end ===\n");
-            fflush(logFile);
+                fwprintf(f, L"[%s] TIMEOUT: killed after %lu seconds\n", ts.c_str(), timeoutSec);
+            fwprintf(f, L"[%s] Exit code: %ld (0x%08X)\n", ts.c_str(), (long)exitCode, exitCode);
+            fwprintf(f, L"[%s] === Log end ===\n", ts.c_str());
+            fclose(f);
         }
 
-        void Stop() {
-            if (logFile) {
-                fclose(logFile);
-                logFile = nullptr;
-            }
-        }
-
+        void Stop() { active = false; }
         ~SandyLogger() { Stop(); }
     };
 
@@ -651,7 +674,7 @@ namespace Sandbox {
         if (!created) {
             DWORD err = GetLastError();
             fprintf(stderr, "[Error] Could not launch: %ls (error %lu)\n", exePath.c_str(), err);
-            if (g_logger.logFile) {
+            if (g_logger.active) {
                 wchar_t msg[512];
                 swprintf(msg, 512, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
                 g_logger.Log(msg);
@@ -664,7 +687,7 @@ namespace Sandbox {
         }
 
         // Log configuration and PID
-        if (g_logger.logFile) {
+        if (g_logger.active) {
             g_logger.LogConfig(config, exePath, exeArgs);
             wchar_t pidMsg[128];
             swprintf(pidMsg, 128, L"PID: %lu", pi.dwProcessId);
@@ -725,7 +748,7 @@ namespace Sandbox {
         }
 
         // --- Write log summary and stop logger ---
-        if (g_logger.logFile) {
+        if (g_logger.active) {
             g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
             g_logger.Stop();
         }

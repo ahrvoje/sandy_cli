@@ -11,11 +11,11 @@
 
 ## What is Sandy?
 
-Sandy launches executables inside a [Windows AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) — the same isolation technology used by UWP apps and Microsoft Edge. By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
+Sandy launches executables inside a [Windows AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) — the same kernel-enforced isolation technology used by UWP apps and Microsoft Edge. By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
 
-A typical use case is running **agentic AI processes** — such as LLM-driven code agents, automation scripts, or tool-use pipelines — in a restricted environment where they can only touch the folders you explicitly allow. Sandy ensures that even if an agent misbehaves, it cannot read your documents, exfiltrate data over the network, or tamper with system files.
+Modern agentic AI workflows — LLM-driven code agents, automation scripts, tool-use pipelines — need to execute code, but running them with full user privileges is reckless, and spinning up a VM or container for every script is heavyweight. Sandy strikes a practical balance: **unprivileged sandboxing** that works on any Windows machine without admin rights, Docker, WSL, or Hyper-V. You define exactly which folders, files, and network access the process gets — everything else is blocked at the kernel level.
 
-All sandbox settings — folder access, permissions, and resource limits — are defined in a single TOML config file.
+Think of it as the lean middle ground between *running scripts completely unprotected* and *deploying a full OS-level sandbox*. Purpose-built for the agentic era, Sandy lets you run untrusted scripts with confidence in a single command.
 
 ### Key Features
 
@@ -42,6 +42,8 @@ sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
 | `-s <toml>` | Inline TOML config string (alternative to `-c`) |
 | `-l <path>` | Log file for session output, config, and exit code |
 | `-x <path>` | Path to executable to run sandboxed |
+| `-v`, `--version` | Print version and exit |
+| `-h`, `--help` | Print full help text with config reference and exit |
 
 Arguments after the executable path are forwarded to it.
 
