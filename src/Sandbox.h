@@ -258,15 +258,25 @@ namespace Sandbox {
             if (line.empty() || line[0] == L'#')
                 continue;
 
-            // Strip inline comments (outside of quotes)
+            // Strip inline comments — skip '#' inside quoted strings
             if (line.front() != L'"' && line.front() != L'\'') {
-                auto commentPos = line.find(L'#');
-                if (commentPos != std::wstring::npos) {
-                    line = line.substr(0, commentPos);
-                    end = line.find_last_not_of(L" \t");
-                    if (end != std::wstring::npos) line.resize(end + 1);
-                    else continue;
+                bool inQuote = false;
+                wchar_t quoteChar = 0;
+                for (size_t ci = 0; ci < line.size(); ci++) {
+                    if (!inQuote && (line[ci] == L'\'' || line[ci] == L'"')) {
+                        inQuote = true;
+                        quoteChar = line[ci];
+                    } else if (inQuote && line[ci] == quoteChar) {
+                        inQuote = false;
+                    } else if (!inQuote && line[ci] == L'#') {
+                        line = line.substr(0, ci);
+                        end = line.find_last_not_of(L" \t");
+                        if (end != std::wstring::npos) line.resize(end + 1);
+                        else { line.clear(); break; }
+                        break;
+                    }
                 }
+                if (line.empty()) continue;
             }
 
             // Section headers
@@ -376,9 +386,15 @@ namespace Sandbox {
             if (currentSection == Section::Limit) {
                 auto kv = ParseKeyValue(line);
                 if (kv.ok) {
-                    if (kv.key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(_wtoi(kv.val.c_str()));
-                    else if (kv.key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(_wtoi(kv.val.c_str()));
-                    else if (kv.key == L"processes") config.maxProcesses = static_cast<DWORD>(_wtoi(kv.val.c_str()));
+                    int parsed = _wtoi(kv.val.c_str());
+                    if (parsed <= 0 && kv.val != L"0") {
+                        fprintf(stderr, "[Warning] Invalid limit value: %ls = %ls\n",
+                                kv.key.c_str(), kv.val.c_str());
+                    } else {
+                        if (kv.key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(parsed);
+                        else if (kv.key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(parsed);
+                        else if (kv.key == L"processes") config.maxProcesses = static_cast<DWORD>(parsed);
+                    }
                 }
                 continue;
             }
@@ -483,9 +499,8 @@ namespace Sandbox {
                 if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
                         pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
                         &sddl, nullptr)) {
-                    wchar_t msg[2048];
-                    swprintf(msg, 2048, L"GRANT_SDDL: %s -> %s", folder.c_str(), sddl);
-                    g_logger.Log(msg);
+                    std::wstring logMsg = L"GRANT_SDDL: " + folder + L" -> " + sddl;
+                    g_logger.Log(logMsg.c_str());
                     LocalFree(sddl);
                 }
                 LocalFree(pResultSD);
@@ -822,9 +837,8 @@ namespace Sandbox {
                 // Log capability SID for ETW correlation
                 LPWSTR capSidStr = nullptr;
                 if (ConvertSidToStringSidW(pNetSid, &capSidStr)) {
-                    wchar_t capMsg[256];
-                    swprintf(capMsg, 256, L"CAPABILITY: INTERNET_CLIENT SID=%s", capSidStr);
-                    g_logger.Log(capMsg);
+                    std::wstring capMsg = std::wstring(L"CAPABILITY: INTERNET_CLIENT SID=") + capSidStr;
+                    g_logger.Log(capMsg.c_str());
                     LocalFree(capSidStr);
                 } else {
                     g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
@@ -845,9 +859,8 @@ namespace Sandbox {
                 capCount++;
                 LPWSTR capSidStr = nullptr;
                 if (ConvertSidToStringSidW(pLanSid, &capSidStr)) {
-                    wchar_t capMsg[256];
-                    swprintf(capMsg, 256, L"CAPABILITY: PRIVATE_NETWORK SID=%s", capSidStr);
-                    g_logger.Log(capMsg);
+                    std::wstring capMsg = std::wstring(L"CAPABILITY: PRIVATE_NETWORK SID=") + capSidStr;
+                    g_logger.Log(capMsg.c_str());
                     LocalFree(capSidStr);
                 } else {
                     g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
@@ -891,8 +904,8 @@ namespace Sandbox {
         }
 
         // When strict: opt out of ALL_APPLICATION_PACKAGES to block system folder reads
+        DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
         if (strictIsolation) {
-            DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
             if (!UpdateProcThreadAttribute(pAttrList, 0,
                 PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
                 &allAppPackagesPolicy, sizeof(allAppPackagesPolicy), nullptr, nullptr))
