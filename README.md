@@ -172,43 +172,6 @@ sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 
 ---
 
-## Logging
-
-Use `-l <path>` to capture the full sandbox session — configuration, child process output, and exit status — into a log file:
-
-```
-sandy.exe -c config.toml -l session.log -x python.exe script.py
-```
-
-The log file contains:
-
-```
-=== Sandy Log ===
-
---- Configuration ---
-Executable: C:\Python314\python.exe
-Arguments:  script.py
-Folders:    3 configured
-  [R]  C:\Python314
-  [RW] C:\workspace
-  [W]  C:\logs
-Network:     allowed
-Timeout:     300 seconds
-Memory:      2048 MB
-
---- Process Output ---
-PID: 12345
-... (full child stdout/stderr) ...
-
---- Process Exit ---
-Exit code: 0 (0x00000000)
-=== Log end ===
-```
-
-This is useful for post-mortem analysis — access denied errors (e.g. Python's `PermissionError`) appear in the process output section alongside all other child output.
-
----
-
 ## Demo
 
 Full test run showing Sandy's isolation in action — 35 tests, all passing:
