@@ -39,6 +39,9 @@ namespace Sandbox {
 
         // Logging (set via -l CLI flag, not TOML)
         std::wstring logPath;
+
+        // Quiet mode (set via -q CLI flag, not TOML)
+        bool quiet = false;
     };
 
     // -----------------------------------------------------------------------
@@ -520,6 +523,7 @@ namespace Sandbox {
         }
 
         // --- Print config summary (to stderr, keeping stdout clean) ---
+        if (!config.quiet) {
         fprintf(stderr, "Sandy - AppContainer Sandbox\n");
         fprintf(stderr, "Executable: %ls\n", exePath.c_str());
         if (!exeArgs.empty())
@@ -544,6 +548,7 @@ namespace Sandbox {
             fprintf(stderr, "Memory:     %zu MB\n", config.memoryLimitMB);
         if (config.maxProcesses > 0)
             fprintf(stderr, "Processes:  %lu max\n", config.maxProcesses);
+        }
 
         // --- Prepare capabilities ---
         SID_AND_ATTRIBUTES caps[2] = {};

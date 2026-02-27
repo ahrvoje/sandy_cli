@@ -17,18 +17,20 @@ static void PrintUsage()
         "Sandy - AppContainer Sandbox Runner  v%s\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]\n"
-        "  sandy.exe -s \"<toml>\"      [-l <logfile>] -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-l <logfile>] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-q] -x <executable> [args...]\n"
         "\n"
         "Options:\n"
-        "  -c <path>      Path to TOML config file (access, permissions, limits)\n"
-        "  -s <toml>      Inline TOML config string (alternative to -c)\n"
-        "  -l <path>      Log file for session output, config, and exit code\n"
-        "  -x <path>      Path to executable to run sandboxed (.exe, .bat, etc.)\n"
-        "  -v, --version  Print version and exit\n"
-        "  -h, --help     Print this help text and exit\n"
+        "  -c, --config <path>   Path to TOML config file\n"
+        "  -s, --string <toml>   Inline TOML config string (alternative to -c)\n"
+        "  -l, --log <path>      Log file for session output, config, and exit code\n"
+        "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
+        "  -q, --quiet           Suppress the config banner on stderr\n"
+        "  -v, --version         Print version and exit\n"
+        "  -h, --help            Print this help text and exit\n"
+        "  --                    End of options (all following args passed to executable)\n"
         "\n"
-        "Any arguments after the executable path are forwarded to it.\n"
+        "Arguments after -x <executable> (or after --) are forwarded to it.\n"
         "\n"
         "Config file reference:\n"
         "\n"
@@ -60,6 +62,21 @@ static void PrintUsage()
     );
 }
 
+// Helper: collect all remaining argv[start..argc-1] as forwarded args
+static std::wstring CollectArgs(int start, int argc, wchar_t* argv[])
+{
+    std::wstring args;
+    for (int j = start; j < argc; j++) {
+        if (!args.empty()) args += L" ";
+        std::wstring a = argv[j];
+        if (a.find(L' ') != std::wstring::npos && a.front() != L'"')
+            args += L"\"" + a + L"\"";
+        else
+            args += a;
+    }
+    return args;
+}
+
 // -----------------------------------------------------------------------
 // Entry point
 // -----------------------------------------------------------------------
@@ -70,6 +87,7 @@ int wmain(int argc, wchar_t* argv[])
     std::wstring logPath;
     std::wstring exePath;
     std::wstring exeArgs;
+    bool quiet = false;
 
     // --- Parse command-line arguments ---
     for (int i = 1; i < argc; i++) {
@@ -83,29 +101,30 @@ int wmain(int argc, wchar_t* argv[])
             PrintUsage();
             return 0;
         }
-        if (arg == L"-c" && i + 1 < argc) {
+        if (arg == L"-q" || arg == L"--quiet") {
+            quiet = true;
+        }
+        else if ((arg == L"-c" || arg == L"--config") && i + 1 < argc) {
             configPath = argv[++i];
         }
-        else if (arg == L"-s" && i + 1 < argc) {
+        else if ((arg == L"-s" || arg == L"--string") && i + 1 < argc) {
             configString = argv[++i];
         }
-        else if (arg == L"-l" && i + 1 < argc) {
+        else if ((arg == L"-l" || arg == L"--log") && i + 1 < argc) {
             logPath = argv[++i];
         }
-        else if (arg == L"-x" && i + 1 < argc) {
+        else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             exePath = argv[++i];
-            // Everything after -x <exe> is forwarded as arguments
-            for (int j = i + 1; j < argc; j++) {
-                if (!exeArgs.empty()) exeArgs += L" ";
-                // Quote arguments that contain spaces
-                std::wstring a = argv[j];
-                if (a.find(L' ') != std::wstring::npos && a.front() != L'"') {
-                    exeArgs += L"\"" + a + L"\"";
-                } else {
-                    exeArgs += a;
-                }
+            exeArgs = CollectArgs(i + 1, argc, argv);
+            break; // -x/--exec consumes all remaining args
+        }
+        else if (arg == L"--") {
+            // End of options: next arg is exe, rest are its arguments
+            if (i + 1 < argc) {
+                exePath = argv[++i];
+                exeArgs = CollectArgs(i + 1, argc, argv);
             }
-            break; // -x consumes all remaining args
+            break;
         }
         else {
             fprintf(stderr, "Unknown option: %ls\n\n", arg.c_str());
@@ -141,6 +160,7 @@ int wmain(int argc, wchar_t* argv[])
         config = Sandbox::LoadConfig(configPath);
     }
     config.logPath = logPath;
+    config.quiet = quiet;
 
     // --- Run sandboxed ---
     int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs);
