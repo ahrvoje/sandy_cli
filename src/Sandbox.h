@@ -471,7 +471,43 @@ namespace Sandbox {
             const_cast<LPWSTR>(folder.c_str()), SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
         LocalFree(pNewDacl);
+
+        // Log SDDL of the resulting DACL for forensic analysis
+        if (rc == ERROR_SUCCESS) {
+            PACL pResultDacl = nullptr;
+            PSECURITY_DESCRIPTOR pResultSD = nullptr;
+            if (GetNamedSecurityInfoW(folder.c_str(), SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                    &pResultDacl, nullptr, &pResultSD) == ERROR_SUCCESS) {
+                LPWSTR sddl = nullptr;
+                if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
+                        &sddl, nullptr)) {
+                    wchar_t msg[2048];
+                    swprintf(msg, 2048, L"GRANT_SDDL: %s -> %s", folder.c_str(), sddl);
+                    g_logger.Log(msg);
+                    LocalFree(sddl);
+                }
+                LocalFree(pResultSD);
+            }
+        }
+
         return rc == ERROR_SUCCESS;
+    }
+
+    // -----------------------------------------------------------------------
+    // Get the permission mask for an access level (for forensic logging)
+    // -----------------------------------------------------------------------
+    inline DWORD AccessMask(AccessLevel level) {
+        switch (level) {
+        case AccessLevel::Read:    return FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        case AccessLevel::Write:   return FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        case AccessLevel::Execute: return FILE_GENERIC_EXECUTE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        case AccessLevel::Append:  return FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        case AccessLevel::Delete:  return DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        case AccessLevel::All:     return FILE_ALL_ACCESS;
+        default:                   return 0;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -660,11 +696,47 @@ namespace Sandbox {
             g_logger.Start(config.logPath);
         }
 
+        // --- Forensic: Sandy identity ---
+        {
+            wchar_t msg[512];
+            swprintf(msg, 512, L"SANDY: PID %lu", GetCurrentProcessId());
+            g_logger.Log(msg);
+
+            // Determine integrity level
+            HANDLE hToken = nullptr;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+                DWORD ilSize = 0;
+                GetTokenInformation(hToken, TokenIntegrityLevel, nullptr, 0, &ilSize);
+                if (ilSize > 0) {
+                    std::vector<BYTE> ilBuf(ilSize);
+                    auto* pTIL = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(ilBuf.data());
+                    if (GetTokenInformation(hToken, TokenIntegrityLevel, pTIL, ilSize, &ilSize)) {
+                        DWORD il = *GetSidSubAuthority(pTIL->Label.Sid,
+                                    *GetSidSubAuthorityCount(pTIL->Label.Sid) - 1);
+                        const wchar_t* ilName = il >= SECURITY_MANDATORY_HIGH_RID ? L"High (elevated)" :
+                                                il >= SECURITY_MANDATORY_MEDIUM_RID ? L"Medium" : L"Low";
+                        swprintf(msg, 512, L"SANDY: integrity=%s (0x%04X)", ilName, il);
+                        g_logger.Log(msg);
+                    }
+                }
+                CloseHandle(hToken);
+            }
+        }
+
         // --- Forensic: container and working directory ---
         {
             wchar_t msg[512];
             swprintf(msg, 512, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
             g_logger.Log(msg);
+
+            // Log container SID string for ETW correlation
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(pContainerSid, &sidStr)) {
+                swprintf(msg, 512, L"CONTAINER_SID: %s", sidStr);
+                g_logger.Log(msg);
+                LocalFree(sidStr);
+            }
+
             swprintf(msg, 512, L"WORKDIR: %s", exeFolder.c_str());
             g_logger.Log(msg);
         }
@@ -677,10 +749,11 @@ namespace Sandbox {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
             }
-            // Forensic log each grant
+            // Forensic log each grant with permission mask
             wchar_t msg[512];
-            swprintf(msg, 512, L"GRANT: [%s] %s -> %s",
-                     AccessTag(entry.access), entry.path.c_str(), ok ? L"OK" : L"FAILED");
+            swprintf(msg, 512, L"GRANT: [%s] %s -> %s (mask=0x%08X)",
+                     AccessTag(entry.access), entry.path.c_str(),
+                     ok ? L"OK" : L"FAILED", AccessMask(entry.access));
             g_logger.Log(msg);
         }
         if (grantFailed)
@@ -746,7 +819,16 @@ namespace Sandbox {
                 caps[capCount].Sid = pNetSid;
                 caps[capCount].Attributes = SE_GROUP_ENABLED;
                 capCount++;
-                g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
+                // Log capability SID for ETW correlation
+                LPWSTR capSidStr = nullptr;
+                if (ConvertSidToStringSidW(pNetSid, &capSidStr)) {
+                    wchar_t capMsg[256];
+                    swprintf(capMsg, 256, L"CAPABILITY: INTERNET_CLIENT SID=%s", capSidStr);
+                    g_logger.Log(capMsg);
+                    LocalFree(capSidStr);
+                } else {
+                    g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
+                }
             }
         }
 
@@ -761,7 +843,15 @@ namespace Sandbox {
                 caps[capCount].Sid = pLanSid;
                 caps[capCount].Attributes = SE_GROUP_ENABLED;
                 capCount++;
-                g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
+                LPWSTR capSidStr = nullptr;
+                if (ConvertSidToStringSidW(pLanSid, &capSidStr)) {
+                    wchar_t capMsg[256];
+                    swprintf(capMsg, 256, L"CAPABILITY: PRIVATE_NETWORK SID=%s", capSidStr);
+                    g_logger.Log(capMsg);
+                    LocalFree(capSidStr);
+                } else {
+                    g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
+                }
             }
         }
 
@@ -830,6 +920,17 @@ namespace Sandbox {
             else
                 swprintf(msg, 256, L"ENV: filtered (pass=%zu vars)", config.envPass.size());
             g_logger.Log(msg);
+
+            // Log individual filtered env var names (not values) for forensic analysis
+            if (!config.envInherit) {
+                // Log essential vars that are always passed
+                g_logger.Log(L"ENV_ESSENTIAL: SYSTEMROOT SYSTEMDRIVE WINDIR TEMP TMP COMSPEC PATHEXT LOCALAPPDATA APPDATA USERPROFILE HOMEDRIVE HOMEPATH PROCESSOR_ARCHITECTURE NUMBER_OF_PROCESSORS OS");
+                if (!config.envPass.empty()) {
+                    std::wstring passVars = L"ENV_PASS:";
+                    for (auto& v : config.envPass) passVars += L" " + v;
+                    g_logger.Log(passVars.c_str());
+                }
+            }
         }
 
         // --- Create pipes for child stdout/stderr ---
@@ -845,6 +946,14 @@ namespace Sandbox {
             return 1;
         }
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+        // Log pipe handles for ETW I/O correlation
+        {
+            wchar_t msg[256];
+            swprintf(msg, 256, L"PIPE: stdout/stderr read=0x%p write=0x%p",
+                     (void*)hReadPipe, (void*)hWritePipe);
+            g_logger.Log(msg);
+        }
 
         // --- Stdin handle ---
         HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
@@ -885,13 +994,18 @@ namespace Sandbox {
         if (!created) {
             DWORD err = GetLastError();
             fprintf(stderr, "[Error] Could not launch: %ls (error %lu)\n", exePath.c_str(), err);
-            if (g_logger.active) {
-                wchar_t msg[512];
-                swprintf(msg, 512, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
-                g_logger.Log(msg);
-                g_logger.LogSummary(err, false, 0);
-                g_logger.Stop();
-            }
+            // Enhanced failure diagnostics for post-mortem
+            wchar_t msg[1024];
+            swprintf(msg, 1024, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
+            g_logger.Log(msg);
+            swprintf(msg, 1024, L"LAUNCH_DIAG: cmdline=%zu chars, envBlock=%zu wchars (%s)",
+                     cmdLine.size(), envBlock.size(),
+                     envBlock.empty() ? L"inherited" : L"custom");
+            g_logger.Log(msg);
+            swprintf(msg, 1024, L"LAUNCH_DIAG: workdir=%s", exeFolder.c_str());
+            g_logger.Log(msg);
+            g_logger.LogSummary(err, false, 0);
+            g_logger.Stop();
             CloseHandle(hReadPipe);
             cleanup();
             return 1;
