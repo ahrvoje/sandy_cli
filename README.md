@@ -83,8 +83,6 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # network = true     # outbound internet access
 # localhost = true   # loopback/localhost connections                      (admin)
 # lan = true         # local network access
-# registry = true    # access user registry keys
-# pipes = true       # access named pipes
 # stdin = false      # block stdin (redirect to NUL)
 ```
 
@@ -169,6 +167,24 @@ memory = 2048
 ```
 sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 ```
+
+---
+
+## AppContainer Limitations
+
+Even with the most permissive config, the following kernel-level restrictions **cannot** be overridden — they are enforced by Windows, not by Sandy:
+
+| Restriction | Reason |
+|---|---|
+| **Process identity** | Token carries an AppContainer SID — callers see a different principal |
+| **Integrity level** | AppContainer runs below Medium — cannot write to Medium+ mandatory-label objects |
+| **COM/RPC servers** | Many out-of-process COM servers reject AppContainer callers |
+| **Registry** | Private container hive is read/write; most system keys readable; writes to HKLM and HKCU blocked by mandatory integrity |
+| **Named pipes** | Accessible only if the pipe creator set `ALL_APPLICATION_PACKAGES` or the specific container SID in the pipe's DACL |
+| **Elevation** | Cannot escalate privileges from within an AppContainer |
+
+> [!NOTE]
+> This is by design. Sandy provides a lean middle ground between running unprotected and deploying a full OS sandbox. If you need truly unsandboxed execution, run the process directly without Sandy.
 
 ---
 

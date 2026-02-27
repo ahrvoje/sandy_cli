@@ -44,8 +44,7 @@ namespace Sandbox {
         bool allowLocalhost  = false;
         bool allowLan        = false;
         bool allowSystemDirs = false;
-        bool allowRegistry   = false;
-        bool allowPipes      = false;
+
         bool allowStdin      = true;   // default: inherit stdin
 
         // [environment] — env block control
@@ -121,8 +120,7 @@ namespace Sandbox {
             if (config.allowNetwork)    fwprintf(f, L"[%s] Network:     allowed\n", ts.c_str());
             if (config.allowLocalhost)  fwprintf(f, L"[%s] Localhost:   allowed\n", ts.c_str());
             if (config.allowLan)        fwprintf(f, L"[%s] LAN:         allowed\n", ts.c_str());
-            if (config.allowRegistry)   fwprintf(f, L"[%s] Registry:    allowed\n", ts.c_str());
-            if (config.allowPipes)      fwprintf(f, L"[%s] Pipes:       allowed\n", ts.c_str());
+
             if (!config.allowStdin)     fwprintf(f, L"[%s] Stdin:       blocked\n", ts.c_str());
             if (!config.envInherit)     fwprintf(f, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
             if (config.timeoutSeconds)  fwprintf(f, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
@@ -346,8 +344,6 @@ namespace Sandbox {
                     else if (kv.key == L"localhost")    config.allowLocalhost = enabled;
                     else if (kv.key == L"lan")          config.allowLan = enabled;
                     else if (kv.key == L"system_dirs")  config.allowSystemDirs = enabled;
-                    else if (kv.key == L"registry")     config.allowRegistry = enabled;
-                    else if (kv.key == L"pipes")        config.allowPipes = enabled;
                     else if (kv.key == L"stdin")        config.allowStdin = enabled;
                 }
                 continue;
@@ -801,10 +797,6 @@ namespace Sandbox {
                                             config.allowLan     ? "LAN ONLY" : "BLOCKED");
         if (config.allowLocalhost)
             fprintf(stderr, "Localhost:  ALLOWED\n");
-        if (config.allowRegistry)
-            fprintf(stderr, "Registry:   ALLOWED\n");
-        if (config.allowPipes)
-            fprintf(stderr, "Pipes:      ALLOWED\n");
         if (!config.allowStdin)
             fprintf(stderr, "Stdin:      BLOCKED\n");
         if (!config.envInherit)
@@ -919,8 +911,6 @@ namespace Sandbox {
         }
 
         // --- Forensic: log allow flags ---
-        if (config.allowRegistry)  g_logger.Log(L"ALLOW: registry");
-        if (config.allowPipes)     g_logger.Log(L"ALLOW: pipes");
         if (!config.allowStdin)    g_logger.Log(L"STDIN: blocked (NUL)");
         else                       g_logger.Log(L"STDIN: inherited");
 

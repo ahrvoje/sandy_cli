@@ -53,8 +53,6 @@ static void PrintUsage()
         "  # network = true     # outbound internet access\n"
         "  # localhost = true   # loopback connections (admin required)\n"
         "  # lan = true         # local network access\n"
-        "  # registry = true    # access user registry keys\n"
-        "  # pipes = true       # access named pipes\n"
         "  # stdin = false      # block stdin (redirect to NUL)\n"
         "\n"
         "  [environment]\n"
@@ -68,7 +66,20 @@ static void PrintUsage()
         "  [limit]\n"
         "  # timeout = 300      # kill process after N seconds\n"
         "  # memory = 4096      # maximum memory in MB\n"
-        "  # processes = 10     # maximum concurrent child processes\n",
+        "  # processes = 10     # maximum concurrent child processes\n"
+        "\n"
+        "AppContainer limitations (kernel-enforced, cannot be overridden):\n"
+        "  - Process runs at Low integrity (0x1000) with a unique AppContainer SID.\n"
+        "    Windows integrity levels:  High (0x3000) = admin/elevated processes\n"
+        "                               Medium (0x2000) = normal user apps (Explorer, cmd)\n"
+        "                               Low (0x1000) = AppContainer, Protected Mode IE\n"
+        "    Low cannot write to Medium+ objects unless explicitly granted via [access].\n"
+        "    User profile, HKCU, temp — all blocked by default but grantable per-folder.\n"
+        "  - Cannot elevate privileges\n"
+        "  - Registry: private container hive is read/write, most system keys are\n"
+        "    readable, writes to HKLM and HKCU are blocked by mandatory integrity\n"
+        "  - Named pipes: accessible only if the pipe creator set ALL_APPLICATION_PACKAGES\n"
+        "    or the specific AppContainer SID in the pipe's DACL\n",
         kVersion
     );
 }
