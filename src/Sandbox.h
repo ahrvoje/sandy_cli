@@ -13,12 +13,25 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Folder access level
     // -----------------------------------------------------------------------
-    enum class AccessLevel { Read, Write, ReadWrite };
+    enum class AccessLevel { Read, Write, Execute, Append, Delete, All };
 
     struct FolderEntry {
         std::wstring path;
         AccessLevel  access;
     };
+
+    // Human-readable tag for an access level
+    inline const wchar_t* AccessTag(AccessLevel level) {
+        switch (level) {
+        case AccessLevel::Read:    return L"R";
+        case AccessLevel::Write:   return L"W";
+        case AccessLevel::Execute: return L"X";
+        case AccessLevel::Append:  return L"A";
+        case AccessLevel::Delete:  return L"D";
+        case AccessLevel::All:     return L"ALL";
+        default:                   return L"?";
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Full sandbox configuration (parsed from TOML)
@@ -31,6 +44,13 @@ namespace Sandbox {
         bool allowLocalhost  = false;
         bool allowLan        = false;
         bool allowSystemDirs = false;
+        bool allowRegistry   = false;
+        bool allowPipes      = false;
+        bool allowStdin      = true;   // default: inherit stdin
+
+        // [environment] — env block control
+        bool envInherit = true;
+        std::vector<std::wstring> envPass;
 
         // [limit] — resource constraints (0 = unlimited)
         DWORD  timeoutSeconds = 0;
@@ -94,15 +114,17 @@ namespace Sandbox {
 
             fwprintf(f, L"[%s] Folders:    %zu configured\n", ts.c_str(), config.folders.size());
             for (auto& entry : config.folders) {
-                const wchar_t* tag = entry.access == AccessLevel::Read ? L"R" :
-                                     entry.access == AccessLevel::Write ? L"W" : L"RW";
-                fwprintf(f, L"[%s]   [%s]  %s\n", ts.c_str(), tag, entry.path.c_str());
+                fwprintf(f, L"[%s]   [%s]  %s\n", ts.c_str(), AccessTag(entry.access), entry.path.c_str());
             }
 
             if (config.allowSystemDirs) fwprintf(f, L"[%s] System dirs: allowed\n", ts.c_str());
             if (config.allowNetwork)    fwprintf(f, L"[%s] Network:     allowed\n", ts.c_str());
             if (config.allowLocalhost)  fwprintf(f, L"[%s] Localhost:   allowed\n", ts.c_str());
             if (config.allowLan)        fwprintf(f, L"[%s] LAN:         allowed\n", ts.c_str());
+            if (config.allowRegistry)   fwprintf(f, L"[%s] Registry:    allowed\n", ts.c_str());
+            if (config.allowPipes)      fwprintf(f, L"[%s] Pipes:       allowed\n", ts.c_str());
+            if (!config.allowStdin)     fwprintf(f, L"[%s] Stdin:       blocked\n", ts.c_str());
+            if (!config.envInherit)     fwprintf(f, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
             if (config.timeoutSeconds)  fwprintf(f, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
             if (config.memoryLimitMB)   fwprintf(f, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
             if (config.maxProcesses)    fwprintf(f, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
@@ -190,14 +212,15 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Parse TOML configuration string
     //
-    //   [access]  read / write / readwrite arrays for folder/file access
-    //   [allow]   opt-in permissions
-    //   [limit]   resource constraints
+    //   [access]      read / write / execute / append / delete / all
+    //   [allow]       opt-in permissions
+    //   [environment] env block control
+    //   [limit]       resource constraints
     // -----------------------------------------------------------------------
     inline SandboxConfig ParseConfig(const std::wstring& content)
     {
         SandboxConfig config;
-        enum class Section { None, Folders, Allow, Limit };
+        enum class Section { None, Folders, Allow, Limit, Environment };
         Section currentSection = Section::None;
 
         std::wstringstream ss(content);
@@ -231,17 +254,21 @@ namespace Sandbox {
             }
 
             // Section headers
-            if (line == L"[access]")    { currentSection = Section::Folders;   continue; }
-            if (line == L"[allow]")     { currentSection = Section::Allow;     continue; }
-            if (line == L"[limit]")     { currentSection = Section::Limit;     continue; }
+            if (line == L"[access]")      { currentSection = Section::Folders;     continue; }
+            if (line == L"[allow]")       { currentSection = Section::Allow;       continue; }
+            if (line == L"[limit]")       { currentSection = Section::Limit;       continue; }
+            if (line == L"[environment]") { currentSection = Section::Environment; continue; }
 
             // [access] — key = [ 'path', ... ] arrays
             if (currentSection == Section::Folders) {
                 // Detect which access level from key prefix
-                AccessLevel level = AccessLevel::ReadWrite;
-                if (line.find(L"readwrite") == 0) level = AccessLevel::ReadWrite;
-                else if (line.find(L"read") == 0)  level = AccessLevel::Read;
-                else if (line.find(L"write") == 0) level = AccessLevel::Write;
+                AccessLevel level = AccessLevel::All;
+                if (line.find(L"execute") == 0)  level = AccessLevel::Execute;
+                else if (line.find(L"append") == 0)   level = AccessLevel::Append;
+                else if (line.find(L"delete") == 0)   level = AccessLevel::Delete;
+                else if (line.find(L"all") == 0)      level = AccessLevel::All;
+                else if (line.find(L"read") == 0)     level = AccessLevel::Read;
+                else if (line.find(L"write") == 0)    level = AccessLevel::Write;
 
                 // Extract all quoted paths from this and continuation lines
                 // Handles both 'literal' and "basic" TOML strings
@@ -300,6 +327,45 @@ namespace Sandbox {
                     else if (key == L"localhost")    config.allowLocalhost = enabled;
                     else if (key == L"lan")          config.allowLan = enabled;
                     else if (key == L"system_dirs")  config.allowSystemDirs = enabled;
+                    else if (key == L"registry")     config.allowRegistry = enabled;
+                    else if (key == L"pipes")        config.allowPipes = enabled;
+                    else if (key == L"stdin")        config.allowStdin = enabled;
+                }
+                continue;
+            }
+
+            // [environment] — inherit and pass entries
+            if (currentSection == Section::Environment) {
+                auto eq = line.find(L'=');
+                if (eq != std::wstring::npos) {
+                    std::wstring key = line.substr(0, eq);
+                    std::wstring val = line.substr(eq + 1);
+                    auto kt = key.find_last_not_of(L" \t");
+                    if (kt != std::wstring::npos) key.resize(kt + 1);
+                    auto vs = val.find_first_not_of(L" \t");
+                    if (vs != std::wstring::npos) val = val.substr(vs);
+
+                    if (key == L"inherit") {
+                        config.envInherit = (val == L"true");
+                    }
+                    else if (key == L"pass") {
+                        // Extract quoted var names from array
+                        size_t pos = 0;
+                        while (pos < val.size()) {
+                            auto sq = val.find(L'\'', pos);
+                            auto dq = val.find(L'"', pos);
+                            if (sq == std::wstring::npos && dq == std::wstring::npos) break;
+                            bool isSingle = (sq != std::wstring::npos && (dq == std::wstring::npos || sq < dq));
+                            wchar_t quote = isSingle ? L'\'' : L'"';
+                            size_t qstart = isSingle ? sq : dq;
+                            auto qend = val.find(quote, qstart + 1);
+                            if (qend == std::wstring::npos) break;
+                            std::wstring varName = val.substr(qstart + 1, qend - qstart - 1);
+                            if (!varName.empty())
+                                config.envPass.push_back(varName);
+                            pos = qend + 1;
+                        }
+                    }
                 }
                 continue;
             }
@@ -370,7 +436,16 @@ namespace Sandbox {
         case AccessLevel::Write:
             permissions = FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
             break;
-        case AccessLevel::ReadWrite:
+        case AccessLevel::Execute:
+            permissions = FILE_GENERIC_EXECUTE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+            break;
+        case AccessLevel::Append:
+            permissions = FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+            break;
+        case AccessLevel::Delete:
+            permissions = DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+            break;
+        case AccessLevel::All:
             permissions = FILE_ALL_ACCESS;
             break;
         }
@@ -474,6 +549,61 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Build a filtered environment block for CreateProcessW
+    // -----------------------------------------------------------------------
+    inline std::vector<wchar_t> BuildEnvironmentBlock(const SandboxConfig& config)
+    {
+        std::vector<wchar_t> block;
+
+        if (config.envInherit && config.envPass.empty())
+            return block;  // empty = pass nullptr to CreateProcessW (inherit all)
+
+        // Collect environment variables
+        std::vector<std::pair<std::wstring, std::wstring>> env;
+
+        LPWCH envStrings = GetEnvironmentStringsW();
+        if (envStrings) {
+            for (LPCWSTR p = envStrings; *p; p += wcslen(p) + 1) {
+                std::wstring entry(p);
+                auto eq = entry.find(L'=');
+                if (eq != std::wstring::npos && eq > 0)
+                    env.push_back({ entry.substr(0, eq), entry.substr(eq + 1) });
+            }
+            FreeEnvironmentStringsW(envStrings);
+        }
+
+        if (!config.envInherit) {
+            // Keep only essential vars + explicitly passed vars
+            std::vector<std::pair<std::wstring, std::wstring>> filtered;
+            auto isAllowed = [&](const std::wstring& name) {
+                // Always pass essential Windows vars
+                if (_wcsicmp(name.c_str(), L"SYSTEMROOT") == 0) return true;
+                if (_wcsicmp(name.c_str(), L"SYSTEMDRIVE") == 0) return true;
+                if (_wcsicmp(name.c_str(), L"TEMP") == 0) return true;
+                if (_wcsicmp(name.c_str(), L"TMP") == 0) return true;
+                // Check pass list
+                for (auto& allowed : config.envPass) {
+                    if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
+                }
+                return false;
+            };
+            for (auto& p : env) {
+                if (isAllowed(p.first)) filtered.push_back(p);
+            }
+            env = std::move(filtered);
+        }
+
+        // Serialize: KEY=VALUE\0KEY=VALUE\0\0
+        for (auto& p : env) {
+            std::wstring line = p.first + L"=" + p.second;
+            block.insert(block.end(), line.begin(), line.end());
+            block.push_back(L'\0');
+        }
+        block.push_back(L'\0');
+        return block;
+    }
+
+    // -----------------------------------------------------------------------
     // Launch an executable inside an AppContainer sandbox.
     // All behavior is controlled by the SandboxConfig.
     // -----------------------------------------------------------------------
@@ -488,8 +618,11 @@ namespace Sandbox {
             L"Sandboxed environment for running executables",
             nullptr, 0, &pContainerSid);
 
-        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS)
+        bool containerCreated = true;
+        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
             hr = DeriveAppContainerSidFromAppContainerName(kContainerName, &pContainerSid);
+            containerCreated = false;
+        }
 
         if (FAILED(hr) || !pContainerSid) {
             fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
@@ -503,23 +636,45 @@ namespace Sandbox {
             return 1;
         }
 
+        // --- Start logger early for forensic logging ---
+        if (!config.logPath.empty()) {
+            g_logger.Start(config.logPath);
+        }
+
+        // --- Forensic: container and working directory ---
+        {
+            wchar_t msg[512];
+            swprintf(msg, 512, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
+            g_logger.Log(msg);
+            swprintf(msg, 512, L"WORKDIR: %s", exeFolder.c_str());
+            g_logger.Log(msg);
+        }
+
         // --- Grant configured folder access ---
         bool grantFailed = false;
         for (const auto& entry : config.folders) {
-            if (!GrantFolderAccess(pContainerSid, entry.path, entry.access)) {
+            bool ok = GrantFolderAccess(pContainerSid, entry.path, entry.access);
+            if (!ok) {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
             }
+            // Forensic log each grant
+            wchar_t msg[512];
+            swprintf(msg, 512, L"GRANT: [%s] %s -> %s",
+                     AccessTag(entry.access), entry.path.c_str(), ok ? L"OK" : L"FAILED");
+            g_logger.Log(msg);
         }
         if (grantFailed)
             fprintf(stderr, "          Run as Administrator to modify folder ACLs.\n");
 
         // --- Enable loopback (localhost) if requested ---
         if (config.allowLocalhost) {
-            if (!EnableLoopback()) {
+            bool ok = EnableLoopback();
+            if (!ok) {
                 fprintf(stderr, "[Warning] Could not enable localhost access.\n");
                 fprintf(stderr, "          Loopback exemption requires Administrator.\n");
             }
+            g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
         }
 
         // --- Print config summary (to stderr, keeping stdout clean) ---
@@ -530,10 +685,7 @@ namespace Sandbox {
             fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
         fprintf(stderr, "Folders:    %zu configured\n", config.folders.size());
         for (const auto& e : config.folders) {
-            const char* tag = "[RW]";
-            if (e.access == AccessLevel::Read) tag = "[R] ";
-            else if (e.access == AccessLevel::Write) tag = "[W] ";
-            fprintf(stderr, "  %s %ls\n", tag, e.path.c_str());
+            fprintf(stderr, "  [%ls] %ls\n", AccessTag(e.access), e.path.c_str());
         }
         fprintf(stderr, "---\n");
         if (!config.allowSystemDirs)
@@ -542,6 +694,14 @@ namespace Sandbox {
                                             config.allowLan     ? "LAN ONLY" : "BLOCKED");
         if (config.allowLocalhost)
             fprintf(stderr, "Localhost:  ALLOWED\n");
+        if (config.allowRegistry)
+            fprintf(stderr, "Registry:   ALLOWED\n");
+        if (config.allowPipes)
+            fprintf(stderr, "Pipes:      ALLOWED\n");
+        if (!config.allowStdin)
+            fprintf(stderr, "Stdin:      BLOCKED\n");
+        if (!config.envInherit)
+            fprintf(stderr, "Env:        filtered (%zu pass vars)\n", config.envPass.size());
         if (config.timeoutSeconds > 0)
             fprintf(stderr, "Timeout:    %lu seconds\n", config.timeoutSeconds);
         if (config.memoryLimitMB > 0)
@@ -567,6 +727,7 @@ namespace Sandbox {
                 caps[capCount].Sid = pNetSid;
                 caps[capCount].Attributes = SE_GROUP_ENABLED;
                 capCount++;
+                g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
             }
         }
 
@@ -581,6 +742,7 @@ namespace Sandbox {
                 caps[capCount].Sid = pLanSid;
                 caps[capCount].Attributes = SE_GROUP_ENABLED;
                 capCount++;
+                g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
             }
         }
 
@@ -631,6 +793,25 @@ namespace Sandbox {
                 cleanup();
                 return 1;
             }
+            g_logger.Log(L"ISOLATION: strict (ALL_APPLICATION_PACKAGES opt-out)");
+        }
+
+        // --- Forensic: log allow flags ---
+        if (config.allowRegistry)  g_logger.Log(L"ALLOW: registry");
+        if (config.allowPipes)     g_logger.Log(L"ALLOW: pipes");
+        if (!config.allowStdin)    g_logger.Log(L"STDIN: blocked (NUL)");
+        else                       g_logger.Log(L"STDIN: inherited");
+
+        // --- Build environment block ---
+        std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
+        {
+            wchar_t msg[256];
+            if (envBlock.empty())
+                swprintf(msg, 256, L"ENV: inherit all");
+            else
+                swprintf(msg, 256, L"ENV: filtered (inherit=%s, pass=%zu vars)",
+                         config.envInherit ? L"true" : L"false", config.envPass.size());
+            g_logger.Log(msg);
         }
 
         // --- Create pipes for child stdout/stderr ---
@@ -647,12 +828,21 @@ namespace Sandbox {
         }
         SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
+        // --- Stdin handle ---
+        HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+        HANDLE hNulIn = nullptr;
+        if (!config.allowStdin) {
+            hNulIn = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ,
+                                &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            hStdin = hNulIn;
+        }
+
         STARTUPINFOEXW siex{};
         siex.StartupInfo.cb = sizeof(siex);
         siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         siex.StartupInfo.hStdOutput = hWritePipe;
         siex.StartupInfo.hStdError  = hWritePipe;
-        siex.StartupInfo.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+        siex.StartupInfo.hStdInput  = hStdin;
         siex.lpAttributeList = pAttrList;
 
         // --- Build command line ---
@@ -661,20 +851,20 @@ namespace Sandbox {
             cmdLine += L" " + exeArgs;
 
         // --- Start logger before launching ---
-        if (!config.logPath.empty()) {
-            g_logger.Start(config.logPath);
-        }
+        // (Logger already started before grants for forensic logging)
 
         // --- Launch the target executable ---
         PROCESS_INFORMATION pi{};
         BOOL created = CreateProcessW(
             nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
             EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-            nullptr, exeFolder.c_str(), &siex.StartupInfo, &pi);
+            envBlock.empty() ? nullptr : envBlock.data(),
+            exeFolder.c_str(), &siex.StartupInfo, &pi);
 
         // Close write end in parent so ReadFile gets EOF when child exits
         CloseHandle(hWritePipe);
         DeleteProcThreadAttributeList(pAttrList);
+        if (hNulIn) CloseHandle(hNulIn);
 
         if (!created) {
             DWORD err = GetLastError();
@@ -691,11 +881,11 @@ namespace Sandbox {
             return 1;
         }
 
-        // Log configuration and PID
+        // Forensic: log launch
         if (g_logger.active) {
             g_logger.LogConfig(config, exePath, exeArgs);
-            wchar_t pidMsg[128];
-            swprintf(pidMsg, 128, L"PID: %lu", pi.dwProcessId);
+            wchar_t pidMsg[256];
+            swprintf(pidMsg, 256, L"LAUNCH: PID %lu, cmd=\"%s\"", pi.dwProcessId, cmdLine.c_str());
             g_logger.Log(pidMsg);
         }
 
@@ -717,6 +907,11 @@ namespace Sandbox {
                 }
                 SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
                 AssignProcessToJobObject(hJob, pi.hProcess);
+
+                wchar_t msg[256];
+                swprintf(msg, 256, L"JOB: memory=%zuMB, processes=%lu",
+                         config.memoryLimitMB, config.maxProcesses);
+                g_logger.Log(msg);
             }
         }
 
@@ -725,6 +920,9 @@ namespace Sandbox {
         HANDLE hTimeoutThread = nullptr;
         if (config.timeoutSeconds > 0) {
             hTimeoutThread = CreateThread(nullptr, 0, TimeoutThread, &timeoutCtx, 0, nullptr);
+            wchar_t msg[128];
+            swprintf(msg, 128, L"TIMEOUT: armed %lus", config.timeoutSeconds);
+            g_logger.Log(msg);
         }
 
         // --- Read child output and relay to our stdout ---

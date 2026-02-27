@@ -67,10 +67,10 @@ write = [
     'C:\logs\agent.log',               # single log file
     'C:\temp\output',                  # output folder
 ]
-readwrite = [
-    'C:\workspace',                    # project folder
-    'C:\data\state.db',                # database file
-]
+execute = ['C:\tools\bin']              # execute-only (no read)
+append = ['C:\logs\audit.log']          # append-only (no overwrite)
+delete = ['C:\temp\scratch']            # delete-only
+all = ['C:\workspace']                  # full access
 ```
 
 ### Permissions (opt-in)
@@ -83,6 +83,9 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # network = true     # outbound internet access
 # localhost = true   # loopback/localhost connections                      (admin)
 # lan = true         # local network access
+# registry = true    # access user registry keys
+# pipes = true       # access named pipes
+# stdin = false      # block stdin (redirect to NUL)
 ```
 
 #### What `system_dirs` exposes
@@ -104,6 +107,18 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 
 Any other directory whose installer added `ALL_APPLICATION_PACKAGES` to its ACL will also be readable — for example, Python's Windows installer does this for its install folder. Writes are blocked everywhere.
 
+### Environment
+
+Control which environment variables the sandboxed process can see:
+
+```toml
+[environment]
+inherit = false                          # don't inherit parent env vars
+pass = ['PATH', 'PYTHONPATH', 'HOME']    # specific vars to pass through
+```
+
+When `inherit = false`, only essential Windows vars (`SYSTEMROOT`, `SYSTEMDRIVE`, `TEMP`, `TMP`) and the vars listed in `pass` are provided to the child process.
+
 ### Resource Limits
 
 ```toml
@@ -123,13 +138,18 @@ read = [
     'C:\Python314',
     'C:\projects\my_agent',
 ]
-readwrite = [
+all = [
     'C:\workspace',
 ]
 
 [allow]
 system_dirs = true
 network = true
+stdin = false
+
+[environment]
+inherit = false
+pass = ['PATH']
 
 [limit]
 timeout = 300

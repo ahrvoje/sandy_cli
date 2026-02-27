@@ -12,16 +12,16 @@
 [access]
 # read = [
 #     'C:\data\config.json',          # single file
-#     'C:\Python314',                  # entire folder (recursive)
+#     'C:\Python314',                 # entire folder (recursive)
 # ]
 # write = [
 #     'C:\logs\agent.log',            # single log file
 #     'C:\temp\output',               # output folder
 # ]
-# readwrite = [
-#     'C:\workspace',                 # project folder
-#     'C:\data\state.db',             # database file
-# ]
+# execute = ['C:\tools\bin']          # execute-only (no read)
+# append = ['C:\logs\audit.log']      # append-only (no overwrite)
+# delete = ['C:\temp\scratch']        # delete-only
+# all = ['C:\workspace']              # full access
 
 # ============================================================
 # PERMISSIONS
@@ -34,6 +34,19 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # network = true     # outbound internet access
 # localhost = true   # loopback/localhost connections                      (admin)
 # lan = true         # local network access
+# registry = true    # access user registry keys
+# pipes = true       # access named pipes
+# stdin = false      # block stdin (redirect to NUL)
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+# Control which environment variables the child process can see.
+# By default, all parent env vars are inherited.
+
+[environment]
+# inherit = false                         # don't inherit parent env vars
+# pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
 
 # ============================================================
 # RESOURCE LIMITS
