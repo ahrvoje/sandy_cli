@@ -17,13 +17,14 @@ static void PrintUsage()
         "Sandy - Windows Sandbox Runner  v%s\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> [-l <logfile>] [-q] -x <executable> [args...]\n"
-        "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>   Path to TOML config file\n"
         "  -s, --string <toml>   Inline TOML config string (alternative to -c)\n"
-        "  -l, --log <path>      Log file for session output, config, and exit code\n"
+        "  -l, --log <path>      Session log (config, output, exit code)\n"
+        "  -a, --audit <path>    Audit log of denied resource access (requires Procmon + admin)\n"
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
         "  -v, --version         Print version and exit\n"
@@ -131,6 +132,7 @@ int wmain(int argc, wchar_t* argv[])
     std::wstring configPath;
     std::wstring configString;
     std::wstring logPath;
+    std::wstring auditLogPath;
     std::wstring exePath;
     std::wstring exeArgs;
     bool quiet = false;
@@ -158,6 +160,9 @@ int wmain(int argc, wchar_t* argv[])
         }
         else if ((arg == L"-l" || arg == L"--log") && i + 1 < argc) {
             logPath = argv[++i];
+        }
+        else if ((arg == L"-a" || arg == L"--audit") && i + 1 < argc) {
+            auditLogPath = argv[++i];
         }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             exePath = argv[++i];
@@ -213,7 +218,7 @@ int wmain(int argc, wchar_t* argv[])
     config.quiet = quiet;
 
     // --- Run sandboxed ---
-    int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs);
+    int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs, auditLogPath);
 
     Sandbox::CleanupSandbox();
 

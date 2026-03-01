@@ -7,6 +7,7 @@
 #include "SandboxConfig.h"
 #include "SandboxACL.h"
 #include "SandboxToken.h"
+#include "SandboxAudit.h"
 
 namespace Sandbox {
 
@@ -166,7 +167,8 @@ namespace Sandbox {
 
     inline int RunSandboxed(const SandboxConfig& config,
                             const std::wstring& exePath,
-                            const std::wstring& exeArgs)
+                            const std::wstring& exeArgs,
+                            const std::wstring& auditLogPath = L"")
     {
         // --- Mode-specific state ---
         PSID pContainerSid = nullptr;
@@ -397,6 +399,30 @@ namespace Sandbox {
             fprintf(stderr, "Memory:     %zu MB\n", config.memoryLimitMB);
         if (config.maxProcesses > 0)
             fprintf(stderr, "Processes:  %lu max\n", config.maxProcesses);
+        }
+
+        // --- Start Procmon audit if requested ---
+        std::wstring procmonExe;
+        bool auditActive = false;
+        if (!auditLogPath.empty()) {
+            procmonExe = FindProcmon();
+            if (procmonExe.empty()) {
+                fprintf(stderr, "[Audit] Procmon not found on PATH. Audit disabled.\n");
+            } else {
+                auditActive = StartProcmonAudit(procmonExe);
+                if (auditActive && !config.quiet)
+                    fprintf(stderr, "Audit:      ACTIVE (Procmon)\n");
+            }
+        }
+
+        // --- Enable WER crash dumps (when audit is active) ---
+        std::wstring crashExeName;
+        bool crashDumpsEnabled = false;
+        if (!auditLogPath.empty()) {
+            // Extract exe basename for the WER registry key
+            auto slash = exePath.find_last_of(L"\\/");
+            crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
+            crashDumpsEnabled = EnableCrashDumps(crashExeName);
         }
 
         // --- Prepare capabilities (AppContainer only) ---
@@ -736,6 +762,24 @@ namespace Sandbox {
         // --- Write log summary and stop logger ---
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
         g_logger.Stop();
+
+        // --- Stop Procmon audit and generate log ---
+        if (auditActive) {
+            StopProcmonAudit(procmonExe, auditLogPath, pi.dwProcessId);
+        }
+
+        // --- Report crash dump if child crashed ---
+        if (crashDumpsEnabled) {
+            if (IsCrashExitCode(exitCode)) {
+                Sleep(2000);  // WER needs a moment to write the dump
+                std::wstring dumpPath = ReportCrashDump(crashExeName, auditLogPath);
+                if (!dumpPath.empty())
+                    fprintf(stderr, "[Audit] Crash dump: %ls\n", dumpPath.c_str());
+                else
+                    fprintf(stderr, "[Audit] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
+            }
+            DisableCrashDumps(crashExeName);
+        }
 
         // --- Cleanup ---
         CloseHandle(pi.hProcess);

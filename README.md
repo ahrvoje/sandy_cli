@@ -40,7 +40,8 @@ sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
 |------|-------------|
 | `-c`, `--config <path>` | Path to TOML config file |
 | `-s`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
-| `-l`, `--log <path>` | Log file for session output, config, and exit code |
+| `-l`, `--log <path>` | Session log (config, output, exit code) |
+| `-a`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
 | `-x`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version and exit |
@@ -405,6 +406,53 @@ Separate test suite verifying network access, resource limits, timeout, and stri
 --- Strict mode (system_dirs disabled) ---
   [PASS] Strict mode: execution blocked
 ```
+
+---
+
+## Audit
+
+The `-a` flag enables Procmon-based resource denial auditing. When a sandboxed process crashes or misbehaves, the audit log shows exactly which resources were denied.
+
+```
+sandy.exe -c config.toml -a audit.log -x myapp.exe
+```
+
+**Requirements:** [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) on PATH + admin privileges.
+
+Sandy automatically launches Procmon in headless mode, captures all events during the child's lifetime, then parses the results into a filtered audit log containing only denials.
+
+**What's captured:**
+
+| Category | Events |
+|----------|--------|
+| FILE | File/folder open, read, write, delete denials |
+| REG | Registry key/value access denials |
+| NET | Network connection blocks |
+| IMAGE | DLL/image load failures |
+| PROCESS | Child process creation blocks |
+| FILE | Named object (mutex, event, section) denials |
+
+
+
+**Example audit log:**
+
+```
+[13:07:38.12] T:4520   FILE    ACCESS DENIED       C:\Windows\System32\kernel32.dll
+[13:07:38.34] T:4520   REG     ACCESS DENIED       HKLM\Software\MyApp
+[13:07:38.51] T:4520   FILE    NAME NOT FOUND      api-ms-win-crt-runtime-l1-1-0.dll
+
+=== Process Tree ===
+python.exe  PID:4520  exit:0xC0000022  CRASHED
+  +- worker.exe  PID:6012  exit:0  OK
+
+=== Summary: 47 unique events, 38 FILE, 3 REG, 4 NET, 2 IMAGE ===
+
+=== Repeated (x count) ===
+  x23  FILE    ACCESS DENIED       C:\Windows\System32
+```
+
+> [!NOTE]
+> The audit log is generated after the child process exits (post-mortem). Events are deduplicated — repeated denials for the same path/result appear once with a repeat count.
 
 ---
 

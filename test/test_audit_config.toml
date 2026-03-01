@@ -1,0 +1,15 @@
+# Sandy audit crash test configuration
+# Deliberately restrictive: read-only access to Python + repo + test dir.
+# No write access anywhere — forces the test script to crash.
+
+[sandbox]
+token = "appcontainer"
+
+[access]
+read = [
+    'C:\Users\H\AppData\Local\Programs\Python\Python314',
+    'C:\repos\sandy_cli\test',
+]
+
+[allow]
+system_dirs = true
