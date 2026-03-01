@@ -3,15 +3,15 @@
 </p>
 
 <p align="center">
-  <strong>A lightweight Windows AppContainer sandbox runner</strong><br/>
-  Run any executable in an isolated sandbox with fine-grained file and folder access control.
+  <strong>A lightweight Windows sandbox runner</strong><br/>
+  Run any executable in an isolated sandbox with fine-grained file, folder, and network access control.
 </p>
 
 ---
 
 ## What is Sandy?
 
-Sandy launches executables inside a [Windows AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) — the same kernel-enforced isolation technology used by UWP apps and Microsoft Edge. By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
+Sandy launches executables inside a kernel-enforced Windows sandbox. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
 
 Modern agentic AI workflows — LLM-driven code agents, automation scripts, tool-use pipelines — need to execute code, but running them with full user privileges is reckless, and spinning up a VM or container for every script is heavyweight. Sandy strikes a practical balance: **unprivileged sandboxing** that works on any Windows machine without admin rights, Docker, WSL, or Hyper-V. You define exactly which folders, files, and network access the process gets — everything else is blocked at the kernel level.
 
@@ -19,9 +19,9 @@ Think of it as the lean middle ground between *running scripts completely unprot
 
 ### Key Features
 
-- 🔒 **AppContainer isolation** — kernel-enforced sandbox, not just permissions
-- 📁 **Granular access control** — read, write, or read+write per file or folder
-- 🌐 **Network control** — internet, LAN, and localhost independently configurable
+- 🔒 **Dual sandbox modes** — AppContainer isolation or Restricted Token with configurable integrity
+- 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
+- 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
 - 🛡️ **Locked down by default** — all access is opt-in via config
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - 📝 **Session logging** — log config, process output, and exit code to file
@@ -53,76 +53,107 @@ Arguments after the executable path are forwarded to it.
 
 ## Config File
 
-All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`](sandy_config.toml) for a complete reference.
+All sandbox behavior is controlled by a TOML config. Every config **must** include a `[sandbox]` section declaring the token mode. Mode-specific settings are validated — using a flag meant for the other mode is an error.
 
-Every config **must** start with a `[sandbox]` section declaring the token mode:
+See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_config_appcontainer.toml`](sandy_config_appcontainer.toml) and [`sandy_config_restricted.toml`](sandy_config_restricted.toml) for mode-specific templates.
+
+### `[sandbox]` — Mode selection *(mandatory)*
 
 ```toml
 [sandbox]
 token = "appcontainer"    # or "restricted"
+integrity = "low"         # restricted only: "low" (default) or "medium"
 ```
 
-### Access
+| Key | Values | Modes | Description |
+|-----|--------|-------|-------------|
+| `token` | `"appcontainer"`, `"restricted"` | both | Sandbox isolation model *(required)* |
+| `integrity` | `"low"`, `"medium"` | restricted | Integrity level · `"low"` = strongest isolation, `"medium"` = wider app compatibility |
+
+### `[access]` — File and folder grants
+
+Grant the sandboxed process access to specific files or folders. Paths are recursive for directories.
 
 ```toml
 [access]
-read = [
-    'C:\data\config.json',             # single file
-    'C:\Python314',                    # entire folder (recursive)
-]
-write = [
-    'C:\logs\agent.log',               # single log file
-    'C:\temp\output',                  # output folder
-]
-execute = ['C:\tools\bin']              # execute-only (no read)
-append = ['C:\logs\audit.log']          # append-only (no overwrite)
-delete = ['C:\temp\scratch']            # delete-only
-all = ['C:\workspace']                  # full access
+read    = ['C:\data\config.json', 'C:\Python314']
+write   = ['C:\logs\agent.log', 'C:\temp\output']
+execute = ['C:\tools\bin']
+append  = ['C:\logs\audit.log']
+delete  = ['C:\temp\scratch']
+all     = ['C:\workspace']
 ```
 
-### Permissions (opt-in)
+| Key | Permission granted |
+|-----|--------------------|
+| `read` | Read files, list directories |
+| `write` | Create and modify files |
+| `execute` | Execute (no read) |
+| `append` | Append only (no overwrite, no read) |
+| `delete` | Delete only |
+| `all` | Full access (read + write + execute + delete) |
 
-Everything is blocked unless set to `true` in `[allow]`:
+### `[allow]` — Opt-in permissions
+
+Everything is blocked unless set to `true`. Settings are validated against the active mode.
 
 ```toml
 [allow]
-system_dirs = true   # read C:\Windows, Program Files (required for most executables)
-# network = true     # outbound internet access
-# localhost = true   # loopback/localhost connections                      (admin)
-# lan = true         # local network access
-# stdin = false      # block stdin (redirect to NUL)
+system_dirs = true    # appcontainer only
+network = true        # appcontainer only
+localhost = true      # appcontainer only (admin required)
+lan = true            # appcontainer only
+pipes = true          # restricted only
+stdin = false         # both modes
 ```
 
-#### What `system_dirs` exposes
+| Key | Modes | Default | Description |
+|-----|-------|---------|-------------|
+| `system_dirs` | appcontainer | `false` | Read access to `C:\Windows`, `Program Files` |
+| `network` | appcontainer | `false` | Outbound internet access |
+| `localhost` | appcontainer | `false` | Loopback connections (requires admin) |
+| `lan` | appcontainer | `false` | Local network access |
+| `pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
+| `stdin` | both | `true` | Inherit stdin (set `false` to redirect to NUL) |
 
-`system_dirs` enables the Windows `ALL_APPLICATION_PACKAGES` group, granting **read-only** access to:
+#### What `system_dirs` exposes (AppContainer only)
+
+Enables the `ALL_APPLICATION_PACKAGES` group, granting **read-only** access to:
 
 | Path | Access |
 |------|--------|
-| `C:\Windows` | ✅ read (115 items) |
-| `C:\Windows\System32` | ✅ read (5,028 items) |
-| `C:\Windows\SysWOW64` | ✅ read (3,105 items) |
-| `C:\Windows\Temp` | ❌ blocked |
-| `C:\Program Files` | ✅ read |
-| `C:\Program Files (x86)` | ✅ read |
-| `C:\ProgramData` | ❌ blocked |
-| `C:\Users` | ❌ blocked |
+| `C:\Windows`, `System32`, `SysWOW64` | ✅ read |
+| `C:\Program Files`, `Program Files (x86)` | ✅ read |
+| `C:\Windows\Temp`, `ProgramData`, `C:\Users` | ❌ blocked |
 | User profile (Desktop, Documents, Downloads) | ❌ blocked |
-| `C:\` root | ❌ blocked |
 
-Any other directory whose installer added `ALL_APPLICATION_PACKAGES` to its ACL will also be readable — for example, Python's Windows installer does this for its install folder. Writes are blocked everywhere.
+> [!TIP]
+> Python's Windows installer sets `ALL_APPLICATION_PACKAGES` on its install directory. With `system_dirs = true`, the Python folder is readable without an explicit `[access]` entry.
 
-### Environment
+### `[registry]` — Registry key grants *(restricted only)*
 
-Control which environment variables the sandboxed process can see:
+Grant read or write access to specific registry keys. Most keys under `HKLM\Software` and `HKCU` are already readable by default via `BUILTIN\Users`.
+
+```toml
+[registry]
+read  = ['HKCU\Software\MyApp']
+write = ['HKCU\Software\MyApp\Settings']
+```
+
+> [!NOTE]
+> `[registry]` is not available in AppContainer mode — AppContainer provides a fixed private registry hive automatically.
+
+### `[environment]` — Environment variables
+
+Control which environment variables the sandboxed process inherits.
 
 ```toml
 [environment]
-inherit = false                          # don't inherit parent env vars
-pass = ['PATH', 'PYTHONPATH', 'HOME']    # specific vars to pass through
+inherit = false
+pass = ['PATH', 'PYTHONPATH', 'HOME']
 ```
 
-When `inherit = false`, the following essential Windows vars are always passed regardless of `pass`:
+When `inherit = false`, the following essential Windows vars are always passed:
 
 | Category | Variables |
 |----------|-----------|
@@ -132,62 +163,42 @@ When `inherit = false`, the following essential Windows vars are always passed r
 | User dirs | `LOCALAPPDATA`, `APPDATA`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH` |
 | Hardware | `PROCESSOR_ARCHITECTURE`, `NUMBER_OF_PROCESSORS` |
 
-Any additional vars listed in `pass` are added on top of these.
-
-### Resource Limits
+### `[limit]` — Resource constraints
 
 ```toml
 [limit]
-# timeout = 300      # kill process after N seconds
-# memory = 4096      # max memory in MB
-# processes = 10     # max concurrent child processes
+timeout = 300       # kill process after N seconds
+memory = 4096       # max memory in MB
+processes = 10      # max concurrent child processes
 ```
 
-### Example
+### Config availability summary
 
-Run Python inside a sandbox with read access to a project folder and a 5-minute timeout:
-
-```toml
-[sandbox]
-token = "appcontainer"
-
-[access]
-read = [
-    'C:\Python314',
-    'C:\projects\my_agent',
-]
-all = [
-    'C:\workspace',
-]
-
-[allow]
-system_dirs = true
-network = true
-stdin = false
-
-[environment]
-inherit = false
-pass = ['PATH']
-
-[limit]
-timeout = 300
-memory = 2048
-```
-
-```
-sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
-```
+| Section / Key | AppContainer | Restricted |
+|---------------|:------------:|:----------:|
+| **`[sandbox]`** | ✅ required | ✅ required |
+| &ensp; `token` | ✅ required | ✅ required |
+| &ensp; `integrity` | ❌ error | ✅ optional (default: `"low"`) |
+| **`[access]`** | ✅ optional | ✅ optional |
+| **`[allow]`** | ✅ optional | ✅ optional |
+| &ensp; `system_dirs` | ✅ | ❌ error |
+| &ensp; `network` | ✅ | ❌ error |
+| &ensp; `localhost` | ✅ | ❌ error |
+| &ensp; `lan` | ✅ | ❌ error |
+| &ensp; `pipes` | ❌ error | ✅ |
+| &ensp; `stdin` | ✅ | ✅ |
+| **`[registry]`** | ❌ error | ✅ optional |
+| **`[environment]`** | ✅ optional | ✅ optional |
+| **`[limit]`** | ✅ optional | ✅ optional |
 
 ---
 
 ## Sandbox Modes
 
-Sandy supports two sandbox modes via `[sandbox] token`:
-
 **🔒** = fundamental OS limitation &nbsp;&nbsp; **→** = fixed (not configurable) &nbsp;&nbsp; **⚙️** = configurable via TOML
 
-| Aspect | AppContainer (default) | Restricted Token |
-|--------|------------------------|------------------|
+| Aspect | AppContainer | Restricted Token |
+|--------|--------------|------------------|
 | **Integrity level** | → Low (OS-enforced) | ⚙️ `integrity` · `"low"` or `"medium"` (default: `"low"`) |
 | **Named pipes** | 🔒 Blocked (kernel prohibits at Low IL) | ⚙️ `pipes` · default: blocked |
 | **Network** | ⚙️ `network` `localhost` `lan` · default: blocked | 🔒 Unrestricted (no capability model) |
@@ -209,25 +220,58 @@ Sandy supports two sandbox modes via `[sandbox] token`:
 > `integrity = "low"` gives the strongest isolation — blocks writes to user-owned objects — but breaks apps depending on `api-ms-win-core-path` API set resolution (Python 3.14+, some .NET apps).
 > `integrity = "medium"` gives wider app compatibility but relies solely on restricting SIDs for isolation. User-owned directories become accessible unless future support for excluding the User SID from restricting SIDs is added.
 
-**Use AppContainer** (default) when you need network isolation and don't require named pipes or COM.
+**Use AppContainer** when you need network isolation and don't require named pipes or COM.
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
 
-### Restricted Token config
+### Examples
+
+AppContainer with network access:
+
+```toml
+[sandbox]
+token = "appcontainer"
+
+[access]
+read = ['C:\Python314', 'C:\projects\my_agent']
+all = ['C:\workspace']
+
+[allow]
+system_dirs = true
+network = true
+stdin = false
+
+[environment]
+inherit = false
+pass = ['PATH']
+
+[limit]
+timeout = 300
+memory = 2048
+```
+
+```
+sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
+```
+
+Restricted Token with pipes and medium integrity:
 
 ```toml
 [sandbox]
 token = "restricted"
-integrity = "medium"       # "low" (default) or "medium"
+integrity = "medium"
 
 [access]
-read = ['C:\Path\To\App']
+read = ['C:\Python314', 'C:\projects\my_agent']
+all = ['C:\workspace']
 
 [allow]
-pipes = true               # allow CreateNamedPipeW
+pipes = true
 
 [registry]
-read = ['HKCU\Software\MyApp']
 write = ['HKCU\Software\MyApp\Settings']
+
+[limit]
+timeout = 300
 ```
 
 ---
@@ -341,16 +385,13 @@ Separate test suite verifying network access, resource limits, timeout, and stri
 ## Notes
 
 > [!WARNING]
-> **Strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. Comment it out only for specialized containers where you explicitly grant the required runtime folders.
+> **AppContainer: strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
-> **Python note.** Python's Windows installer sets the `ALL_APPLICATION_PACKAGES` ACL on its install directory. This means that with `system_dirs = true`, the entire Python folder (DLLs, stdlib, `Lib/`, `Scripts/`) is readable even without an explicit `[access]` entry. You do not need to grant the Python folder — only `system_dirs = true` is required.
+> **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
 
 > [!NOTE]
-> **Localhost access** requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
-
-> [!NOTE]
-> **Sandy runs without elevation in most cases.** It modifies folder ACLs to grant the AppContainer access, which requires `WRITE_DAC` permission on each configured folder. Users have this permission on folders they own (e.g. under `%USERPROFILE%`). For folders owned by `SYSTEM`, `TrustedInstaller`, or other users, Sandy must be run as Administrator.
+> **Sandy runs without elevation in most cases.** It modifies folder ACLs to grant the sandbox access, which requires `WRITE_DAC` permission on each configured folder. Users have this permission on folders they own (e.g. under `%USERPROFILE%`). For folders owned by `SYSTEM`, `TrustedInstaller`, or other users, Sandy must be run as Administrator.
 
 ---
 
