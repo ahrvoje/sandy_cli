@@ -55,6 +55,13 @@ Arguments after the executable path are forwarded to it.
 
 All sandbox behavior is controlled by the TOML config. See [`sandy_config.toml`](sandy_config.toml) for a complete reference.
 
+Every config **must** start with a `[sandbox]` section declaring the token mode:
+
+```toml
+[sandbox]
+token = "appcontainer"    # or "restricted"
+```
+
 ### Access
 
 ```toml
@@ -141,6 +148,9 @@ Any additional vars listed in `pass` are added on top of these.
 Run Python inside a sandbox with read access to a project folder and a 5-minute timeout:
 
 ```toml
+[sandbox]
+token = "appcontainer"
+
 [access]
 read = [
     'C:\Python314',
