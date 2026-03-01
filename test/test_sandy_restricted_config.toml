@@ -23,4 +23,4 @@ all = [
 ]
 
 [allow]
-pipes = false
+named_pipes = false

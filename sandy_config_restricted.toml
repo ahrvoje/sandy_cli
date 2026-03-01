@@ -44,7 +44,7 @@ token = "restricted"
 # Everything is blocked unless set to true.
 
 [allow]
-# pipes = true       # allow named pipe creation (CreateNamedPipeW)
+# named_pipes = true   # allow named pipe creation (CreateNamedPipeW)
 # stdin = false      # block stdin (redirect to NUL)
 
 # NOTE: network, localhost, lan are not available in restricted mode.

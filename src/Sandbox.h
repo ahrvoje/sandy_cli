@@ -56,7 +56,7 @@ namespace Sandbox {
         bool allowLocalhost  = false;
         bool allowLan        = false;
         bool allowSystemDirs = false;
-        bool allowPipes      = false;  // restricted mode: controls pipe creation
+        bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
 
         bool allowStdin      = true;   // default: inherit stdin
 
@@ -461,7 +461,7 @@ namespace Sandbox {
                     else if (kv.key == L"localhost")    config.allowLocalhost = enabled;
                     else if (kv.key == L"lan")          config.allowLan = enabled;
                     else if (kv.key == L"system_dirs")  config.allowSystemDirs = enabled;
-                    else if (kv.key == L"pipes")        config.allowPipes = enabled;
+                    else if (kv.key == L"named_pipes")  config.allowNamedPipes = enabled;
                     else if (kv.key == L"stdin")        config.allowStdin = enabled;
                     else {
                         fprintf(stderr, "Error: Unknown key in [allow]: %ls\n", kv.key.c_str());
@@ -547,7 +547,7 @@ namespace Sandbox {
 
             // Restricted-only flags used in AppContainer mode
             if (isAC) {
-                if (config.allowPipes)              { fprintf(stderr, "Error: 'pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
+                if (config.allowNamedPipes)          { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
                 if (config.integrity != IntegrityLevel::Low) { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
                 if (registrySeen)                   { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
             }
@@ -840,11 +840,11 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Create a restricted sandbox token (alternative to AppContainer).
     // Uses restricting SIDs + configurable integrity level.
-    // allowPipes: if true, includes Everyone (S-1-1-0) in restricting SIDs,
+    // allowNamedPipes: if true, includes Everyone (S-1-1-0) in restricting SIDs,
     //             which allows CreateNamedPipeW to succeed.
     // il: Low = stronger isolation (may break some apps), Medium = wider compat.
     // -----------------------------------------------------------------------
-    inline HANDLE CreateRestrictedSandboxToken(bool allowPipes, IntegrityLevel il)
+    inline HANDLE CreateRestrictedSandboxToken(bool allowNamedPipes, IntegrityLevel il)
     {
         HANDLE hToken = nullptr;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &hToken))
@@ -1077,7 +1077,7 @@ namespace Sandbox {
             // =============================================================
             // RESTRICTED TOKEN PATH
             // =============================================================
-            hRestrictedToken = CreateRestrictedSandboxToken(config.allowPipes, config.integrity);
+            hRestrictedToken = CreateRestrictedSandboxToken(config.allowNamedPipes, config.integrity);
             if (!hRestrictedToken) {
                 fprintf(stderr, "[Error] Could not create restricted token (error %lu).\n", GetLastError());
                 return 1;
@@ -1091,8 +1091,8 @@ namespace Sandbox {
             g_logger.Log(config.integrity == IntegrityLevel::Low
                          ? L"MODE: restricted token (Low integrity)"
                          : L"MODE: restricted token (Medium integrity)");
-            g_logger.Log(config.allowPipes ? L"PIPES: allowed (Everyone in restricting SIDs)"
-                                           : L"PIPES: blocked (Everyone excluded)");
+            g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
+                                           : L"Named Pipes: blocked (Everyone excluded)");
 
             // Auto-grant read access to the exe folder (sandy.exe location)
             GrantObjectAccess(pGrantSid, exeFolder, AccessLevel::Read);
@@ -1235,7 +1235,7 @@ namespace Sandbox {
         }
         fprintf(stderr, "---\n");
         if (isRestricted)
-            fprintf(stderr, "Pipes:      %s\n", config.allowPipes ? "ALLOWED" : "BLOCKED");
+            fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
         if (!config.allowSystemDirs && !isRestricted)
             fprintf(stderr, "System:     STRICT (system folders blocked)\n");
         fprintf(stderr, "Network:    %s\n", isRestricted ? "unrestricted (no capability model)" :

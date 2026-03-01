@@ -103,7 +103,7 @@ system_dirs = true    # appcontainer only
 network = true        # appcontainer only
 localhost = true      # appcontainer only (admin required)
 lan = true            # appcontainer only
-pipes = true          # restricted only
+named_pipes = true    # restricted only
 stdin = false         # both modes
 ```
 
@@ -113,7 +113,7 @@ stdin = false         # both modes
 | `network` | appcontainer | `false` | Outbound internet access |
 | `localhost` | appcontainer | `false` | Loopback connections (requires admin) |
 | `lan` | appcontainer | `false` | Local network access |
-| `pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
+| `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
 | `stdin` | both | `true` | Inherit stdin (set `false` to redirect to NUL) |
 
 #### What `system_dirs` exposes (AppContainer only)
@@ -185,7 +185,7 @@ processes = 10      # max concurrent child processes
 | &ensp; `network` | ✅ | ❌ error |
 | &ensp; `localhost` | ✅ | ❌ error |
 | &ensp; `lan` | ✅ | ❌ error |
-| &ensp; `pipes` | ❌ error | ✅ |
+| &ensp; `named_pipes` | ❌ error | ✅ |
 | &ensp; `stdin` | ✅ | ✅ |
 | **`[registry]`** | ❌ error | ✅ optional |
 | **`[environment]`** | ✅ optional | ✅ optional |
@@ -200,7 +200,7 @@ processes = 10      # max concurrent child processes
 | Aspect | AppContainer | Restricted Token |
 |--------|--------------|------------------|
 | **Integrity level** | → Low (OS-enforced) | ⚙️ `integrity` · `"low"` or `"medium"` (default: `"low"`) |
-| **Named pipes** | 🔒 Blocked (kernel prohibits at Low IL) | ⚙️ `pipes` · default: blocked |
+| **Named pipes** | 🔒 Blocked (kernel prohibits at Low IL) | ⚙️ `named_pipes` · default: blocked |
 | **Network** | ⚙️ `network` `localhost` `lan` · default: blocked | 🔒 Unrestricted (no capability model) |
 | **Object namespace** | 🔒 Isolated (private per-container namespace) | 🔒 Shared (global namespace) |
 | **System dirs** (Windows, Program Files) | ⚙️ `system_dirs` · default: blocked | → Always readable (Users SID in restricting list) |
@@ -265,7 +265,7 @@ read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
 [allow]
-pipes = true
+named_pipes = true
 
 [registry]
 write = ['HKCU\Software\MyApp\Settings']

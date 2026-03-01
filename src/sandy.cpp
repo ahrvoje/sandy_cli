@@ -51,7 +51,7 @@ static void PrintUsage()
         "  network     = true                           # appcontainer only\n"
         "  localhost    = true                          # appcontainer only (admin)\n"
         "  lan          = true                          # appcontainer only\n"
-        "  pipes        = true                          # restricted only\n"
+        "  named_pipes  = true                          # restricted only\n"
         "  stdin        = false                         # both modes\n"
         "\n"
         "  [registry]                                   (restricted only)\n"
@@ -81,7 +81,7 @@ static void PrintUsage()
         "  Resource limits         yes                   yes\n"
         "\n"
         "Use appcontainer for network isolation. Use restricted for named pipes/COM.\n"
-        "Wrong-mode flags are rejected (e.g. pipes in appcontainer, network in restricted).\n",
+        "Wrong-mode flags are rejected (e.g. named_pipes in appcontainer, network in restricted).\n",
         kVersion
     );
 }

@@ -39,14 +39,14 @@ token = "appcontainer"     # "appcontainer" (default) or "restricted"
 # PERMISSIONS — Opt-in capabilities (mode-specific)
 # ============================================================
 # AppContainer: system_dirs, network, localhost, lan, stdin
-# Restricted:   pipes, stdin
+# Restricted:   named_pipes, stdin
 
 [allow]
 system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
 # network = true     # outbound internet access            (appcontainer only)
 # localhost = true   # loopback connections (admin required) (appcontainer only)
 # lan = true         # local network access                (appcontainer only)
-# pipes = true       # named pipe creation                 (restricted only)
+# named_pipes = true   # named pipe creation                 (restricted only)
 # stdin = false      # block stdin (redirect to NUL)       (both modes)
 
 # ============================================================
