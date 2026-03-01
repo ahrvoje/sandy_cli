@@ -30,8 +30,9 @@ No VMs, Docker, WSL, or Hyper-V needed — just a single native executable. Agen
 ## Usage
 
 ```
-sandy.exe -c <config.toml> [-l <logfile>] -x <executable> [args...]
-sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
+sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]
+sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]
+sandy.exe -p <report>       -x <executable> [args...]
 ```
 
 | Flag | Description |
@@ -40,6 +41,7 @@ sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
 | `-s <toml>`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
 | `-l <path>`, `--log <path>` | Session log (config, output, exit code) |
 | `-a <path>`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
+| `-p <path>`, `--profile <path>` | Profile process for sandbox feasibility (requires Procmon + admin) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version and exit |
@@ -450,6 +452,75 @@ python.exe  PID:4520  exit:0xC0000022  CRASHED
 
 > [!NOTE]
 > The audit log is generated after the child process exits (post-mortem). Events are deduplicated — repeated denials for the same path/result appear once with a repeat count.
+
+---
+
+## Profile
+
+The `-p` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage, and generates a compatibility report with a suggested TOML config.
+
+```
+sandy.exe -p report.txt -x myapp.exe [args...]
+```
+
+**Requirements:** [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) on PATH + admin privileges.
+
+Use profile mode **before** sandboxing an unfamiliar application. It answers:
+
+- **Can this process be sandboxed at all?** (detects HKLM writes, system dir writes)
+- **Which sandbox mode works?** (AppContainer, Restricted Low, Restricted Medium)
+- **What config is needed?** (read paths, write paths, network, system_dirs, etc.)
+
+**What's analyzed:**
+
+| Category | Detection |
+|----------|-----------|
+| File reads | Directories the process reads from (collapsed to parent paths) |
+| File writes | Directories the process writes to, temp dir usage |
+| System writes | Writes to `C:\Windows` or `C:\Program Files` (blocks all modes) |
+| User profile writes | Writes to `C:\Users\*` — blocks Restricted Low |
+| Registry | HKLM writes (blocks all modes), HKCU writes |
+| Network | TCP/UDP connections, localhost, DNS lookups |
+| Named pipes | Pipe creation (requires Restricted mode) |
+| DLL loading | System DLL dependencies (`system_dirs` detection) |
+| Child processes | Process tree tracking |
+
+**Example report:**
+
+```
+=== Sandy Profile Report ===
+Executable: C:\Python314\python.exe
+Exit code:  0 (0x00000000) OK
+Events:     3444 total, 2437 file, 1006 reg
+
+--- Verdict ---
+Sandboxable:     YES
+AppContainer:    YES (recommended)
+Restricted Low:  YES
+Restricted Med:  YES
+
+--- Required Config ---
+  [access] read:
+    C:\Users
+    C:\repos\myproject
+  [access] write:
+    C:\Users\H\AppData\Local\Temp
+  system_dirs = true
+
+--- Suggested TOML Config ---
+[sandbox]
+token = "appcontainer"
+
+[access]
+read = ['C:\Users', 'C:\repos\myproject']
+write = ['C:\Users\H\AppData\Local\Temp']
+
+[allow]
+system_dirs = true
+```
+
+> [!NOTE]
+> Profile mode captures events using a Procmon include filter for the target process name. For accurate results, avoid running other instances of the same executable during profiling. Subdirectories are automatically collapsed to their common parent.
 
 ---
 

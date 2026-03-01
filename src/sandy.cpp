@@ -27,7 +27,7 @@ static void PrintUsage()
         "  -l, --log <path>      Session log (config, output, exit code)\n"
         "  -a, --audit <path>    Audit log of denied resource access (requires Procmon + admin)\n"
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
-        "  -p, --profile <path>  Profile unsandboxed run and write compatibility report\n"
+        "  -p, --profile <path>  Profile process for sandbox feasibility (requires Procmon + admin)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
         "  -v, --version         Print version and exit\n"
         "  -h, --help            Print this help text and exit\n"
@@ -105,7 +105,14 @@ static void PrintUsage()
         "  Window messages (UIPI)  blocked                allowed (UI manipulation risk)\n"
         "  Clipboard               configurable           configurable\n"
         "  Child processes          configurable           configurable\n"
-        "  Network                 unrestricted           unrestricted\n",
+        "  Network                 unrestricted           unrestricted\n"
+        "\n"
+        "Profile mode (-p):\n"
+        "  Runs the process UNSANDBOXED under Procmon, analyzes resource usage,\n"
+        "  and writes a compatibility report with a suggested TOML config.\n"
+        "  Requires: Procmon on PATH + admin privileges.\n"
+        "  Report includes: sandboxability verdict, mode recommendations,\n"
+        "  required read/write paths, network/pipe/registry usage.\n",
         kVersion
     );
 }
