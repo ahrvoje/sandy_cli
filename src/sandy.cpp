@@ -29,7 +29,6 @@ static void PrintUsage()
         "  -q, --quiet           Suppress the config banner on stderr\n"
         "  -v, --version         Print version and exit\n"
         "  -h, --help            Print this help text and exit\n"
-        "  --                    End of options (all following args passed to executable)\n"
         "\n"
         "Arguments after -x <executable> (or after --) are forwarded to it.\n"
         "\n"
