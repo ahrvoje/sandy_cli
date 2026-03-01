@@ -36,15 +36,14 @@ sandy.exe -s "<toml>"      [-l <logfile>] -x <executable> [args...]
 
 | Flag | Description |
 |------|-------------|
-| `-c`, `--config <path>` | Path to TOML config file |
-| `-s`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
-| `-l`, `--log <path>` | Session log (config, output, exit code) |
-| `-a`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
-| `-x`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
+| `-c <path>`, `--config <path>` | Path to TOML config file |
+| `-s <toml>`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
+| `-l <path>`, `--log <path>` | Session log (config, output, exit code) |
+| `-a <path>`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
+| `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version and exit |
 | `-h`, `--help` | Print full help text with config reference and exit |
-| `--` | End of options; next arg is the executable |
 
 Arguments after the executable path are forwarded to it.
 
