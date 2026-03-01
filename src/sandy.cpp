@@ -81,7 +81,18 @@ static void PrintUsage()
         "  Resource limits         yes                   yes\n"
         "\n"
         "Use appcontainer for network isolation. Use restricted for named pipes/COM.\n"
-        "Wrong-mode flags are rejected (e.g. named_pipes in appcontainer, network in restricted).\n",
+        "Wrong-mode flags are rejected (e.g. named_pipes in appcontainer, network in restricted).\n"
+        "\n"
+        "Restricted mode: integrity = \"low\" vs \"medium\":\n"
+        "                          Low                   Medium\n"
+        "  Write to user files     blocked (mandatory IL) allowed (User SID matches)\n"
+        "  DLL/API set resolution  breaks some apps       works\n"
+        "  User profile access     blocked                accessible\n"
+        "  Isolation layers        2 (SIDs + integrity)   1 (SIDs only)\n"
+        "  System dir reads        always readable        always readable\n"
+        "  System dir writes       blocked                blocked\n"
+        "  Named pipes             configurable           configurable\n"
+        "  Network                 unrestricted           unrestricted\n",
         kVersion
     );
 }

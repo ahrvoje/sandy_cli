@@ -217,8 +217,17 @@ processes = 10      # max concurrent child processes
 
 > [!NOTE]
 > **Integrity × compatibility trade-off** (restricted mode only):
-> `integrity = "low"` gives the strongest isolation — blocks writes to user-owned objects — but breaks apps depending on `api-ms-win-core-path` API set resolution (Python 3.14+, some .NET apps).
-> `integrity = "medium"` gives wider app compatibility but relies solely on restricting SIDs for isolation. User-owned directories become accessible unless future support for excluding the User SID from restricting SIDs is added.
+
+| | Low | Medium | Nature |
+|---|---|---|---|
+| **Write to user files** | ❌ Blocked by mandatory IL | ✅ Allowed (User SID matches) | 🔒 Fundamental |
+| **DLL/API set resolution** | ❌ Breaks some apps (Python 3.14+) | ✅ Works | 🔒 Fundamental |
+| **User profile access** | ❌ Blocked | ✅ Accessible | 🔒 Fundamental |
+| **Isolation layers** | 2 (SIDs + integrity) | 1 (SIDs only) | 🔒 Fundamental |
+| **System dir reads** | ✅ Always readable | ✅ Always readable | → Fixed |
+| **System dir writes** | ❌ Blocked | ❌ Blocked | → Fixed |
+| **Named pipes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
+| **Network** | ✅ Unrestricted | ✅ Unrestricted | 🔒 Fundamental |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
