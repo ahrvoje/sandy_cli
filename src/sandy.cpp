@@ -101,7 +101,8 @@ static void PrintUsage()
         "  Named pipes             configurable           configurable\n"
         "  Scheduled tasks         blocked                allowed (persistence risk!)\n"
         "  Window messages (UIPI)  blocked                allowed (UI manipulation risk)\n"
-        "  Clipboard               read only              full access\n"
+        "  Clipboard               configurable           configurable\n"
+        "  Child processes          configurable           configurable\n"
         "  Network                 unrestricted           unrestricted\n",
         kVersion
     );

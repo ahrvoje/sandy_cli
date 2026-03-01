@@ -99,12 +99,15 @@ Everything is blocked unless set to `true`. Settings are validated against the a
 
 ```toml
 [allow]
-system_dirs = true    # appcontainer only
-network = true        # appcontainer only
-localhost = true      # appcontainer only (admin required)
-lan = true            # appcontainer only
-named_pipes = true    # restricted only
-stdin = false         # both modes
+system_dirs    = true    # appcontainer only
+network        = true    # appcontainer only
+localhost      = true    # appcontainer only (admin required)
+lan            = true    # appcontainer only
+named_pipes    = true    # restricted only
+stdin          = false   # both modes
+clipboard_read  = false  # both modes (default: true)
+clipboard_write = false  # both modes (default: true)
+child_processes = false  # both modes (default: true)
 ```
 
 | Key | Modes | Default | Description |
@@ -115,6 +118,9 @@ stdin = false         # both modes
 | `lan` | appcontainer | `false` | Local network access |
 | `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
 | `stdin` | both | `true` | Inherit stdin (set `false` to redirect to NUL) |
+| `clipboard_read` | both | `true` | Allow reading from the clipboard |
+| `clipboard_write` | both | `true` | Allow writing to the clipboard |
+| `child_processes` | both | `true` | Allow spawning child processes (kernel-enforced) |
 
 #### What `system_dirs` exposes (AppContainer only)
 
@@ -187,6 +193,9 @@ processes = 10      # max concurrent child processes
 | &ensp; `lan` | ✅ | ❌ error |
 | &ensp; `named_pipes` | ❌ error | ✅ |
 | &ensp; `stdin` | ✅ | ✅ |
+| &ensp; `clipboard_read` | ✅ | ✅ |
+| &ensp; `clipboard_write` | ✅ | ✅ |
+| &ensp; `child_processes` | ✅ | ✅ |
 | **`[registry]`** | ❌ error | ✅ optional |
 | **`[environment]`** | ✅ optional | ✅ optional |
 | **`[limit]`** | ✅ optional | ✅ optional |
@@ -211,7 +220,8 @@ processes = 10      # max concurrent child processes
 | **Elevation** | 🔒 Cannot escalate | 🔒 Cannot escalate |
 | **Scheduled tasks** | 🔒 Blocked (COM rejected) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
 | **Window messages (UIPI)** | 🔒 Blocked (Low IL) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
-| **Clipboard** | 🔒 Read only (Low IL) | 🔒 Read only at `"low"` IL · ⚠️ full access at `"medium"` |
+| **Clipboard** | ⚙️ `clipboard_read` `clipboard_write` · default: allowed | ⚙️ `clipboard_read` `clipboard_write` · default: allowed |
+| **Child processes** | ⚙️ `child_processes` · default: allowed | ⚙️ `child_processes` · default: allowed |
 | **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` |
 | **Privilege stripping** | → All stripped | → All stripped except `SeChangeNotifyPrivilege` |
 | **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` |
@@ -232,7 +242,8 @@ processes = 10      # max concurrent child processes
 | **Named pipes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
 | **Scheduled tasks** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (persistence risk) | 🔒 Fundamental |
 | **Window messages (UIPI)** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (UI manipulation risk) | 🔒 Fundamental |
-| **Clipboard** | 🔒 Read only | ⚠️ Full access | 🔒 Fundamental |
+| **Clipboard** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
+| **Child processes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
 | **Network** | ✅ Unrestricted | ✅ Unrestricted | 🔒 Fundamental |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
