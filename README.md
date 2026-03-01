@@ -13,18 +13,16 @@
 
 Sandy launches executables inside a kernel-enforced Windows sandbox. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). By default, sandboxed processes **cannot** access user files, the network, or write to system directories.
 
-Modern agentic AI workflows — LLM-driven code agents, automation scripts, tool-use pipelines — need to execute code, but running them with full user privileges is reckless, and spinning up a VM or container for every script is heavyweight. Sandy strikes a practical balance: **unprivileged sandboxing** that works on any Windows machine without admin rights, Docker, WSL, or Hyper-V. You define exactly which folders, files, and network access the process gets — everything else is blocked at the kernel level.
-
-Think of it as the lean middle ground between *running scripts completely unprotected* and *deploying a full OS-level sandbox*. Purpose-built for the agentic era, Sandy lets you run untrusted scripts with confidence in a single command.
+No VMs, Docker, WSL, or Hyper-V needed — just a single native executable. Agentic AI workflows, automation scripts, and tool-use pipelines need to execute code, but running them with full user privileges is reckless and spinning up a full sandbox for every script is heavyweight. Sandy is the configurable middle ground: lean, unprivileged sandboxing where you define exactly which folders, files, and network access the process gets — everything else is blocked at the kernel level.
 
 ### Key Features
 
-- 🔒 **Dual sandbox modes** — AppContainer isolation or Restricted Token with configurable integrity
+- 🔒 **Dual sandbox modes** — AppContainer or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
-- 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
+- 🌐 **Network control** — internet, LAN, and localhost independently configurable
 - 🛡️ **Locked down by default** — all access is opt-in via config
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
-- 📝 **Session logging** — log config, process output, and exit code to file
+- 📝 **Audit logging** — session logs, Procmon-based denial auditing, and crash dumps
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
 ---
@@ -182,7 +180,7 @@ processes = 10      # max concurrent child processes
 ### Config availability summary
 
 | Section / Key | AppContainer | Restricted |
-|---------------|:------------:|:----------:|
+|---------------|:-------------|:-----------|
 | **`[sandbox]`** | ✅ required | ✅ required |
 | &ensp; `token` | ✅ required | ✅ required |
 | &ensp; `integrity` | ❌ error | ✅ optional (default: `"low"`) |
@@ -219,8 +217,8 @@ processes = 10      # max concurrent child processes
 | **COM/RPC servers** | 🔒 Most reject AppContainer callers | → Accessible |
 | **Process identity** | 🔒 AppContainer SID (different principal) | → User SID (same principal, restricted) |
 | **Elevation** | 🔒 Cannot escalate | 🔒 Cannot escalate |
-| **Scheduled tasks** | 🔒 Blocked (COM rejected) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
-| **Window messages (UIPI)** | 🔒 Blocked (Low IL) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
+| **Scheduled tasks** | 🔒 Blocked (COM rejected) | 🔒 Blocked at `"low"` IL · → allowed at `"medium"` |
+| **Window messages (UIPI)** | 🔒 Blocked (Low IL) | 🔒 Blocked at `"low"` IL · → allowed at `"medium"` |
 | **Clipboard** | ⚙️ `clipboard_read` `clipboard_write` · default: allowed | ⚙️ `clipboard_read` `clipboard_write` · default: allowed |
 | **Child processes** | ⚙️ `child_processes` · default: allowed | ⚙️ `child_processes` · default: allowed |
 | **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` |
@@ -232,20 +230,20 @@ processes = 10      # max concurrent child processes
 > [!NOTE]
 > **Integrity × compatibility trade-off** (restricted mode only):
 
-| | Low | Medium | Nature |
-|---|---|---|---|
-| **Write to user files** | ❌ Blocked by mandatory IL | ✅ Allowed (User SID matches) | 🔒 Fundamental |
-| **DLL/API set resolution** | ❌ Breaks some apps (Python 3.14+) | ✅ Works | 🔒 Fundamental |
-| **User profile access** | ❌ Blocked | ✅ Accessible | 🔒 Fundamental |
-| **Isolation layers** | 2 (SIDs + integrity) | 1 (SIDs only) | 🔒 Fundamental |
-| **System dir reads** | ✅ Always readable | ✅ Always readable | → Fixed |
-| **System dir writes** | ❌ Blocked | ❌ Blocked | → Fixed |
-| **Named pipes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
-| **Scheduled tasks** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (persistence risk) | 🔒 Fundamental |
-| **Window messages (UIPI)** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (UI manipulation risk) | 🔒 Fundamental |
-| **Clipboard** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
-| **Child processes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
-| **Network** | ✅ Unrestricted | ✅ Unrestricted | 🔒 Fundamental |
+| | Low | Medium |
+|---|---|---|
+| **Write to user files** | ❌ Blocked by mandatory IL | ✅ Allowed (User SID matches) |
+| **DLL/API set resolution** | ❌ Breaks some apps (Python 3.14+) | ✅ Works |
+| **User profile access** | ❌ Blocked | ✅ Accessible |
+| **Isolation layers** | 2 (SIDs + integrity) | 1 (SIDs only) |
+| **System dir reads** | ✅ Always readable | ✅ Always readable |
+| **System dir writes** | ❌ Blocked | ❌ Blocked |
+| **Named pipes** | ⚙️ Configurable | ⚙️ Configurable |
+| **Scheduled tasks** | ❌ Blocked (Low IL) | ✅ Allowed |
+| **Window messages (UIPI)** | ❌ Blocked (Low IL) | ✅ Allowed |
+| **Clipboard** | ⚙️ Configurable | ⚙️ Configurable |
+| **Child processes** | ⚙️ Configurable | ⚙️ Configurable |
+| **Network** | ✅ Unrestricted | ✅ Unrestricted |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.

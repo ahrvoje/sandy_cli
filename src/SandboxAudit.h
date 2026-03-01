@@ -17,8 +17,6 @@
 #include <map>
 #include <set>
 #include <fstream>
-#include <sstream>
-#include <algorithm>
 #include <functional>
 
 namespace Sandbox {
@@ -133,42 +131,6 @@ namespace Sandbox {
         return std::wstring(tmp) + name;
     }
 
-    // -----------------------------------------------------------------------
-    // Create PMC filter: exclude only Procmon noise, keep everything else
-    // (PID filtering done in post-processing so we capture process tree)
-    // -----------------------------------------------------------------------
-    inline bool CreateAuditFilter(const std::wstring& pmcPath)
-    {
-        FILE* f = _wfopen(pmcPath.c_str(), L"w");
-        if (!f) return false;
-        fprintf(f,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<procmon>\n"
-            "  <DestructiveFilter>0</DestructiveFilter>\n"
-            "  <FilterRules>\n"
-            "    <FilterRule><Column>Process Name</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>Procmon.exe</Value></FilterRule>\n"
-            "    <FilterRule><Column>Process Name</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>Procmon64.exe</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>SUCCESS</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>REPARSE</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>NO MORE ENTRIES</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>NO MORE FILES</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>END OF FILE</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>is</Relation>"
-            "<Action>Exclude</Action><Value>FAST IO DISALLOWED</Value></FilterRule>\n"
-            "    <FilterRule><Column>Result</Column><Relation>begins with</Relation>"
-            "<Action>Exclude</Action><Value>BUFFER</Value></FilterRule>\n"
-            "  </FilterRules>\n"
-            "</procmon>\n");
-        fclose(f);
-        return true;
-    }
 
     // -----------------------------------------------------------------------
     // CSV field parser (handles quoted fields with commas)
@@ -204,16 +166,17 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Parse Procmon CSV → write audit log filtered by child PID tree
+    // Parse Procmon CSV → write audit log filtered by child PID tree.
+    // Returns process tree text (for session log). Empty string on failure.
     // -----------------------------------------------------------------------
-    inline bool WriteAuditLog(const std::wstring& csvPath, const std::wstring& auditLogPath,
+    inline std::string WriteAuditLog(const std::wstring& csvPath, const std::wstring& auditLogPath,
                               DWORD childPid)
     {
         // Convert wchar path to narrow for ifstream
         char csvPathA[MAX_PATH];
         WideCharToMultiByte(CP_ACP, 0, csvPath.c_str(), -1, csvPathA, MAX_PATH, nullptr, nullptr);
         std::ifstream csv(csvPathA);
-        if (!csv.is_open()) return false;
+        if (!csv.is_open()) return "";
 
         // Find column indices from header
         std::string hdr;
@@ -233,7 +196,7 @@ namespace Sandbox {
             else if (cols[i] == "Detail") cDet = i;
             else if (cols[i] == "TID") cTid = i;
         }
-        if (cPid < 0 || cOp < 0 || cRes < 0) return false;
+        if (cPid < 0 || cOp < 0 || cRes < 0) return "";
 
         // --- Pass 1: build process tree ---
         std::set<DWORD> pidTree;
@@ -241,7 +204,7 @@ namespace Sandbox {
 
         struct ProcInfo {
             std::string name;
-            DWORD parentPid = 0, pid = 0;
+            DWORD parentPid = 0;
             std::string exitCode;
             bool exited = false;
         };
@@ -264,7 +227,6 @@ namespace Sandbox {
                 if (newPid == childPid || pidTree.count(parentPid)) {
                     pidTree.insert(newPid);
                     ProcInfo pi;
-                    pi.pid = newPid;
                     pi.parentPid = parentPid;
                     pi.name = (cPath >= 0 && (int)f.size() > cPath) ? f[cPath] : "unknown";
                     auto slash = pi.name.rfind('\\');
@@ -283,7 +245,6 @@ namespace Sandbox {
                         auto comma = procs[pid].exitCode.find(',');
                         if (comma != std::string::npos) procs[pid].exitCode = procs[pid].exitCode.substr(0, comma);
                         procs[pid].exited = true;
-                        procs[pid].pid = pid;
                         if (procs[pid].name.empty() && cProc >= 0 && (int)f.size() > cProc)
                             procs[pid].name = f[cProc];
                     }
@@ -293,19 +254,17 @@ namespace Sandbox {
 
         // Ensure root is in procs
         if (procs.find(childPid) == procs.end()) {
-            ProcInfo pi; pi.pid = childPid; pi.name = "child";
+            ProcInfo pi; pi.name = "child";
             procs[childPid] = pi;
         }
 
         // --- Pass 2: filter events by PID tree, write audit log ---
         FILE* out = _wfopen(auditLogPath.c_str(), L"w");
-        if (!out) return false;
+        if (!out) return "";
 
         int counts[6] = {}; // FILE, REG, NET, PROCESS, THREAD, IMAGE
         int total = 0;
-        std::map<std::string, int> dedup;          // key → count
-        std::vector<std::string> dedupOrder;       // ordered keys
-        std::vector<std::string> outputLines;      // formatted lines
+        std::set<std::string> seen;  // dedup keys
 
         for (const auto& ln : allLines) {
             auto f = ParseCsvLine(ln);
@@ -327,11 +286,9 @@ namespace Sandbox {
             if (timeStr.size() > 12) timeStr = timeStr.substr(0, 12);
             std::string tid = (cTid >= 0 && (int)f.size() > cTid) ? f[cTid] : "?";
 
-            // Dedup
+            // Dedup — skip repeats silently
             std::string key = std::string(cat) + "|" + path + "|" + res;
-            if (dedup.count(key)) { dedup[key]++; continue; }
-            dedup[key] = 1;
-            dedupOrder.push_back(key);
+            if (!seen.insert(key).second) continue;
 
             char buf[1024];
             snprintf(buf, sizeof(buf), "[%s] T:%-6s %-7s %-20s %s",
@@ -347,9 +304,18 @@ namespace Sandbox {
             else if (strcmp(cat, "IMAGE") == 0)   counts[5]++;
         }
 
-        // --- Process tree ---
-        fprintf(out, "\n=== Process Tree ===\n");
-        std::function<void(DWORD, int)> printTree = [&](DWORD pid, int depth) {
+        // --- Summary ---
+        fprintf(out, "\n=== Summary: %d unique events", total);
+        const char* catNames[] = { "FILE", "REG", "NET", "PROCESS", "THREAD", "IMAGE" };
+        for (int i = 0; i < 6; i++)
+            if (counts[i]) fprintf(out, ", %d %s", counts[i], catNames[i]);
+        fprintf(out, " ===\n");
+
+        fclose(out);
+
+        // --- Build process tree text (returned for session log) ---
+        std::string treeText;
+        std::function<void(DWORD, int)> buildTree = [&](DWORD pid, int depth) {
             auto it = procs.find(pid);
             if (it == procs.end()) return;
             const auto& pi = it->second;
@@ -364,38 +330,19 @@ namespace Sandbox {
                 else status = "FAILED";
             }
 
-            fprintf(out, "%s%s  PID:%lu  exit:%s  %s\n",
+            char buf[256];
+            snprintf(buf, sizeof(buf), "%s%s  PID:%lu  exit:%s  %s\n",
                     prefix.c_str(), pi.name.c_str(), (unsigned long)pid,
                     pi.exited ? pi.exitCode.c_str() : "?", status);
+            treeText += buf;
 
             for (const auto& p : procs)
                 if (p.second.parentPid == pid && p.first != pid)
-                    printTree(p.first, depth + 1);
+                    buildTree(p.first, depth + 1);
         };
-        printTree(childPid, 0);
+        buildTree(childPid, 0);
 
-        // --- Summary ---
-        fprintf(out, "\n=== Summary: %d unique events", total);
-        const char* catNames[] = { "FILE", "REG", "NET", "PROCESS", "THREAD", "IMAGE" };
-        for (int i = 0; i < 6; i++)
-            if (counts[i]) fprintf(out, ", %d %s", counts[i], catNames[i]);
-        fprintf(out, " ===\n");
-
-        // --- Repeated events ---
-        bool hasRepeats = false;
-        for (const auto& key : dedupOrder) {
-            if (dedup[key] > 1) {
-                if (!hasRepeats) { fprintf(out, "\n=== Repeated (x count) ===\n"); hasRepeats = true; }
-                auto s1 = key.find('|'), s2 = key.find('|', s1 + 1);
-                fprintf(out, "  x%-4d %-7s %-20s %s\n", dedup[key],
-                        key.substr(0, s1).c_str(),
-                        key.substr(s2 + 1).c_str(),
-                        key.substr(s1 + 1, s2 - s1 - 1).c_str());
-            }
-        }
-
-        fclose(out);
-        return true;
+        return treeText;
     }
 
     // -----------------------------------------------------------------------
@@ -417,8 +364,7 @@ namespace Sandbox {
 
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = {};
-        std::wstring mut = cmd;
-        if (!CreateProcessW(nullptr, &mut[0], nullptr, nullptr, FALSE,
+        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
                            0, nullptr, nullptr, &si, &pi)) {
             fprintf(stderr, "[Audit] Failed to start Procmon (error %lu).\n", GetLastError());
             return false;
@@ -435,9 +381,10 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Stop Procmon audit and generate audit log (call AFTER child exits)
+    // Stop Procmon audit and generate audit log (call AFTER child exits).
+    // Returns process tree text for session log. Empty string on failure.
     // -----------------------------------------------------------------------
-    inline bool StopProcmonAudit(const std::wstring& procmonPath,
+    inline std::string StopProcmonAudit(const std::wstring& procmonPath,
                                  const std::wstring& auditLogPath, DWORD childPid)
     {
         std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
@@ -452,7 +399,7 @@ namespace Sandbox {
         // Verify PML exists before attempting conversion
         if (GetFileAttributesW(pmlPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
             fprintf(stderr, "[Audit] PML log file not found — Procmon may not have captured.\n");
-            return false;
+            return "";
         }
 
         // Convert PML → CSV
@@ -468,19 +415,19 @@ namespace Sandbox {
             if (GetFileAttributesW(csvPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 fprintf(stderr, "[Audit] CSV export failed — Procmon did not produce output.\n");
                 DeleteFileW(pmlPath.c_str());
-                return false;
+                return "";
             }
         }
 
         // Parse CSV and write audit log
-        bool ok = WriteAuditLog(csvPath, auditLogPath, childPid);
-        if (!ok)
+        std::string treeText = WriteAuditLog(csvPath, auditLogPath, childPid);
+        if (treeText.empty())
             fprintf(stderr, "[Audit] Failed to parse audit data.\n");
 
         // Cleanup temps
         DeleteFileW(pmlPath.c_str());
         DeleteFileW(csvPath.c_str());
-        return ok;
+        return treeText;
     }
 
     // -----------------------------------------------------------------------

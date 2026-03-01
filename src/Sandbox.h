@@ -759,14 +759,26 @@ namespace Sandbox {
                 fprintf(stderr, "[Sandy] Process killed after %lu second timeout.\n", config.timeoutSeconds);
         }
 
-        // --- Write log summary and stop logger ---
+        // --- Write log summary (logger stays open for process tree) ---
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
-        g_logger.Stop();
 
         // --- Stop Procmon audit and generate log ---
         if (auditActive) {
-            StopProcmonAudit(procmonExe, auditLogPath, pi.dwProcessId);
+            std::string processTree = StopProcmonAudit(procmonExe, auditLogPath, pi.dwProcessId);
+            if (!processTree.empty()) {
+                g_logger.Log(L"--- Process Tree ---");
+                // Convert narrow tree text to wide for the logger
+                int len = MultiByteToWideChar(CP_ACP, 0, processTree.c_str(), -1, nullptr, 0);
+                std::wstring wTree(len, L'\0');
+                MultiByteToWideChar(CP_ACP, 0, processTree.c_str(), -1, &wTree[0], len);
+                // Trim trailing null/newline
+                while (!wTree.empty() && (wTree.back() == L'\0' || wTree.back() == L'\n'))
+                    wTree.pop_back();
+                g_logger.Log(wTree.c_str());
+            }
         }
+
+        g_logger.Stop();
 
         // --- Report crash dump if child crashed ---
         if (crashDumpsEnabled) {

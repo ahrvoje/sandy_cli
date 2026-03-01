@@ -7,8 +7,8 @@ because a code path that handles sandbox denials wasn't properly implemented.
 Scenario:
   1. Application tries to create a working directory for its cache database.
   2. Sandbox denies write access to the user profile.
-  3. The code falls through to a native path with a null pointer.
-  4. The process crashes with STATUS_ACCESS_VIOLATION (0xC0000005).
+  3. The code has no fallback and calls abort().
+  4. The process crashes with STATUS_STACK_BUFFER_OVERRUN (0xC0000409).
 
 Run inside the sandbox with audit:
   sandy.exe -c test_audit_config.toml -a audit.log -x <python.exe> test_audit.py
@@ -16,7 +16,6 @@ Run inside the sandbox with audit:
 
 import os
 import sys
-import ctypes
 
 print("=== Audit Crash Test ===")
 print(f"PID: {os.getpid()}")
