@@ -1,0 +1,87 @@
+# Sandy — Restricted Token Config Template
+# ============================================================
+# Restricted token mode uses restricting SIDs + Low integrity instead
+# of AppContainer. Use this mode when your app needs named pipe creation
+# (Flutter, Chromium, Mojo IPC frameworks).
+#
+# Trade-offs vs AppContainer:
+#   + Named pipe creation (configurable)
+#   + Registry grants (configurable)
+#   - No network isolation (unrestricted)
+#   - No object namespace isolation (shared)
+#   - System directories always readable
+
+[sandbox]
+token = "restricted"
+# integrity = "low"      # low = strongest isolation (default), may break some apps
+#                        # medium = wider app compatibility (Python 3.14+)
+#                        #   Low integrity blocks writes to user-owned objects.
+#                        #   Medium relies solely on restricting SIDs for isolation.
+
+# ============================================================
+# ACCESS — File and folder grants
+# ============================================================
+# Grant the sandboxed process access to specific folders or files.
+# Use single quotes for Windows paths (no backslash escaping needed).
+
+[access]
+# read = [
+#     'C:\data\config.json',          # single file
+#     'C:\Python314',                 # entire folder (recursive)
+# ]
+# write = [
+#     'C:\logs\agent.log',            # single log file
+#     'C:\temp\output',               # output folder
+# ]
+# execute = ['C:\tools\bin']          # execute-only (no read)
+# append = ['C:\logs\audit.log']      # append-only (no overwrite)
+# delete = ['C:\temp\scratch']        # delete-only
+# all = ['C:\workspace']              # full access
+
+# ============================================================
+# PERMISSIONS — Opt-in capabilities
+# ============================================================
+# Everything is blocked unless set to true.
+
+[allow]
+# pipes = true       # allow named pipe creation (CreateNamedPipeW)
+# stdin = false      # block stdin (redirect to NUL)
+
+# NOTE: network, localhost, lan are not available in restricted mode.
+# Restricted tokens have no capability-based network model — network
+# access is unrestricted by default.
+
+# NOTE: system_dirs is not available in restricted mode.
+# System directories (C:\Windows, Program Files) are always readable
+# because BUILTIN\Users is included in the restricting SID list.
+
+# ============================================================
+# REGISTRY — Registry key grants (restricted mode only)
+# ============================================================
+# Most registry keys (HKLM\Software, HKCU) are already readable by
+# default — BUILTIN\Users is in the restricting SID list, and most
+# keys grant Users read access in their DACLs.
+# Use this section primarily to grant write access to specific keys.
+
+[registry]
+# read = ['HKCU\Software\MyApp']               # usually not needed
+# write = ['HKCU\Software\MyApp\Settings']
+
+# ============================================================
+# ENVIRONMENT — Control inherited variables
+# ============================================================
+# By default, all parent env vars are inherited.
+
+[environment]
+# inherit = false                         # don't inherit parent env vars
+# pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
+
+# ============================================================
+# RESOURCE LIMITS
+# ============================================================
+# Constrain resource usage. Comment out for unlimited.
+
+[limit]
+# timeout = 300      # kill process after N seconds
+# memory = 4096      # maximum memory in MB
+# processes = 10     # maximum concurrent child processes

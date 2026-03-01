@@ -34,6 +34,10 @@ static void PrintUsage()
         "\n"
         "Config file reference:\n"
         "\n"
+        "  [sandbox]\n"
+        "  # token = \"restricted\"  # use restricted token instead of AppContainer\n"
+        "  #                        # allows named pipe creation (Flutter, Chromium)\n"
+        "\n"
         "  [access]\n"
         "  read = [\n"
         "      'C:\\data\\config.json',             # single file\n"
@@ -53,7 +57,12 @@ static void PrintUsage()
         "  # network = true     # outbound internet access\n"
         "  # localhost = true   # loopback connections (admin required)\n"
         "  # lan = true         # local network access\n"
+        "  # pipes = true       # allow named pipe creation (restricted mode only)\n"
         "  # stdin = false      # block stdin (redirect to NUL)\n"
+        "\n"
+        "  [registry]            # restricted mode only\n"
+        "  # read = ['HKCU\\\\Software\\\\MyApp']\n"
+        "  # write = ['HKCU\\\\Software\\\\MyApp\\\\Settings']\n"
         "\n"
         "  [environment]\n"
         "  # inherit = false    # don't inherit parent env vars\n"
@@ -78,8 +87,25 @@ static void PrintUsage()
         "  - Cannot elevate privileges\n"
         "  - Registry: private container hive is read/write, most system keys are\n"
         "    readable, writes to HKLM and HKCU are blocked by mandatory integrity\n"
-        "  - Named pipes: accessible only if the pipe creator set ALL_APPLICATION_PACKAGES\n"
-        "    or the specific AppContainer SID in the pipe's DACL\n",
+        "  - Named pipes: CreateNamedPipeW always fails from an AppContainer — the\n"
+        "    kernel blocks pipe creation at Low integrity. Connecting to existing\n"
+        "    pipes requires the pipe creator to set ALL_APPLICATION_PACKAGES or the\n"
+        "    specific AppContainer SID in the pipe's security descriptor (most apps,\n"
+        "    e.g. Chromium/Mojo, use nullptr = default DACL, which excludes AppContainers)\n"
+        "\n"
+        "  Use token = \"restricted\" in [sandbox] to enable named pipe creation.\n"
+        "  Restricted mode uses restricting SIDs + Low integrity instead of AppContainer.\n"
+        "\n"
+        "Mode comparison:\n"
+        "                          AppContainer (default)   Restricted Token\n"
+        "  Named pipe creation     blocked                  configurable\n"
+        "  Network isolation       configurable             unrestricted\n"
+        "  Object namespace        isolated                 shared\n"
+        "  System dir blocking     configurable             always readable\n"
+        "  Registry access         fixed private hive       configurable\n"
+        "  Low integrity           yes                      configurable\n"
+        "  File/folder grants      configurable             configurable\n"
+        "  Resource limits         yes                      yes\n",
         kVersion
     );
 }
@@ -180,6 +206,10 @@ int wmain(int argc, wchar_t* argv[])
             return 1;
         }
         config = Sandbox::LoadConfig(configPath);
+    }
+    if (config.parseError) {
+        fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
+        return 1;
     }
     config.logPath = logPath;
     config.quiet = quiet;

@@ -1,10 +1,14 @@
-# Sandy Sandbox Configuration
+# Sandy — AppContainer Config Template
 # ============================================================
-# All sandbox settings are defined here. Permissions are opt-in:
-# if not listed in [allow], they are blocked by default.
+# AppContainer is the default sandbox mode. It provides kernel-enforced
+# isolation with network control and object namespace isolation.
+# Named pipe creation is blocked (kernel restriction).
+
+[sandbox]
+token = "appcontainer"
 
 # ============================================================
-# ACCESS
+# ACCESS — File and folder grants
 # ============================================================
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
@@ -24,30 +28,27 @@
 # all = ['C:\workspace']              # full access
 
 # ============================================================
-# PERMISSIONS
+# PERMISSIONS — Opt-in capabilities
 # ============================================================
-# Opt-in to additional sandbox permissions.
 # Everything is blocked unless set to true.
 
 [allow]
 system_dirs = true   # read C:\Windows, Program Files (required for most executables)
 # network = true     # outbound internet access
-# localhost = true   # loopback/localhost connections                      (admin)
+# localhost = true   # loopback/localhost connections               (admin required)
 # lan = true         # local network access
-# pipes = true       # allow named pipe creation (restricted mode only)
 # stdin = false      # block stdin (redirect to NUL)
 
-# ============================================================
-# [registry] — Registry key grants (restricted mode only)
-# ============================================================
-# [registry]
-# read = ['HKCU\Software\MyApp']
-# write = ['HKCU\Software\MyApp\Settings']
+# NOTE: pipes is not available in AppContainer mode.
+# Named pipe creation is a kernel-level restriction of AppContainer.
+# Use token = "restricted" in [sandbox] if your app needs named pipes.
+
+# NOTE: [registry] section is not available in AppContainer mode.
+# AppContainer provides a fixed private registry hive automatically.
 
 # ============================================================
-# ENVIRONMENT
+# ENVIRONMENT — Control inherited variables
 # ============================================================
-# Control which environment variables the child process can see.
 # By default, all parent env vars are inherited.
 
 [environment]
@@ -55,17 +56,9 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
 
 # ============================================================
-# [sandbox] — Token mode
-# ============================================================
-[sandbox]
-# token = "restricted"  # use restricted token instead of appcontainer
-#                        # allows named pipe creation (Flutter, Chromium)
-#                        # default: "appcontainer"
-
-# ============================================================
 # RESOURCE LIMITS
 # ============================================================
-# Constrain resource usage. Set to 0 or comment out for unlimited.
+# Constrain resource usage. Comment out for unlimited.
 
 [limit]
 # timeout = 300      # kill process after N seconds

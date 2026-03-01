@@ -1,6 +1,9 @@
 # Sandy test configuration — strict mode test
 # system_dirs is not set (strict), so no executable should be able to run.
 
+[sandbox]
+token = "appcontainer"
+
 [access]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',

@@ -2,6 +2,9 @@
 # Tests: network=true and resource limits. system_dirs must remain
 # true for Python to load its DLLs. Strict mode is tested separately.
 
+[sandbox]
+token = "appcontainer"
+
 [access]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',

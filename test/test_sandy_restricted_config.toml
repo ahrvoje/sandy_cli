@@ -1,13 +1,15 @@
-# Sandy sandbox test configuration
-# Used by: sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
+# Sandy sandbox test configuration — Restricted Token mode
+# Used by: sandy.exe -c test_sandy_restricted_config.toml -x <python.exe> test_sandy.py
 
 [sandbox]
-token = "appcontainer"
+token = "restricted"
+integrity = "medium"
 
 [access]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\repos\sandy_cli\',
+    'C:\repos\sandy_cli\test',
     'C:\Users\H\test_R',
     'C:\Users\H\test_file_R.txt',
 ]
@@ -21,4 +23,4 @@ all = [
 ]
 
 [allow]
-system_dirs = true
+pipes = false

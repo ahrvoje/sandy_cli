@@ -170,21 +170,55 @@ sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 
 ---
 
-## AppContainer Limitations
+## Sandbox Modes
 
-Even with the most permissive config, the following kernel-level restrictions **cannot** be overridden — they are enforced by Windows, not by Sandy:
+Sandy supports two sandbox modes via `[sandbox] token`:
 
-| Restriction | Reason |
-|---|---|
-| **Process identity** | Token carries an AppContainer SID — callers see a different principal |
-| **Integrity level** | AppContainer runs below Medium — cannot write to Medium+ mandatory-label objects |
-| **COM/RPC servers** | Many out-of-process COM servers reject AppContainer callers |
-| **Registry** | Private container hive is read/write; most system keys readable; writes to HKLM and HKCU blocked by mandatory integrity |
-| **Named pipes** | Accessible only if the pipe creator set `ALL_APPLICATION_PACKAGES` or the specific container SID in the pipe's DACL |
-| **Elevation** | Cannot escalate privileges from within an AppContainer |
+**🔒** = fundamental OS limitation &nbsp;&nbsp; **→** = fixed (not configurable) &nbsp;&nbsp; **⚙️** = configurable via TOML
+
+| Aspect | AppContainer (default) | Restricted Token |
+|--------|------------------------|------------------|
+| **Integrity level** | → Low (OS-enforced) | ⚙️ `integrity` · `"low"` or `"medium"` (default: `"low"`) |
+| **Named pipes** | 🔒 Blocked (kernel prohibits at Low IL) | ⚙️ `pipes` · default: blocked |
+| **Network** | ⚙️ `network` `localhost` `lan` · default: blocked | 🔒 Unrestricted (no capability model) |
+| **Object namespace** | 🔒 Isolated (private per-container namespace) | 🔒 Shared (global namespace) |
+| **System dirs** (Windows, Program Files) | ⚙️ `system_dirs` · default: blocked | → Always readable (Users SID in restricting list) |
+| **User profile** (Desktop, Documents, etc.) | → Blocked (AppContainer SID excluded) | → Blocked at `"low"` IL · accessible at `"medium"` |
+| **Registry** | → Private hive (reads OK, writes to HKLM/HKCU blocked) | ⚙️ `[registry]` `read`/`write` · most keys readable by default |
+| **COM/RPC servers** | 🔒 Most reject AppContainer callers | → Accessible |
+| **Process identity** | 🔒 AppContainer SID (different principal) | → User SID (same principal, restricted) |
+| **Elevation** | 🔒 Cannot escalate | 🔒 Cannot escalate |
+| **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` |
+| **Privilege stripping** | → All stripped | → All stripped except `SeChangeNotifyPrivilege` |
+| **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` |
+| **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` |
+| **Stdin** | ⚙️ `stdin` · default: inherited | ⚙️ `stdin` · default: inherited |
 
 > [!NOTE]
-> This is by design. Sandy provides a lean middle ground between running unprotected and deploying a full OS sandbox. If you need truly unsandboxed execution, run the process directly without Sandy.
+> **Integrity × compatibility trade-off** (restricted mode only):
+> `integrity = "low"` gives the strongest isolation — blocks writes to user-owned objects — but breaks apps depending on `api-ms-win-core-path` API set resolution (Python 3.14+, some .NET apps).
+> `integrity = "medium"` gives wider app compatibility but relies solely on restricting SIDs for isolation. User-owned directories become accessible unless future support for excluding the User SID from restricting SIDs is added.
+
+**Use AppContainer** (default) when you need network isolation and don't require named pipes or COM.
+**Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
+
+### Restricted Token config
+
+```toml
+[sandbox]
+token = "restricted"
+integrity = "medium"       # "low" (default) or "medium"
+
+[access]
+read = ['C:\Path\To\App']
+
+[allow]
+pipes = true               # allow CreateNamedPipeW
+
+[registry]
+read = ['HKCU\Software\MyApp']
+write = ['HKCU\Software\MyApp\Settings']
+```
 
 ---
 
