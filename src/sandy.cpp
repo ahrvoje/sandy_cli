@@ -19,6 +19,7 @@ static void PrintUsage()
         "Usage:\n"
         "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -p <report>       -x <executable> [args...]\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>   Path to TOML config file\n"
@@ -26,6 +27,7 @@ static void PrintUsage()
         "  -l, --log <path>      Session log (config, output, exit code)\n"
         "  -a, --audit <path>    Audit log of denied resource access (requires Procmon + admin)\n"
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
+        "  -p, --profile <path>  Profile unsandboxed run and write compatibility report\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
         "  -v, --version         Print version and exit\n"
         "  -h, --help            Print this help text and exit\n"
@@ -132,6 +134,7 @@ int wmain(int argc, wchar_t* argv[])
     std::wstring configString;
     std::wstring logPath;
     std::wstring auditLogPath;
+    std::wstring profilePath;
     std::wstring exePath;
     std::wstring exeArgs;
     bool quiet = false;
@@ -163,6 +166,9 @@ int wmain(int argc, wchar_t* argv[])
         else if ((arg == L"-a" || arg == L"--audit") && i + 1 < argc) {
             auditLogPath = argv[++i];
         }
+        else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
+            profilePath = argv[++i];
+        }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             exePath = argv[++i];
             exeArgs = CollectArgs(i + 1, argc, argv);
@@ -181,6 +187,17 @@ int wmain(int argc, wchar_t* argv[])
             PrintUsage();
             return 1;
         }
+    }
+
+    // --- Profile mode (no config needed) ---
+    if (!profilePath.empty()) {
+        if (exePath.empty()) {
+            fprintf(stderr, "Error: -p requires -x <executable>.\n\n");
+            PrintUsage();
+            return 1;
+        }
+        int rc = Sandbox::RunProfile(exePath, exeArgs, profilePath);
+        return rc;
     }
 
     // --- Validate required options ---
