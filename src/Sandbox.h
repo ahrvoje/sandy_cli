@@ -227,6 +227,27 @@ namespace Sandbox {
         return folder;
     }
 
+    // Helper: unescape TOML double-quoted string (\\, \n, \t, \r, \")
+    inline std::wstring UnescapeTomlDQ(const std::wstring& s) {
+        std::wstring out;
+        out.reserve(s.size());
+        for (size_t i = 0; i < s.size(); i++) {
+            if (s[i] == L'\\' && i + 1 < s.size()) {
+                switch (s[i + 1]) {
+                    case L'\\': out += L'\\'; i++; break;
+                    case L'n':  out += L'\n'; i++; break;
+                    case L't':  out += L'\t'; i++; break;
+                    case L'r':  out += L'\r'; i++; break;
+                    case L'"':  out += L'"';  i++; break;
+                    default:    out += s[i]; break;
+                }
+            } else {
+                out += s[i];
+            }
+        }
+        return out;
+    }
+
     // -----------------------------------------------------------------------
     // Helper: parse 'key = value' from a TOML line
     // -----------------------------------------------------------------------
@@ -245,7 +266,16 @@ namespace Sandbox {
             ((val.front() == L'"' && val.back() == L'"') ||
              (val.front() == L'\'' && val.back() == L'\'')))
         {
+            bool isDQ = (val.front() == L'"');
             val = val.substr(1, val.size() - 2);
+            // TOML double-quoted strings: process escape sequences
+            if (isDQ) {
+                val = UnescapeTomlDQ(val);
+            }
+        }
+        else if (!val.empty() && (val.front() == L'"' || val.front() == L'\'')) {
+            // Opening quote with no closing quote
+            fprintf(stderr, "Error: Unterminated quote in value for key '%ls'\n", key.c_str());
         }
         return { key, val, true };
     }
@@ -258,8 +288,20 @@ namespace Sandbox {
     //   [environment] env block control
     //   [limit]       resource constraints
     // -----------------------------------------------------------------------
-    inline SandboxConfig ParseConfig(const std::wstring& content)
+    inline SandboxConfig ParseConfig(const std::wstring& contentRaw)
     {
+        // Convert literal \n sequences to real newlines (enables cmd.exe -s usage)
+        std::wstring content;
+        content.reserve(contentRaw.size());
+        for (size_t i = 0; i < contentRaw.size(); i++) {
+            if (contentRaw[i] == L'\\' && i + 1 < contentRaw.size() && contentRaw[i + 1] == L'n') {
+                content += L'\n';
+                i++;
+            } else {
+                content += contentRaw[i];
+            }
+        }
+
         SandboxConfig config;
         enum class Section { None, Sandbox, Folders, Registry, Allow, Limit, Environment };
         Section currentSection = Section::None;
@@ -382,6 +424,7 @@ namespace Sandbox {
                         if (qend == std::wstring::npos) break;
 
                         std::wstring path = text.substr(qstart + 1, qend - qstart - 1);
+                        if (!isSingle) path = UnescapeTomlDQ(path);
                         if (!path.empty())
                             config.folders.push_back({ path, level });
                         pos = qend + 1;
@@ -429,6 +472,7 @@ namespace Sandbox {
                         auto qend = text.find(quote, qstart + 1);
                         if (qend == std::wstring::npos) break;
                         std::wstring path = text.substr(qstart + 1, qend - qstart - 1);
+                        if (!isSingle) path = UnescapeTomlDQ(path);
                         if (!path.empty()) {
                             if (level == AccessLevel::Read) config.registryRead.push_back(path);
                             else config.registryWrite.push_back(path);
