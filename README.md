@@ -209,6 +209,9 @@ processes = 10      # max concurrent child processes
 | **COM/RPC servers** | 🔒 Most reject AppContainer callers | → Accessible |
 | **Process identity** | 🔒 AppContainer SID (different principal) | → User SID (same principal, restricted) |
 | **Elevation** | 🔒 Cannot escalate | 🔒 Cannot escalate |
+| **Scheduled tasks** | 🔒 Blocked (COM rejected) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
+| **Window messages (UIPI)** | 🔒 Blocked (Low IL) | 🔒 Blocked at `"low"` IL · ⚠️ allowed at `"medium"` |
+| **Clipboard** | 🔒 Read only (Low IL) | 🔒 Read only at `"low"` IL · ⚠️ full access at `"medium"` |
 | **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` |
 | **Privilege stripping** | → All stripped | → All stripped except `SeChangeNotifyPrivilege` |
 | **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` |
@@ -227,6 +230,9 @@ processes = 10      # max concurrent child processes
 | **System dir reads** | ✅ Always readable | ✅ Always readable | → Fixed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | → Fixed |
 | **Named pipes** | ⚙️ Configurable | ⚙️ Configurable | ⚙️ Configurable |
+| **Scheduled tasks** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (persistence risk) | 🔒 Fundamental |
+| **Window messages (UIPI)** | ❌ Blocked (Low IL) | ⚠️ **Allowed** (UI manipulation risk) | 🔒 Fundamental |
+| **Clipboard** | 🔒 Read only | ⚠️ Full access | 🔒 Fundamental |
 | **Network** | ✅ Unrestricted | ✅ Unrestricted | 🔒 Fundamental |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.

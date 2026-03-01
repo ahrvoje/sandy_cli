@@ -78,6 +78,9 @@ static void PrintUsage()
         "  Registry access         private hive          configurable\n"
         "  COM/RPC servers         mostly blocked        accessible\n"
         "  File/folder grants      configurable          configurable\n"
+        "  Scheduled tasks         blocked (COM)         blocked (low) / allowed (medium)\n"
+        "  Window messages (UIPI)  blocked               blocked (low) / allowed (medium)\n"
+        "  Clipboard               read only             read only (low) / full (medium)\n"
         "  Resource limits         yes                   yes\n"
         "\n"
         "Use appcontainer for network isolation. Use restricted for named pipes/COM.\n"
@@ -92,6 +95,9 @@ static void PrintUsage()
         "  System dir reads        always readable        always readable\n"
         "  System dir writes       blocked                blocked\n"
         "  Named pipes             configurable           configurable\n"
+        "  Scheduled tasks         blocked                allowed (persistence risk!)\n"
+        "  Window messages (UIPI)  blocked                allowed (UI manipulation risk)\n"
+        "  Clipboard               read only              full access\n"
         "  Network                 unrestricted           unrestricted\n",
         kVersion
     );
