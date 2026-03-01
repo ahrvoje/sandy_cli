@@ -1,10 +1,22 @@
 # Sandy Sandbox Configuration
 # ============================================================
+# Default template. For mode-specific templates, see:
+#   sandy_config_appcontainer.toml  — AppContainer mode
+#   sandy_config_restricted.toml    — Restricted Token mode
+#
 # All sandbox settings are defined here. Permissions are opt-in:
 # if not listed in [allow], they are blocked by default.
 
 # ============================================================
-# ACCESS
+# SANDBOX MODE (required)
+# ============================================================
+
+[sandbox]
+token = "appcontainer"     # "appcontainer" (default) or "restricted"
+# integrity = "low"        # restricted only: "low" or "medium"
+
+# ============================================================
+# ACCESS — File and folder grants
 # ============================================================
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
@@ -24,30 +36,29 @@
 # all = ['C:\workspace']              # full access
 
 # ============================================================
-# PERMISSIONS
+# PERMISSIONS — Opt-in capabilities (mode-specific)
 # ============================================================
-# Opt-in to additional sandbox permissions.
-# Everything is blocked unless set to true.
+# AppContainer: system_dirs, network, localhost, lan, stdin
+# Restricted:   pipes, stdin
 
 [allow]
-system_dirs = true   # read C:\Windows, Program Files (required for most executables)
-# network = true     # outbound internet access
-# localhost = true   # loopback/localhost connections                      (admin)
-# lan = true         # local network access
-# pipes = true       # allow named pipe creation (restricted mode only)
-# stdin = false      # block stdin (redirect to NUL)
+system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
+# network = true     # outbound internet access            (appcontainer only)
+# localhost = true   # loopback connections (admin required) (appcontainer only)
+# lan = true         # local network access                (appcontainer only)
+# pipes = true       # named pipe creation                 (restricted only)
+# stdin = false      # block stdin (redirect to NUL)       (both modes)
 
 # ============================================================
-# [registry] — Registry key grants (restricted mode only)
+# REGISTRY — Registry key grants (restricted only)
 # ============================================================
 # [registry]
 # read = ['HKCU\Software\MyApp']
 # write = ['HKCU\Software\MyApp\Settings']
 
 # ============================================================
-# ENVIRONMENT
+# ENVIRONMENT — Control inherited variables
 # ============================================================
-# Control which environment variables the child process can see.
 # By default, all parent env vars are inherited.
 
 [environment]
@@ -55,17 +66,9 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
 
 # ============================================================
-# [sandbox] — Token mode
-# ============================================================
-[sandbox]
-# token = "restricted"  # use restricted token instead of appcontainer
-#                        # allows named pipe creation (Flutter, Chromium)
-#                        # default: "appcontainer"
-
-# ============================================================
 # RESOURCE LIMITS
 # ============================================================
-# Constrain resource usage. Set to 0 or comment out for unlimited.
+# Constrain resource usage. Comment out for unlimited.
 
 [limit]
 # timeout = 300      # kill process after N seconds
