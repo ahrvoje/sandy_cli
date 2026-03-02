@@ -13,3 +13,13 @@ read = [
 
 [allow]
 system_dirs = true
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true

@@ -107,14 +107,23 @@ inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text) 
         if (sq == std::wstring::npos && dq == std::wstring::npos) break;
 
         bool isSingle = (sq != std::wstring::npos && (dq == std::wstring::npos || sq < dq));
-        wchar_t quote = isSingle ? L'\'' : L'"';
         size_t qstart = isSingle ? sq : dq;
-        auto qend = text.find(quote, qstart + 1);
+
+        // Find closing quote — for DQ strings, skip escaped quotes (\")
+        size_t qend = std::wstring::npos;
+        if (!isSingle) {
+            for (size_t i = qstart + 1; i < text.size(); i++) {
+                if (text[i] == L'\\') { i++; continue; }
+                if (text[i] == L'"') { qend = i; break; }
+            }
+        } else {
+            qend = text.find(L'\'', qstart + 1);
+        }
         if (qend == std::wstring::npos) break;
 
         std::wstring s = text.substr(qstart + 1, qend - qstart - 1);
         if (!isSingle) s = UnescapeDQ(s);
-        if (!s.empty()) result.push_back(s);
+        result.push_back(s);
         pos = qend + 1;
     }
     return result;
@@ -134,6 +143,7 @@ inline std::wstring Trim(const std::wstring& s) {
 // Strip inline comment (respecting quoted strings)
 // -----------------------------------------------------------------------
 inline std::wstring StripInlineComment(const std::wstring& line) {
+    if (line.empty()) return line;
     if (line.front() == L'"' || line.front() == L'\'') return line;
     bool inQuote = false;
     wchar_t quoteChar = 0;
@@ -156,8 +166,12 @@ inline std::wstring StripInlineComment(const std::wstring& line) {
 inline std::wstring ConvertLiteralNewlines(const std::wstring& s) {
     std::wstring out;
     out.reserve(s.size());
+    bool inSQ = false, inDQ = false;
     for (size_t i = 0; i < s.size(); i++) {
-        if (s[i] == L'\\' && i + 1 < s.size() && s[i + 1] == L'n') {
+        if (!inDQ && s[i] == L'\'')  { inSQ = !inSQ; out += s[i]; }
+        else if (!inSQ && s[i] == L'"') { inDQ = !inDQ; out += s[i]; }
+        else if (!inSQ && !inDQ &&
+                 s[i] == L'\\' && i + 1 < s.size() && s[i + 1] == L'n') {
             out += L'\n';
             i++;
         } else {

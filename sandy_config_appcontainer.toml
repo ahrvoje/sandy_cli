@@ -28,16 +28,19 @@ token = 'appcontainer'
 # all = ['C:\workspace']              # full access
 
 # ============================================================
-# PERMISSIONS — Opt-in capabilities
+# PERMISSIONS — All keys mandatory per mode
 # ============================================================
-# Everything is blocked unless set to true.
+# Every key must be explicitly set. Omitting a key is a parse error.
 
 [allow]
-system_dirs = true   # read C:\Windows, Program Files (required for most executables)
-# network = true     # outbound internet access
-# localhost = true   # loopback/localhost connections               (admin required)
-# lan = true         # local network access
-# stdin = false      # block stdin (redirect to NUL)
+system_dirs     = true    # read C:\Windows, Program Files (required for most executables)
+network         = false   # outbound internet access
+localhost       = false   # loopback/localhost connections (admin required)
+lan             = false   # local network access
+stdin           = false   # true = inherit, false = disabled (NUL), or a file path
+clipboard_read  = false   # allow reading from clipboard
+clipboard_write = false   # allow writing to clipboard
+child_processes = true    # allow spawning child processes (kernel-enforced)
 
 # NOTE: named_pipes is not available in AppContainer mode.
 # Named pipe creation is a kernel-level restriction of AppContainer.
@@ -47,13 +50,12 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 # AppContainer provides a fixed private registry hive automatically.
 
 # ============================================================
-# ENVIRONMENT — Control inherited variables
+# ENVIRONMENT — inherit is mandatory
 # ============================================================
-# By default, all parent env vars are inherited.
 
 [environment]
-# inherit = false                         # don't inherit parent env vars
-# pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
+inherit = true                            # required: true or false
+# pass = ['PATH', 'PYTHONPATH', 'HOME']   # optional: extends clean env when inherit = false
 
 # ============================================================
 # RESOURCE LIMITS

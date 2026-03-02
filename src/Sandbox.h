@@ -13,7 +13,7 @@ namespace Sandbox {
 
 
     // Track loopback state for cleanup
-    static bool g_loopbackGranted = false;
+    inline bool g_loopbackGranted = false;
 
     // -----------------------------------------------------------------------
     // Loopback exemption — allow localhost access for AppContainer.
@@ -33,9 +33,10 @@ namespace Sandbox {
             CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             return false;
 
-        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD waitResult = WaitForSingleObject(pi.hProcess, 5000);
         DWORD exitCode = 1;
-        GetExitCodeProcess(pi.hProcess, &exitCode);
+        if (waitResult == WAIT_OBJECT_0)
+            GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
 
@@ -62,6 +63,24 @@ namespace Sandbox {
             CloseHandle(pi.hProcess);
         }
         g_loopbackGranted = false;
+    }
+
+    // Unconditional loopback removal for startup recovery (g_loopbackGranted
+    // is always false in a fresh process, so DisableLoopback would be a no-op).
+    inline void ForceDisableLoopback()
+    {
+        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox";
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        {
+            WaitForSingleObject(pi.hProcess, 5000);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -190,13 +209,14 @@ namespace Sandbox {
 
         // --- Proactive cleanup of stale state from previous crashed runs ---
         {
-            DisableLoopback();  // no-op if not exempted
+            ForceDisableLoopback();  // unconditional — g_loopbackGranted is false at startup
             DeleteAppContainerProfile(kContainerName);  // no-op if doesn't exist
+            RestoreStaleGrants();  // restore ACLs from registry if previous run crashed
             // Clean any stale WER key for the target exe
             auto slash = exePath.find_last_of(L"\\/");
             std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
             DisableCrashDumps(exeBaseName);
-            g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");
+            g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/ACL/WER state");
         }
 
         // --- Forensic: Sandy identity ---
@@ -292,14 +312,14 @@ namespace Sandbox {
             if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
                 hr = DeriveAppContainerSidFromAppContainerName(kContainerName, &pContainerSid);
                 containerCreated = false;
+            } else {
+                containerCreated = SUCCEEDED(hr);
             }
 
             if (FAILED(hr) || !pContainerSid) {
                 fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
                 return 1;
             }
-
-            containerCreated = (HRESULT_CODE(hr) != ERROR_ALREADY_EXISTS);
             pGrantSid = pContainerSid;  // Use container SID for DACL grants
 
             g_logger.Log(L"MODE: appcontainer");
@@ -492,8 +512,10 @@ namespace Sandbox {
             }
         }
 
-        // --- Cleanup helper ---
         auto cleanup = [&]() {
+            RevokeAllGrants();  // restore original DACLs + clear registry
+            DisableLoopback();
+            DeleteAppContainerProfile(kContainerName);
             if (pContainerSid) FreeSid(pContainerSid);
             if (hRestrictedToken) CloseHandle(hRestrictedToken);
             if (pGrantSid && pGrantSid != pContainerSid) FreeSid(pGrantSid);
@@ -663,7 +685,7 @@ namespace Sandbox {
         // --- Launch the target executable ---
         PROCESS_INFORMATION pi{};
         BOOL created;
-        DWORD createFlags = CREATE_UNICODE_ENVIRONMENT;
+        DWORD createFlags = CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
         if (pAttrList) createFlags |= EXTENDED_STARTUPINFO_PRESENT;
 
         if (isRestricted) {
@@ -683,7 +705,7 @@ namespace Sandbox {
                 nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
                 createFlags,
                 envBlock.empty() ? nullptr : envBlock.data(),
-                exeFolder.c_str(), &siex.StartupInfo, &pi);
+                exeFolder.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&siex), &pi);
         }
 
         // Close write end in parent so ReadFile gets EOF when child exits
@@ -719,7 +741,7 @@ namespace Sandbox {
             g_logger.Log(pidMsg);
         }
 
-        CloseHandle(pi.hThread);
+        // pi.hThread kept open — resumed after job assignment below
 
         // --- Assign to Job Object for resource limits and UI restrictions ---
         HANDLE hJob = nullptr;
@@ -758,6 +780,10 @@ namespace Sandbox {
                 g_logger.Log(msg);
             }
         }
+
+        // Resume suspended child (after job assignment ensures no race window)
+        ResumeThread(pi.hThread);
+        CloseHandle(pi.hThread);
 
         // --- Start timeout watchdog thread ---
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
@@ -844,6 +870,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
+        RevokeAllGrants();  // restore DACLs (from memory if available, clears registry)
         DisableLoopback();
         DeleteAppContainerProfile(kContainerName);
     }

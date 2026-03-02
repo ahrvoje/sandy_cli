@@ -13,13 +13,14 @@
 
 [sandbox]
 token = 'restricted'
-# integrity = 'low'      # low = strongest isolation (default), may break some apps
-#                        # medium = wider app compatibility (Python 3.14+)
-#                        #   Low integrity blocks writes to user-owned objects.
-#                        #   Medium relies solely on restricting SIDs for isolation.
+integrity = 'low'        # required: 'low' or 'medium'
+                         #   low = strongest isolation, may break some apps
+                         #   medium = wider app compatibility (Python 3.14+)
+                         #   Low integrity blocks writes to user-owned objects.
+                         #   Medium relies solely on restricting SIDs for isolation.
 
 # ============================================================
-# ACCESS — File and folder grants
+# ACCESS — File and folder grants (optional)
 # ============================================================
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
@@ -39,24 +40,23 @@ token = 'restricted'
 # all = ['C:\workspace']              # full access
 
 # ============================================================
-# PERMISSIONS — Opt-in capabilities
+# PERMISSIONS — All keys mandatory per mode
 # ============================================================
-# Everything is blocked unless set to true.
+# Every key must be explicitly set. Omitting a key is a parse error.
 
 [allow]
-# named_pipes = true   # allow named pipe creation (CreateNamedPipeW)
-# stdin = false      # block stdin (redirect to NUL)
+named_pipes     = false   # allow named pipe creation (CreateNamedPipeW)
+stdin           = false   # true = inherit, false = disabled (NUL), or a file path
+clipboard_read  = false   # allow reading from clipboard
+clipboard_write = false   # allow writing to clipboard
+child_processes = true    # allow spawning child processes (kernel-enforced)
 
-# NOTE: network, localhost, lan are not available in restricted mode.
+# NOTE: network, localhost, lan, system_dirs are not available in restricted mode.
 # Restricted tokens have no capability-based network model — network
-# access is unrestricted by default.
-
-# NOTE: system_dirs is not available in restricted mode.
-# System directories (C:\Windows, Program Files) are always readable
-# because BUILTIN\Users is included in the restricting SID list.
+# access is unrestricted. System dirs are always readable via BUILTIN\Users.
 
 # ============================================================
-# REGISTRY — Registry key grants (restricted mode only)
+# REGISTRY — Registry key grants (optional, restricted only)
 # ============================================================
 # Most registry keys (HKLM\Software, HKCU) are already readable by
 # default — BUILTIN\Users is in the restricting SID list, and most
@@ -68,13 +68,12 @@ token = 'restricted'
 # write = ['HKCU\Software\MyApp\Settings']
 
 # ============================================================
-# ENVIRONMENT — Control inherited variables
+# ENVIRONMENT — inherit is mandatory
 # ============================================================
-# By default, all parent env vars are inherited.
 
 [environment]
-# inherit = false                         # don't inherit parent env vars
-# pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
+inherit = true                            # required: true or false
+# pass = ['PATH', 'PYTHONPATH', 'HOME']   # optional: extends clean env when inherit = false
 
 # ============================================================
 # RESOURCE LIMITS

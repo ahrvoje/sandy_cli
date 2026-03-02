@@ -4,16 +4,16 @@
 #   sandy_config_appcontainer.toml  — AppContainer mode
 #   sandy_config_restricted.toml    — Restricted Token mode
 #
-# All sandbox settings are defined here. Permissions are opt-in:
-# if not listed in [allow], they are blocked by default.
+# All sandbox settings are defined here.
+# All [allow] keys are mandatory and must be set explicitly.
 
 # ============================================================
 # SANDBOX MODE (required)
 # ============================================================
 
 [sandbox]
-token = 'appcontainer'     # 'appcontainer' (default) or 'restricted'
-# integrity = 'low'        # restricted only: 'low' or 'medium'
+token = 'appcontainer'     # 'appcontainer' or 'restricted'
+# integrity = 'low'        # required (restricted only): 'low' or 'medium'
 
 # ============================================================
 # ACCESS — File and folder grants
@@ -36,18 +36,21 @@ token = 'appcontainer'     # 'appcontainer' (default) or 'restricted'
 # all = ['C:\workspace']              # full access
 
 # ============================================================
-# PERMISSIONS — Opt-in capabilities (mode-specific)
+# PERMISSIONS — All keys mandatory per mode
 # ============================================================
-# AppContainer: system_dirs, network, localhost, lan, stdin
-# Restricted:   named_pipes, stdin
+# AppContainer: system_dirs, network, localhost, lan, stdin, clipboard_read, clipboard_write, child_processes
+# Restricted:   named_pipes, stdin, clipboard_read, clipboard_write, child_processes
 
 [allow]
 system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
-# network = true     # outbound internet access            (appcontainer only)
-# localhost = true   # loopback connections (admin required) (appcontainer only)
-# lan = true         # local network access                (appcontainer only)
-# named_pipes = true   # named pipe creation                 (restricted only)
-# stdin = false      # block stdin (redirect to NUL)       (both modes)
+network = false      # outbound internet access            (appcontainer only)
+localhost = false    # loopback connections (admin required) (appcontainer only)
+lan = false          # local network access                (appcontainer only)
+# named_pipes = false  # named pipe creation                 (restricted only)
+stdin = false        # true = inherit, false = NUL           (both modes)
+clipboard_read = false
+clipboard_write = false
+child_processes = true
 
 # ============================================================
 # REGISTRY — Registry key grants (restricted only)
@@ -59,11 +62,11 @@ system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
 # ============================================================
 # ENVIRONMENT — Control inherited variables
 # ============================================================
-# By default, all parent env vars are inherited.
+# All settings are mandatory. No optional/hidden defaults.
 
 [environment]
-# inherit = false                         # don't inherit parent env vars
-# pass = ['PATH', 'PYTHONPATH', 'HOME']   # specific vars to pass through
+inherit = true                            # required: true or false
+# pass = ['PATH', 'PYTHONPATH', 'HOME']   # extends clean env when inherit = false
 
 # ============================================================
 # RESOURCE LIMITS

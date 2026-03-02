@@ -969,15 +969,24 @@ namespace Sandbox {
             }
         }
 
-        // Allow section
-        bool needAllow = r.needsSystemDirs || r.usesNetwork || r.usesLocalhost || r.usesNamedPipes;
-        if (needAllow) {
-            fprintf(out, "\n[allow]\n");
-            if (r.needsSystemDirs) fprintf(out, "system_dirs = true\n");
-            if (r.usesNetwork) fprintf(out, "network = true\n");
-            if (r.usesLocalhost) fprintf(out, "localhost = true\n");
-            if (r.usesNamedPipes) fprintf(out, "named_pipes = true\n");
+        // Allow section — all mandatory keys for selected mode
+        fprintf(out, "\n[allow]\n");
+        if (appcontainerOK) {
+            fprintf(out, "system_dirs = %s\n", r.needsSystemDirs ? "true" : "false");
+            fprintf(out, "network = %s\n", r.usesNetwork ? "true" : "false");
+            fprintf(out, "localhost = %s\n", r.usesLocalhost ? "true" : "false");
+            fprintf(out, "lan = false\n");
+        } else {
+            fprintf(out, "named_pipes = %s\n", r.usesNamedPipes ? "true" : "false");
         }
+        fprintf(out, "stdin = true\n");
+        fprintf(out, "clipboard_read = false\n");
+        fprintf(out, "clipboard_write = false\n");
+        fprintf(out, "child_processes = %s\n", r.spawnsChildren ? "true" : "false");
+
+        // Environment section
+        fprintf(out, "\n[environment]\n");
+        fprintf(out, "inherit = true\n");
 
         fclose(out);
         return true;

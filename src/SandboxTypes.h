@@ -58,25 +58,25 @@ namespace Sandbox {
         std::wstring workdir;                              // [sandbox] workdir (optional)
         std::vector<FolderEntry> folders;
 
-        // [allow] — opt-in permissions (default: all blocked)
+        // [allow] — permissions (all keys mandatory per mode)
         bool allowNetwork    = false;
         bool allowLocalhost  = false;
         bool allowLan        = false;
         bool allowSystemDirs = false;
         bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
 
-        // stdin control: empty = inherit, "NUL" = disabled, path = file
-        std::wstring stdinMode;  // empty (default) = inherit parent stdin
-        bool allowClipboardRead  = true;   // default: allow clipboard reading
-        bool allowClipboardWrite = true;   // default: allow clipboard writing
-        bool allowChildProcesses = true;   // default: allow child process creation
+        // stdin control: "NUL" = disabled, empty/true = inherit, path = file
+        std::wstring stdinMode = L"NUL";
+        bool allowClipboardRead  = false;
+        bool allowClipboardWrite = false;
+        bool allowChildProcesses = false;
 
         // [registry] — registry key grants (restricted mode only)
         std::vector<std::wstring> registryRead;
         std::vector<std::wstring> registryWrite;
 
         // [environment] — env block control
-        bool envInherit = true;
+        bool envInherit = false;
         std::vector<std::wstring> envPass;
 
         // [limit] — resource constraints (0 = unlimited)
@@ -202,6 +202,6 @@ namespace Sandbox {
         ~SandyLogger() { Stop(); }
     };
 
-    static SandyLogger g_logger;
+    inline SandyLogger g_logger;
 
 } // namespace Sandbox

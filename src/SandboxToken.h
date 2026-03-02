@@ -110,9 +110,13 @@ namespace Sandbox {
 
         LUID changeNotifyLuid{};
         if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid)) {
-            // If lookup fails, keep all privileges rather than deleting wrong ones
-            changeNotifyLuid.LowPart = UINT_MAX;
-            changeNotifyLuid.HighPart = INT_MAX;
+            fprintf(stderr, "[Error] Could not look up SeChangeNotifyPrivilege (error %lu). Token creation aborted.\n", GetLastError());
+            if (pAuthUsersSid) FreeSid(pAuthUsersSid);
+            FreeSid(pUsersSid);
+            FreeSid(pEveryoneSid);
+            FreeSid(pRestrictedSid);
+            CloseHandle(hToken);
+            return nullptr;
         }
 
         std::vector<LUID_AND_ATTRIBUTES> deletePrivs;

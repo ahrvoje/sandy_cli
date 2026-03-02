@@ -11,7 +11,7 @@
 
 ## What is Sandy?
 
-Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). Each mode starts with its most restrictive defaults and is loosened via TOML config.
+Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). All settings are configured explicitly via TOML — no hidden defaults.
 
 No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is lean, unprivileged sandboxing for agentic AI workflows, automation scripts, and tool-use pipelines: you define exactly which folders, files, and network access the process gets.
 
@@ -20,7 +20,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 - 🔒 **Dual sandbox modes** — AppContainer or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
-- 🛡️ **Hardened by default** — most restrictive configuration out of the box, loosened via config
+- 🛡️ **Explicit configuration** — all settings mandatory, no hidden defaults or implicit behavior
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - 📝 **Audit logging** — session logs, Procmon-based denial auditing, and crash dumps
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
@@ -63,14 +63,14 @@ See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_c
 ```toml
 [sandbox]
 token = 'appcontainer'    # or 'restricted'
-integrity = 'low'         # restricted only: 'low' (default) or 'medium'
+integrity = 'low'         # restricted only: 'low' or 'medium' (required)
 workdir = 'C:\projects'   # child working directory (default: sandy.exe folder)
 ```
 
 | Key | Values | Modes | Description |
 |-----|--------|-------|-------------|
 | `token` | `'appcontainer'`, `'restricted'` | both | Sandbox isolation model *(required)* |
-| `integrity` | `'low'`, `'medium'` | restricted | Integrity level · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
+| `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
 | `workdir` | path | both | Child process working directory (default: folder containing `sandy.exe`) |
 
 ### `[access]` — File and folder grants
@@ -99,34 +99,42 @@ all     = ['C:\workspace']
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
 
-### `[allow]` — Opt-in permissions
+### `[allow]` — Permissions *(all keys mandatory)*
 
-Each option defaults to its most restrictive value for the active mode. Set to `true` to loosen. Settings are validated against the active mode.
+All keys must be explicitly set for the active mode. Omitting a key is a parse error. Wrong-mode keys are rejected.
 
 ```toml
+# AppContainer mode — all 8 keys required:
 [allow]
-system_dirs     = true   # appcontainer only
-network         = true   # appcontainer only
-localhost       = true   # appcontainer only (admin required)
-lan             = true   # appcontainer only
-named_pipes     = true   # restricted only
-stdin           = false  # both modes
-clipboard_read  = false  # both modes (default: true)
-clipboard_write = false  # both modes (default: true)
-child_processes = false  # both modes (default: true)
+system_dirs     = true
+network         = false
+localhost       = false
+lan             = false
+stdin           = false
+clipboard_read  = false
+clipboard_write = false
+child_processes = true
+
+# Restricted mode — all 5 keys required:
+[allow]
+named_pipes     = false
+stdin           = false
+clipboard_read  = false
+clipboard_write = false
+child_processes = true
 ```
 
-| Key | Modes | Default | Description |
-|-----|-------|---------|-------------|
-| `system_dirs` | appcontainer | `false` | Read access to `C:\Windows`, `Program Files` |
-| `network` | appcontainer | `false` | Outbound internet access |
-| `localhost` | appcontainer | `false` | Loopback connections (requires admin) |
-| `lan` | appcontainer | `false` | Local network access |
-| `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
-| `stdin` | both | `true` | `true` = inherit, `false` = disabled (NUL), or a file path |
-| `clipboard_read` | both | `true` | Allow reading from the clipboard |
-| `clipboard_write` | both | `true` | Allow writing to the clipboard |
-| `child_processes` | both | `true` | Allow spawning child processes (kernel-enforced) |
+| Key | Required in | Description |
+|-----|-------------|-------------|
+| `system_dirs` | appcontainer | Read access to `C:\Windows`, `Program Files` |
+| `network` | appcontainer | Outbound internet access |
+| `localhost` | appcontainer | Loopback connections (requires admin) |
+| `lan` | appcontainer | Local network access |
+| `named_pipes` | restricted | Named pipe creation (`CreateNamedPipeW`) |
+| `stdin` | both | `true` = inherit, `false` = disabled (NUL), or a file path |
+| `clipboard_read` | both | Allow reading from the clipboard |
+| `clipboard_write` | both | Allow writing to the clipboard |
+| `child_processes` | both | Allow spawning child processes (kernel-enforced) |
 
 #### What `system_dirs` exposes (AppContainer only)
 
@@ -155,13 +163,15 @@ write = ['HKCU\Software\MyApp\Settings']
 > [!NOTE]
 > `[registry]` is not available in AppContainer mode — AppContainer provides a fixed private registry hive automatically.
 
-### `[environment]` — Environment variables
+### `[environment]` — Environment variables *(inherit is mandatory)*
 
-By default, the child inherits the full parent environment. Set `inherit = false` to pass only essential Windows variables plus those listed in `pass`. The `pass` list has no effect when `inherit = true` (default).
+`inherit` must be explicitly set. When `false`, the child gets a clean environment with only essential Windows variables. Use `pass` to add specific variables.
 
 ```toml
 [environment]
-inherit = false
+inherit = true            # pass full parent environment
+# or:
+inherit = false           # clean env + pass list
 pass = ['PATH', 'PYTHONPATH', 'HOME']
 ```
 
@@ -190,56 +200,59 @@ processes = 10      # max total active processes (including main)
 |---------------|:-------------|:-----------|
 | **`[sandbox]`** | ✅ required | ✅ required |
 | &ensp; `token` | ✅ required | ✅ required |
-| &ensp; `integrity` | ❌ error | ✅ optional (default: `'low'`) |
+| &ensp; `integrity` | ❌ error | ✅ required (`'low'` or `'medium'`) |
 | &ensp; `workdir` | ✅ optional | ✅ optional |
 | **`[access]`** | ✅ optional | ✅ optional |
-| **`[allow]`** | ✅ optional | ✅ optional |
-| &ensp; `system_dirs` | ✅ | ❌ error |
-| &ensp; `network` | ✅ | ❌ error |
-| &ensp; `localhost` | ✅ | ❌ error |
-| &ensp; `lan` | ✅ | ❌ error |
-| &ensp; `named_pipes` | ❌ error | ✅ |
-| &ensp; `stdin` | ✅ (`true`/`false`/path) | ✅ (`true`/`false`/path) |
-| &ensp; `clipboard_read` | ✅ | ✅ |
-| &ensp; `clipboard_write` | ✅ | ✅ |
-| &ensp; `child_processes` | ✅ | ✅ |
+| **`[allow]`** | ✅ required | ✅ required |
+| &ensp; `system_dirs` | ✅ required | ❌ error |
+| &ensp; `network` | ✅ required | ❌ error |
+| &ensp; `localhost` | ✅ required | ❌ error |
+| &ensp; `lan` | ✅ required | ❌ error |
+| &ensp; `named_pipes` | ❌ error | ✅ required |
+| &ensp; `stdin` | ✅ required | ✅ required |
+| &ensp; `clipboard_read` | ✅ required | ✅ required |
+| &ensp; `clipboard_write` | ✅ required | ✅ required |
+| &ensp; `child_processes` | ✅ required | ✅ required |
 | **`[registry]`** | ❌ error | ✅ optional |
-| **`[environment]`** | ✅ optional | ✅ optional |
+| **`[environment]`** | ✅ required | ✅ required |
+| &ensp; `inherit` | ✅ required | ✅ required |
+| &ensp; `pass` | ✅ optional | ✅ optional |
 | **`[limit]`** | ✅ optional | ✅ optional |
 
 ---
 
 ## Sandbox Modes
 
-Merged view across AppContainer and Restricted Token (Low / Medium integrity). ❌ = blocked · ✅ = allowed · ⚙️ = configurable via TOML.
+Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 
 | Aspect | AppContainer | Restricted Low | Restricted Medium |
 |--------|:------------:|:--------------:|:-----------------:|
-| **Integrity level** | ❌ Low (fixed) | ❌ Low | ❌ Medium |
+| **Integrity level** | 🔒 Low | 🔒 Low | 🔒 Medium |
+| **Object namespace** | 🔒 Isolated | 🔒 Shared | 🔒 Shared |
+| **Process identity** | 🔒 AppContainer SID | 🔒 User SID restricted | 🔒 User SID restricted |
+| **Elevation** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
+| **Privilege stripping** | 🔒 All stripped | 🔒 All except SeChangeNotify | 🔒 All except SeChangeNotify |
+| **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
 | **Named pipes** | ❌ Blocked | ⚙️ `named_pipes` | ⚙️ `named_pipes` |
-| **Network** | ⚙️ `network` `lan` `localhost` | ✅ Unrestricted | ✅ Unrestricted |
-| **Object namespace** | ❌ Isolated | ✅ Shared | ✅ Shared |
-| **System dir reads** | ⚙️ `system_dirs` | ✅ Always | ✅ Always |
+| **Network** | ⚙️ `network` `lan` `localhost` | ✅ Allowed | ✅ Allowed |
+| **System dir reads** | ⚙️ `system_dirs` | ✅ Allowed | ✅ Allowed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **User profile reads** | ❌ Blocked | ✅ Allowed | ✅ Allowed |
-| **User profile writes** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
-| **Registry reads** | ✅ Private hive | ✅ Most keys | ✅ Most keys |
-| **Registry HKCU writes** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
+| **User profile writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
+| **Registry reads** | ✅ Private hive | ✅ Allowed | ✅ Allowed |
+| **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **DLL/API set resolution** | ✅ Works | ❌ Breaks some apps | ✅ Works |
-| **COM/RPC servers** | ❌ Most blocked | ✅ Accessible | ✅ Accessible |
-| **Scheduled tasks** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
-| **Window messages (UIPI)** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
-| **Process identity** | ❌ AppContainer SID | ❌ User SID (restricted) | ❌ User SID (restricted) |
-| **Elevation** | ❌ Cannot escalate | ❌ Cannot escalate | ❌ Cannot escalate |
-| **Privilege stripping** | ❌ All stripped | ❌ All except `SeChangeNotify` | ❌ All except `SeChangeNotify` |
-| **Isolation layers** | 2 (SID + namespace) | 2 (SIDs + integrity) | 1 (SIDs only) |
-| **Clipboard** | ⚙️ default: allowed | ⚙️ default: allowed | ⚙️ default: allowed |
-| **Child processes** | ⚙️ default: allowed | ⚙️ default: allowed | ⚙️ default: allowed |
+| **DLL/API set resolution** | ✅ Allowed | ⚠️ May break apps | ✅ Allowed |
+| **COM/RPC servers** | ❌ Blocked | ✅ Allowed | ✅ Allowed |
+| **Scheduled tasks** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
+| **Window messages (UIPI)** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
+| **Clipboard** | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` |
+| **Child processes** | ⚙️ `child_processes` | ⚙️ `child_processes` | ⚙️ `child_processes` |
+| **Stdin** | ⚙️ `stdin` | ⚙️ `stdin` | ⚙️ `stdin` |
+| **Environment** | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` |
 | **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` | ⚙️ `[access]` |
-| **Stdin** | ⚙️ default: inherited | ⚙️ default: inherited | ⚙️ default: inherited |
-| **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` | ⚙️ `[environment]` |
 | **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
+| | 🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning | | |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
@@ -259,7 +272,12 @@ all = ['C:\workspace']
 [allow]
 system_dirs = true
 network = true
+localhost = false
+lan = false
 stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
 
 [environment]
 inherit = false
@@ -287,6 +305,13 @@ all = ['C:\workspace']
 
 [allow]
 named_pipes = true
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
 
 [registry]
 write = ['HKCU\Software\MyApp\Settings']
@@ -522,7 +547,7 @@ system_dirs = true
 ## Notes
 
 > [!WARNING]
-> **AppContainer: strict by default.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
+> **AppContainer: strict isolation.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
 > **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
@@ -535,9 +560,19 @@ system_dirs = true
 
 ---
 
-## Crash Resilience
+## Cleanup &amp; Crash Resilience
 
-Sandy is hardened against abnormal termination. On startup, it proactively cleans up any stale state from a previous crashed run (AppContainer profile, loopback exemptions, WER registry keys). A console signal handler catches Ctrl+C, Ctrl+Break, and window close events to ensure cleanup runs before exit. A top-level structured exception handler catches fatal errors in sandy itself. Combined, these ensure system state is never left dirty regardless of how sandy exits.
+Sandy never leaves system state dirty. All sandbox artifacts — ACL grants, AppContainer profiles, loopback exemptions, WER registry keys — are cleaned up regardless of how the process exits. A defense-in-depth strategy ensures reliability across all termination scenarios:
+
+| Scenario | ACLs | AppContainer | Loopback | WER Keys | Mechanism |
+|----------|:----:|:------------:|:--------:|:--------:|-----------|
+| Clean exit | ✅ | ✅ | ✅ | ✅ | Normal cleanup path in `RunSandboxed` |
+| Child crash | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect sandy |
+| Sandy crash | ✅ | ✅ | ✅ | ✅ | SEH `__except` handler runs cleanup |
+| Ctrl+C / kill | ✅ | ✅ | ✅ | ✅ | Console signal handler runs cleanup |
+| Power loss / hard kill | ✅ | ✅ | ✅ | ✅ | Next startup restores from registry |
+
+**How it works:** Before modifying any DACL, Sandy saves the original security descriptor to `HKCU\Software\Sandy\Grants` (write-ahead). On normal exit, ACLs are restored from memory and the registry key is cleared. If sandy is killed or power is lost, the next run detects the stale registry key and restores all DACLs before proceeding. The child process is created suspended and only resumed after job object assignment, eliminating race windows for resource limits.
 
 ---
 

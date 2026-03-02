@@ -38,11 +38,11 @@ static void PrintUsage()
         "Config reference (all configs must include [sandbox]):\n"
         "\n"
         "  [sandbox]                              (required)\n"
-        "  token = 'appcontainer'                 # or 'restricted'\n"
-        "  # integrity = 'low'                    # restricted only: 'low' or 'medium'\n"
-        "  # workdir = 'C:\\\\projects\\\\myapp'      # child working dir (default: sandy.exe folder)\n"
+        "  token = 'appcontainer'                 # required: 'appcontainer' or 'restricted'\n"
+        "  # integrity = 'low'                    # required (restricted only): 'low' or 'medium'\n"
+        "  # workdir = 'C:\\\\projects\\\\myapp'      # optional: child working dir\n"
         "\n"
-        "  [access]                               (both modes, recursive for dirs)\n"
+        "  [access]                               (optional, both modes)\n"
         "  read    = ['C:\\\\path']                 # read files, list dirs (no execute)\n"
         "  write   = ['C:\\\\path']                 # create/modify files (no read)\n"
         "  execute = ['C:\\\\path']                 # execute only (no read)\n"
@@ -51,48 +51,53 @@ static void PrintUsage()
         "  all     = ['C:\\\\path']                 # full access\n"
         "  Permissions are independent: read!=execute, write!=read. Use absolute paths.\n"
         "\n"
-        "  [allow]                                (mode-specific)\n"
-        "  system_dirs     = true                 # appcontainer only\n"
-        "  network         = true                 # appcontainer only\n"
-        "  localhost       = true                 # appcontainer only (admin)\n"
-        "  lan             = true                 # appcontainer only\n"
-        "  named_pipes     = true                 # restricted only\n"
-        "  stdin           = false                # both modes (false = NUL, or path)\n"
-        "  clipboard_read  = false                # both modes (default: true)\n"
-        "  clipboard_write = false                # both modes (default: true)\n"
-        "  child_processes = false                # both modes (default: true)\n"
+        "  [allow]                                (required, all keys mandatory per mode)\n"
+        "  system_dirs     = true                 # required (appcontainer)\n"
+        "  network         = true                 # required (appcontainer)\n"
+        "  localhost       = true                 # required (appcontainer, admin)\n"
+        "  lan             = true                 # required (appcontainer)\n"
+        "  named_pipes     = true                 # required (restricted)\n"
+        "  stdin           = true                 # required (both)\n"
+        "  clipboard_read  = true                 # required (both)\n"
+        "  clipboard_write = true                 # required (both)\n"
+        "  child_processes = true                 # required (both)\n"
         "\n"
-        "  [registry]                             (restricted only)\n"
+        "  [registry]                             (optional, restricted only)\n"
         "  read  = ['HKCU\\\\Software\\\\MyApp']\n"
         "  write = ['HKCU\\\\Software\\\\MyApp\\\\Settings']\n"
         "\n"
-        "  [environment]                          (both modes)\n"
-        "  inherit = false                        # don't inherit parent env\n"
-        "  pass = ['PATH', 'USERPROFILE']         # only effective when inherit = false\n"
+        "  [environment]                          (required)\n"
+        "  inherit = true                         # required: true or false\n"
+        "  pass = ['PATH', 'USERPROFILE']         # optional: extends clean env\n"
         "\n"
-        "  [limit]                                (both modes)\n"
+        "  [limit]                                (optional, both modes)\n"
         "  timeout = 300                          # kill after N seconds (exit code 1)\n"
         "  memory = 4096                          # job-wide memory cap in MB (all combined)\n"
         "  processes = 10                         # max active processes incl. main\n"
         "\n"
         "Mode comparison:          AppContainer          Restricted Low        Restricted Medium\n"
-        "  Integrity level         Low (fixed)           Low                   Medium\n"
-        "  Named pipes             blocked (kernel)      configurable          configurable\n"
-        "  Network                 configurable          unrestricted          unrestricted\n"
-        "  Object namespace        isolated              shared                shared\n"
-        "  System dir reads        configurable          always readable       always readable\n"
+        "  Integrity level         Low (fixed)           Low (fixed)           Medium (fixed)\n"
+        "  Object namespace        isolated (fixed)      shared (fixed)        shared (fixed)\n"
+        "  Elevation               blocked               blocked               blocked\n"
+        "  Privilege stripping     all stripped (fixed)  all except SeChange   all except SeChange\n"
+        "  Isolation layers        2: SID+namespace      2: SIDs+integrity     1: SIDs only\n"
+        "  Named pipes             blocked               configurable          configurable\n"
+        "  Network                 configurable          allowed               allowed\n"
+        "  System dir reads        configurable          allowed               allowed\n"
         "  System dir writes       blocked               blocked               blocked\n"
         "  User profile reads      blocked               allowed               allowed\n"
-        "  User profile writes     blocked               blocked (IL)          allowed\n"
-        "  Registry reads          private hive          most keys             most keys\n"
-        "  Registry HKCU writes    blocked               blocked (IL)          allowed\n"
+        "  User profile writes     blocked               blocked               allowed\n"
+        "  Registry reads          private hive          allowed               allowed\n"
+        "  Registry HKCU writes    blocked               blocked               allowed\n"
         "  Registry HKLM writes    blocked               blocked               blocked\n"
-        "  DLL/API set resolve     works                 breaks some apps      works\n"
-        "  COM/RPC servers         mostly blocked        accessible            accessible\n"
-        "  Scheduled tasks         blocked (COM)         blocked (IL)          allowed\n"
-        "  Window messages (UIPI)  blocked               blocked (IL)          allowed\n"
+        "  DLL/API set resolve     allowed               may break apps        allowed\n"
+        "  COM/RPC servers         blocked               allowed               allowed\n"
+        "  Scheduled tasks         blocked               blocked               allowed\n"
+        "  Window messages (UIPI)  blocked               blocked               allowed\n"
         "  Clipboard               configurable          configurable          configurable\n"
         "  Child processes         configurable          configurable          configurable\n"
+        "  Stdin                   configurable          configurable          configurable\n"
+        "  Environment             configurable          configurable          configurable\n"
         "  File/folder grants      configurable          configurable          configurable\n"
         "  Resource limits         configurable          configurable          configurable\n"
         "\n"
@@ -103,7 +108,6 @@ static void PrintUsage()
         "  Runs the process UNSANDBOXED under Procmon, analyzes resource usage,\n"
         "  and writes a feasibility report with a suggested TOML config.\n"
         "  Requires: Procmon on PATH + admin privileges.\n"
-        "  Report includes: sandboxability verdict, mode recommendations,\n"
         "  Report includes: sandboxability verdict, mode recommendations,\n"
         "  required read/write paths, network/pipe/registry usage.\n"
         "\n"
@@ -122,10 +126,19 @@ static std::wstring CollectArgs(int start, int argc, wchar_t* argv[])
     for (int j = start; j < argc; j++) {
         if (!args.empty()) args += L" ";
         std::wstring a = argv[j];
-        if (a.find(L' ') != std::wstring::npos && a.front() != L'"')
-            args += L"\"" + a + L"\"";
-        else
+        bool needsQuoting = a.find(L' ') != std::wstring::npos && a.front() != L'"';
+        if (needsQuoting) {
+            // Escape embedded double-quotes before wrapping
+            std::wstring escaped;
+            escaped.reserve(a.size());
+            for (wchar_t c : a) {
+                if (c == L'"') escaped += L'\\';
+                escaped += c;
+            }
+            args += L"\"" + escaped + L"\"";
+        } else {
             args += a;
+        }
     }
     return args;
 }
@@ -254,9 +267,9 @@ static int RunMain(int argc, wchar_t* argv[])
     config.quiet = quiet;
 
     // --- Run sandboxed ---
+    // cleanup() inside RunSandboxed handles ACL restore, loopback, AppContainer.
+    // CleanupSandbox() remains as safety net for CTRL+C / SEH crash paths only.
     int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs, auditLogPath, dumpPath);
-
-    Sandbox::CleanupSandbox();
 
     return exitCode;
 }

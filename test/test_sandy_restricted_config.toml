@@ -24,3 +24,10 @@ all = [
 
 [allow]
 named_pipes = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true

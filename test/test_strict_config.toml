@@ -11,4 +11,14 @@ read = [
 ]
 
 [allow]
-# system_dirs intentionally omitted — strict isolation
+system_dirs = false  # strict isolation — no system dir access
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
