@@ -2,7 +2,7 @@
 # system_dirs is not set (strict), so no executable should be able to run.
 
 [sandbox]
-token = "appcontainer"
+token = 'appcontainer'
 
 [access]
 read = [

@@ -3,7 +3,7 @@
 # No write access anywhere — forces the test script to crash.
 
 [sandbox]
-token = "appcontainer"
+token = 'appcontainer'
 
 [access]
 read = [

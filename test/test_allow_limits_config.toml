@@ -3,7 +3,7 @@
 # true for Python to load its DLLs. Strict mode is tested separately.
 
 [sandbox]
-token = "appcontainer"
+token = 'appcontainer'
 
 [access]
 read = [

@@ -12,8 +12,8 @@
 # ============================================================
 
 [sandbox]
-token = "appcontainer"     # "appcontainer" (default) or "restricted"
-# integrity = "low"        # restricted only: "low" or "medium"
+token = 'appcontainer'     # 'appcontainer' (default) or 'restricted'
+# integrity = 'low'        # restricted only: 'low' or 'medium'
 
 # ============================================================
 # ACCESS — File and folder grants

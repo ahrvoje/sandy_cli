@@ -5,7 +5,7 @@
 # Named pipe creation is blocked (kernel restriction).
 
 [sandbox]
-token = "appcontainer"
+token = 'appcontainer'
 
 # ============================================================
 # ACCESS — File and folder grants
@@ -41,7 +41,7 @@ system_dirs = true   # read C:\Windows, Program Files (required for most executa
 
 # NOTE: named_pipes is not available in AppContainer mode.
 # Named pipe creation is a kernel-level restriction of AppContainer.
-# Use token = "restricted" in [sandbox] if your app needs named pipes.
+# Use token = 'restricted' in [sandbox] if your app needs named pipes.
 
 # NOTE: [registry] section is not available in AppContainer mode.
 # AppContainer provides a fixed private registry hive automatically.

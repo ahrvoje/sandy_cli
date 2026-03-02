@@ -25,7 +25,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline DWORD AccessMask(AccessLevel level) {
         switch (level) {
-        case AccessLevel::Read:    return FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
+        case AccessLevel::Read:    return FILE_GENERIC_READ;
         case AccessLevel::Write:   return FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         case AccessLevel::Execute: return FILE_GENERIC_EXECUTE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         case AccessLevel::Append:  return FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;

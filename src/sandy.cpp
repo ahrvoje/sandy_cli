@@ -6,7 +6,7 @@
 #include "framework.h"
 #include "Sandbox.h"
 
-constexpr const char* kVersion = "0.9";
+constexpr const char* kVersion = "0.91";
 
 // -----------------------------------------------------------------------
 // Print usage help (full reference including TOML config example)
@@ -26,38 +26,42 @@ static void PrintUsage()
         "  -s, --string <toml>   Inline TOML config string (alternative to -c)\n"
         "  -l, --log <path>      Session log (config, output, exit code)\n"
         "  -a, --audit <path>    Audit log of denied resource access (requires Procmon + admin)\n"
+        "  -d, --dump <path>     Crash dump output path (independent of -a)\n"
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
-        "  -p, --profile <path>  Profile process for sandbox feasibility (requires Procmon + admin)\n"
+        "  -p, --profile <path>  Profile unsandboxed run for sandbox feasibility (requires Procmon + admin)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
         "  -v, --version         Print version and exit\n"
         "  -h, --help            Print this help text and exit\n"
         "\n"
-        "Arguments after -x <executable> (or after --) are forwarded to it.\n"
+        "All flags must come before -x. Arguments after -x are forwarded to the child.\n"
+        "The child's working directory is the folder containing sandy.exe (use absolute paths).\n"
         "\n"
         "Config reference (all configs must include [sandbox]):\n"
         "\n"
         "  [sandbox]                                    (required)\n"
-        "  token = \"appcontainer\"                     # or \"restricted\"\n"
-        "  # integrity = \"low\"                        # restricted only: \"low\" or \"medium\"\n"
+        "  token = 'appcontainer'                       # or 'restricted'\n"
+        "  # integrity = 'low'                          # restricted only: 'low' or 'medium'\n"
+        "  # workdir = 'C:\\\\projects\\\\myapp'            # child working directory (default: sandy.exe folder)\n"
         "\n"
-        "  [access]                                     (both modes)\n"
-        "  read    = ['C:\\\\path']                        # read files, list dirs\n"
-        "  write   = ['C:\\\\path']                        # create/modify files\n"
-        "  execute = ['C:\\\\path']                        # execute only (no read)\n"
-        "  append  = ['C:\\\\path']                        # append only (no overwrite)\n"
-        "  delete  = ['C:\\\\path']                        # delete only\n"
-        "  all     = ['C:\\\\path']                        # full access\n"
+        "  [access]                                     (both modes, recursive for dirs)\n"
+        "  read    = ['C:\\\\path']                       # read files, list dirs (no execute)\n"
+        "  write   = ['C:\\\\path']                       # create/modify files (no read)\n"
+        "  execute = ['C:\\\\path']                       # execute only (no read)\n"
+        "  append  = ['C:\\\\path']                       # append only (no overwrite)\n"
+        "  delete  = ['C:\\\\path']                       # delete only\n"
+        "  all     = ['C:\\\\path']                       # full access\n"
+        "  Permissions are independent: read!=execute, write!=read. Use absolute paths.\n"
         "\n"
         "  [allow]                                      (mode-specific)\n"
-        "  system_dirs    = true                         # appcontainer only\n"
-        "  network        = true                         # appcontainer only\n"
-        "  localhost       = true                        # appcontainer only (admin)\n"
-        "  lan             = true                        # appcontainer only\n"
-        "  named_pipes     = true                        # restricted only\n"
-        "  stdin           = false                       # both modes\n"
-        "  clipboard_read  = false                       # both modes (default: true)\n"
-        "  clipboard_write = false                       # both modes (default: true)\n"
-        "  child_processes = false                       # both modes (default: true)\n"
+        "  system_dirs     = true                       # appcontainer only\n"
+        "  network         = true                       # appcontainer only\n"
+        "  localhost       = true                       # appcontainer only (admin)\n"
+        "  lan             = true                       # appcontainer only\n"
+        "  named_pipes     = true                       # restricted only\n"
+        "  stdin           = false                      # both modes (false = NUL, or path)\n"
+        "  clipboard_read  = false                      # both modes (default: true)\n"
+        "  clipboard_write = false                      # both modes (default: true)\n"
+        "  child_processes = false                      # both modes (default: true)\n"
         "\n"
         "  [registry]                                   (restricted only)\n"
         "  read  = ['HKCU\\\\Software\\\\MyApp']\n"
@@ -65,7 +69,7 @@ static void PrintUsage()
         "\n"
         "  [environment]                                (both modes)\n"
         "  inherit = false                              # don't inherit parent env\n"
-        "  pass = ['PATH', 'USERPROFILE']               # specific vars to pass\n"
+        "  pass = ['PATH', 'USERPROFILE']               # only effective when inherit = false\n"
         "\n"
         "  [limit]                                      (both modes)\n"
         "  timeout = 300                                # kill after N seconds\n"
@@ -79,8 +83,8 @@ static void PrintUsage()
         "  Network isolation       configurable          unrestricted\n"
         "  Object namespace        isolated              shared\n"
         "  System dir access       configurable          always readable\n"
-        "  User profile access     blocked               blocked (low) / open (medium)\n"
-        "  Registry access         private hive          configurable\n"
+        "  User profile access     blocked (r+w)         low: blocked / medium: allowed\n"
+        "  Registry access         private hive          reads OK, HKCU writes: low blocked / medium OK\n"
         "  COM/RPC servers         mostly blocked        accessible\n"
         "  File/folder grants      configurable          configurable\n"
         "  Scheduled tasks         blocked (COM)         blocked (low) / allowed (medium)\n"
@@ -92,24 +96,26 @@ static void PrintUsage()
         "Use appcontainer for network isolation. Use restricted for named pipes/COM.\n"
         "Wrong-mode flags are rejected (e.g. named_pipes in appcontainer, network in restricted).\n"
         "\n"
-        "Restricted mode: integrity = \"low\" vs \"medium\":\n"
-        "                          Low                   Medium\n"
-        "  Write to user files     blocked (mandatory IL) allowed (User SID matches)\n"
-        "  DLL/API set resolution  breaks some apps       works\n"
-        "  User profile access     blocked                accessible\n"
-        "  Isolation layers        2 (SIDs + integrity)   1 (SIDs only)\n"
-        "  System dir reads        always readable        always readable\n"
-        "  System dir writes       blocked                blocked\n"
-        "  Named pipes             configurable           configurable\n"
-        "  Scheduled tasks         blocked                allowed (persistence risk!)\n"
-        "  Window messages (UIPI)  blocked                allowed (UI manipulation risk)\n"
-        "  Clipboard               configurable           configurable\n"
-        "  Child processes          configurable           configurable\n"
-        "  Network                 unrestricted           unrestricted\n"
+        "Restricted mode: integrity = 'low' vs 'medium':\n"
+        "                           Low                      Medium\n"
+        "  Write to user files      blocked (mandatory IL)   allowed (User SID matches)\n"
+        "  DLL/API set resolution   breaks some apps         works\n"
+        "  User profile access      blocked                  accessible\n"
+        "  Isolation layers         2 (SIDs + integrity)     1 (SIDs only)\n"
+        "  System dir reads         always readable          always readable\n"
+        "  System dir writes        blocked                  blocked\n"
+        "  Registry (HKCU writes)   blocked (low IL)         allowed\n"
+        "  Registry (HKLM writes)   blocked                  blocked\n"
+        "  Named pipes              configurable             configurable\n"
+        "  Scheduled tasks          blocked                  allowed (persistence risk!)\n"
+        "  Window messages (UIPI)   blocked                  allowed (UI manipulation risk)\n"
+        "  Clipboard                configurable             configurable\n"
+        "  Child processes          configurable             configurable\n"
+        "  Network                  unrestricted             unrestricted\n"
         "\n"
         "Profile mode (-p):\n"
         "  Runs the process UNSANDBOXED under Procmon, analyzes resource usage,\n"
-        "  and writes a compatibility report with a suggested TOML config.\n"
+        "  and writes a feasibility report with a suggested TOML config.\n"
         "  Requires: Procmon on PATH + admin privileges.\n"
         "  Report includes: sandboxability verdict, mode recommendations,\n"
         "  required read/write paths, network/pipe/registry usage.\n",
@@ -142,6 +148,7 @@ int wmain(int argc, wchar_t* argv[])
     std::wstring logPath;
     std::wstring auditLogPath;
     std::wstring profilePath;
+    std::wstring dumpPath;
     std::wstring exePath;
     std::wstring exeArgs;
     bool quiet = false;
@@ -175,6 +182,9 @@ int wmain(int argc, wchar_t* argv[])
         }
         else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
             profilePath = argv[++i];
+        }
+        else if ((arg == L"-d" || arg == L"--dump") && i + 1 < argc) {
+            dumpPath = argv[++i];
         }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             exePath = argv[++i];
@@ -241,7 +251,7 @@ int wmain(int argc, wchar_t* argv[])
     config.quiet = quiet;
 
     // --- Run sandboxed ---
-    int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs, auditLogPath);
+    int exitCode = Sandbox::RunSandboxed(config, exePath, exeArgs, auditLogPath, dumpPath);
 
     Sandbox::CleanupSandbox();
 

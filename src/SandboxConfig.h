@@ -98,6 +98,8 @@ namespace Sandbox {
                         fprintf(stderr, "Error: Unknown integrity level: %ls (expected 'low' or 'medium')\n", val.str.c_str());
                         config.parseError = true;
                     }
+                } else if (key == L"workdir") {
+                    config.workdir = val.str;
                 } else {
                     fprintf(stderr, "Error: Unknown key in [sandbox]: %ls\n", key.c_str());
                     config.parseError = true;
@@ -162,7 +164,15 @@ namespace Sandbox {
                     else if (key == L"lan")           config.allowLan = enabled;
                     else if (key == L"system_dirs")   config.allowSystemDirs = enabled;
                     else if (key == L"named_pipes")   config.allowNamedPipes = enabled;
-                    else if (key == L"stdin")         config.allowStdin = enabled;
+                    else if (key == L"stdin") {
+                        // true = inherit (default), false = NUL, path = file
+                        if (ait->second.str == L"true")
+                            config.stdinMode.clear();  // inherit
+                        else if (ait->second.str == L"false")
+                            config.stdinMode = L"NUL";
+                        else
+                            config.stdinMode = ait->second.str;  // file path
+                    }
                     else if (key == L"clipboard_read")  config.allowClipboardRead = enabled;
                     else if (key == L"clipboard_write") config.allowClipboardWrite = enabled;
                     else if (key == L"child_processes")  config.allowChildProcesses = enabled;

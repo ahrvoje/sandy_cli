@@ -937,11 +937,11 @@ namespace Sandbox {
 
         // Pick best mode
         if (appcontainerOK) {
-            fprintf(out, "token = \"appcontainer\"\n");
+            fprintf(out, "token = 'appcontainer'\n");
         } else if (restrictedLowOK) {
-            fprintf(out, "token = \"restricted\"\nintegrity = \"low\"\n");
+            fprintf(out, "token = 'restricted'\nintegrity = 'low'\n");
         } else {
-            fprintf(out, "token = \"restricted\"\nintegrity = \"medium\"\n");
+            fprintf(out, "token = 'restricted'\nintegrity = 'medium'\n");
         }
 
         // Access section

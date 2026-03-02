@@ -2,8 +2,8 @@
 # Used by: sandy.exe -c test_sandy_restricted_config.toml -x <python.exe> test_sandy.py
 
 [sandbox]
-token = "restricted"
-integrity = "medium"
+token = 'restricted'
+integrity = 'medium'
 
 [access]
 read = [

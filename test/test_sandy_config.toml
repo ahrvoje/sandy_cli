@@ -2,7 +2,7 @@
 # Used by: sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
 
 [sandbox]
-token = "appcontainer"
+token = 'appcontainer'
 
 [access]
 read = [

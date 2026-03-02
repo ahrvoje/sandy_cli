@@ -12,8 +12,8 @@
 #   - System directories always readable
 
 [sandbox]
-token = "restricted"
-# integrity = "low"      # low = strongest isolation (default), may break some apps
+token = 'restricted'
+# integrity = 'low'      # low = strongest isolation (default), may break some apps
 #                        # medium = wider app compatibility (Python 3.14+)
 #                        #   Low integrity blocks writes to user-owned objects.
 #                        #   Medium relies solely on restricting SIDs for isolation.

@@ -168,7 +168,8 @@ namespace Sandbox {
     inline int RunSandboxed(const SandboxConfig& config,
                             const std::wstring& exePath,
                             const std::wstring& exeArgs,
-                            const std::wstring& auditLogPath = L"")
+                            const std::wstring& auditLogPath = L"",
+                            const std::wstring& dumpPath = L"")
     {
         // --- Mode-specific state ---
         PSID pContainerSid = nullptr;
@@ -177,8 +178,8 @@ namespace Sandbox {
         bool containerCreated = false;
         bool isRestricted = (config.tokenMode == TokenMode::Restricted);
 
-        // --- Determine working directory (folder containing sandy.exe) ---
-        std::wstring exeFolder = GetExeFolder();
+        // --- Determine working directory ---
+        std::wstring exeFolder = config.workdir.empty() ? GetExeFolder() : config.workdir;
         if (exeFolder.empty())
             return 1;
 
@@ -383,8 +384,9 @@ namespace Sandbox {
                                             config.allowLan     ? "LAN ONLY" : "BLOCKED");
         if (config.allowLocalhost && !isRestricted)
             fprintf(stderr, "Localhost:  ALLOWED\n");
-        if (!config.allowStdin)
-            fprintf(stderr, "Stdin:      BLOCKED\n");
+        if (!config.stdinMode.empty())
+            fprintf(stderr, "Stdin:      %s\n",
+                    _wcsicmp(config.stdinMode.c_str(), L"NUL") == 0 ? "DISABLED" : "FILE");
         if (!config.allowClipboardRead || !config.allowClipboardWrite)
             fprintf(stderr, "Clipboard:  read=%s write=%s\n",
                     config.allowClipboardRead ? "ALLOWED" : "BLOCKED",
@@ -415,10 +417,10 @@ namespace Sandbox {
             }
         }
 
-        // --- Enable WER crash dumps (when audit is active) ---
+        // --- Enable WER crash dumps (when -d or -a is active) ---
         std::wstring crashExeName;
         bool crashDumpsEnabled = false;
-        if (!auditLogPath.empty()) {
+        if (!auditLogPath.empty() || !dumpPath.empty()) {
             // Extract exe basename for the WER registry key
             auto slash = exePath.find_last_of(L"\\/");
             crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
@@ -559,8 +561,17 @@ namespace Sandbox {
         }
 
         // --- Forensic: log allow flags ---
-        if (!config.allowStdin)    g_logger.Log(L"STDIN: blocked (NUL)");
-        else                       g_logger.Log(L"STDIN: inherited");
+        if (!config.stdinMode.empty()) {
+            if (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
+                g_logger.Log(L"STDIN: disabled (NUL)");
+            else {
+                wchar_t msg[512];
+                swprintf(msg, 512, L"STDIN: file %s", config.stdinMode.c_str());
+                g_logger.Log(msg);
+            }
+        } else {
+            g_logger.Log(L"STDIN: inherited");
+        }
 
         // --- Build environment block ---
         std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
@@ -605,11 +616,20 @@ namespace Sandbox {
 
         // --- Stdin handle ---
         HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
-        HANDLE hNulIn = nullptr;
-        if (!config.allowStdin) {
-            hNulIn = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ,
-                                &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            hStdin = hNulIn;
+        HANDLE hStdinFile = nullptr;
+        if (!config.stdinMode.empty()) {
+            const wchar_t* stdinTarget = (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
+                ? L"NUL" : config.stdinMode.c_str();
+            hStdinFile = CreateFileW(stdinTarget, GENERIC_READ, FILE_SHARE_READ,
+                                    &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hStdinFile == INVALID_HANDLE_VALUE) {
+                fprintf(stderr, "[Error] Could not open stdin source: %ls\n", stdinTarget);
+                CloseHandle(hReadPipe); CloseHandle(hWritePipe);
+                if (pAttrList) DeleteProcThreadAttributeList(pAttrList);
+                cleanup();
+                return 1;
+            }
+            hStdin = hStdinFile;
         }
 
         STARTUPINFOEXW siex{};
@@ -654,7 +674,7 @@ namespace Sandbox {
         // Close write end in parent so ReadFile gets EOF when child exits
         CloseHandle(hWritePipe);
         if (pAttrList) DeleteProcThreadAttributeList(pAttrList);
-        if (hNulIn) CloseHandle(hNulIn);
+        if (hStdinFile) CloseHandle(hStdinFile);
 
         if (!created) {
             DWORD err = GetLastError();
@@ -784,11 +804,13 @@ namespace Sandbox {
         if (crashDumpsEnabled) {
             if (IsCrashExitCode(exitCode)) {
                 Sleep(2000);  // WER needs a moment to write the dump
-                std::wstring dumpPath = ReportCrashDump(crashExeName, auditLogPath);
-                if (!dumpPath.empty())
-                    fprintf(stderr, "[Audit] Crash dump: %ls\n", dumpPath.c_str());
+                // Use -d path if specified, otherwise fall back to audit log path
+                std::wstring reportTarget = !dumpPath.empty() ? dumpPath : auditLogPath;
+                std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget);
+                if (!foundDump.empty())
+                    fprintf(stderr, "[Dump] Crash dump: %ls\n", foundDump.c_str());
                 else
-                    fprintf(stderr, "[Audit] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
+                    fprintf(stderr, "[Dump] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
             }
             DisableCrashDumps(crashExeName);
         }

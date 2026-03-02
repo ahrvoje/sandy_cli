@@ -55,6 +55,7 @@ namespace Sandbox {
     struct SandboxConfig {
         TokenMode tokenMode = TokenMode::AppContainer;  // [sandbox] token
         IntegrityLevel integrity = IntegrityLevel::Low;   // [sandbox] integrity (restricted only)
+        std::wstring workdir;                              // [sandbox] workdir (optional)
         std::vector<FolderEntry> folders;
 
         // [allow] — opt-in permissions (default: all blocked)
@@ -64,7 +65,8 @@ namespace Sandbox {
         bool allowSystemDirs = false;
         bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
 
-        bool allowStdin      = true;   // default: inherit stdin
+        // stdin control: empty = inherit, "NUL" = disabled, path = file
+        std::wstring stdinMode;  // empty (default) = inherit parent stdin
         bool allowClipboardRead  = true;   // default: allow clipboard reading
         bool allowClipboardWrite = true;   // default: allow clipboard writing
         bool allowChildProcesses = true;   // default: allow child process creation
@@ -149,7 +151,12 @@ namespace Sandbox {
             if (config.allowLocalhost)  fwprintf(f, L"[%s] Localhost:   allowed\n", ts.c_str());
             if (config.allowLan)        fwprintf(f, L"[%s] LAN:         allowed\n", ts.c_str());
 
-            if (!config.allowStdin)     fwprintf(f, L"[%s] Stdin:       blocked\n", ts.c_str());
+            if (!config.stdinMode.empty()) {
+                if (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
+                    fwprintf(f, L"[%s] Stdin:       disabled (NUL)\n", ts.c_str());
+                else
+                    fwprintf(f, L"[%s] Stdin:       %s\n", ts.c_str(), config.stdinMode.c_str());
+            }
             if (!config.envInherit)     fwprintf(f, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
             if (config.timeoutSeconds)  fwprintf(f, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
             if (config.memoryLimitMB)   fwprintf(f, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
