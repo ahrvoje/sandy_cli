@@ -33,6 +33,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -p <report>       -x <executable> [args...]
+sandy.exe                   (cleanup stale state from crashed runs)
 ```
 
 | Flag | Description |
@@ -198,26 +199,28 @@ processes = 10      # max total active processes (including main)
 
 | Section / Key | AppContainer | Restricted |
 |---------------|:-------------|:-----------|
-| **`[sandbox]`** | ✅ required | ✅ required |
-| &ensp; `token` | ✅ required | ✅ required |
-| &ensp; `integrity` | ❌ error | ✅ required (`'low'` or `'medium'`) |
-| &ensp; `workdir` | ✅ optional | ✅ optional |
-| **`[access]`** | ✅ optional | ✅ optional |
-| **`[allow]`** | ✅ required | ✅ required |
-| &ensp; `system_dirs` | ✅ required | ❌ error |
-| &ensp; `network` | ✅ required | ❌ error |
-| &ensp; `localhost` | ✅ required | ❌ error |
-| &ensp; `lan` | ✅ required | ❌ error |
-| &ensp; `named_pipes` | ❌ error | ✅ required |
-| &ensp; `stdin` | ✅ required | ✅ required |
-| &ensp; `clipboard_read` | ✅ required | ✅ required |
-| &ensp; `clipboard_write` | ✅ required | ✅ required |
-| &ensp; `child_processes` | ✅ required | ✅ required |
-| **`[registry]`** | ❌ error | ✅ optional |
-| **`[environment]`** | ✅ required | ✅ required |
-| &ensp; `inherit` | ✅ required | ✅ required |
-| &ensp; `pass` | ✅ optional | ✅ optional |
-| **`[limit]`** | ✅ optional | ✅ optional |
+| **`[sandbox]`** | 🟢 required | 🟢 required |
+| &ensp; `token` | 🟢 required | 🟢 required |
+| &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
+| &ensp; `workdir` | 🟡 optional | 🟡 optional |
+| **`[access]`** | 🟡 optional | 🟡 optional |
+| **`[allow]`** | 🟢 required | 🟢 required |
+| &ensp; `system_dirs` | 🟢 required | 🔴 n/a |
+| &ensp; `network` | 🟢 required | 🔴 n/a |
+| &ensp; `localhost` | 🟢 required | 🔴 n/a |
+| &ensp; `lan` | 🟢 required | 🔴 n/a |
+| &ensp; `named_pipes` | 🔴 n/a | 🟢 required |
+| &ensp; `stdin` | 🟢 required | 🟢 required |
+| &ensp; `clipboard_read` | 🟢 required | 🟢 required |
+| &ensp; `clipboard_write` | 🟢 required | 🟢 required |
+| &ensp; `child_processes` | 🟢 required | 🟢 required |
+| **`[registry]`** | 🔴 n/a | 🟡 optional |
+| **`[environment]`** | 🟢 required | 🟢 required |
+| &ensp; `inherit` | 🟢 required | 🟢 required |
+| &ensp; `pass` | 🟡 optional | 🟡 optional |
+| **`[limit]`** | 🟡 optional | 🟡 optional |
+
+🟢 required · 🟡 optional · 🔴 not available (parse error if used)
 
 ---
 
@@ -570,9 +573,9 @@ Sandy never leaves system state dirty. All sandbox artifacts — ACL grants, App
 | Child crash | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect sandy |
 | Sandy crash | ✅ | ✅ | ✅ | ✅ | SEH `__except` handler runs cleanup |
 | Ctrl+C / kill | ✅ | ✅ | ✅ | ✅ | Console signal handler runs cleanup |
-| Power loss / hard kill | ✅ | ✅ | ✅ | ✅ | Next startup restores from registry |
+| Power loss / hard kill | ✅ | ✅ | ✅ | ✅ | Scheduled task + registry restore at next logon |
 
-**How it works:** Before modifying any DACL, Sandy saves the original security descriptor to `HKCU\Software\Sandy\Grants` (write-ahead). On normal exit, ACLs are restored from memory and the registry key is cleared. If sandy is killed or power is lost, the next run detects the stale registry key and restores all DACLs before proceeding. The child process is created suspended and only resumed after job object assignment, eliminating race windows for resource limits.
+**How it works:** Before modifying any DACL, Sandy saves the original security descriptor to `HKCU\Software\Sandy\Grants\<PID>` (write-ahead) and registers a Windows scheduled task (`SandyCleanup`) that runs `sandy.exe` with no arguments at next logon. On normal exit, ACLs are restored from memory and the registry subkey is cleared. The scheduled task is only deleted when no other instances have pending grants — the per-PID grant subkeys serve as a natural reference counter. If sandy is killed or power is lost, the next logon triggers the scheduled task, which runs sandy in cleanup-only mode — restoring all DACLs, removing the AppContainer profile, and clearing the loopback exemption. Running `sandy.exe` with no arguments also performs cleanup manually.
 
 ---
 

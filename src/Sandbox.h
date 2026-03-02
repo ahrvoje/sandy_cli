@@ -16,6 +16,73 @@ namespace Sandbox {
     inline bool g_loopbackGranted = false;
 
     // -----------------------------------------------------------------------
+    // Startup task — safety net for crash/power-loss scenarios.
+    // Creates a schtask that runs "sandy.exe" (cleanup-only) at next logon.
+    // Deleted on clean exit so it only fires if sandy didn't get to clean up.
+    // -----------------------------------------------------------------------
+    constexpr const wchar_t* kCleanupTaskName = L"SandyCleanup";
+
+    // Run schtasks silently — returns exit code (0 = success)
+    inline DWORD RunSchtasks(const std::wstring& args)
+    {
+        std::wstring cmd = L"schtasks " + args;
+        STARTUPINFOW si = { sizeof(si) };
+        PROCESS_INFORMATION pi = {};
+        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+            return (DWORD)-1;
+        DWORD exitCode = (DWORD)-1;
+        if (WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0)
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return exitCode;
+    }
+
+    inline void CreateCleanupTask()
+    {
+        wchar_t exePath[MAX_PATH];
+        if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) return;
+
+        std::wstring args = L"/Create /TN \"";
+        args += kCleanupTaskName;
+        args += L"\" /TR \"\\\"";
+        args += exePath;
+        args += L"\\\"\" /SC ONLOGON /F /RL HIGHEST";
+
+        if (RunSchtasks(args) == 0) {
+            g_logger.Log(L"SCHTASK: created SandyCleanup (logon trigger)");
+        }
+    }
+
+    inline void DeleteCleanupTask()
+    {
+        // Only delete the task if no other instances have pending grants.
+        // Each instance stores its grants under Software\Sandy\Grants\<PID>.
+        // If any subkeys remain, another instance still needs the safety net.
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                          KEY_READ, &hParent) == ERROR_SUCCESS) {
+            DWORD subKeyCount = 0;
+            RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+            RegCloseKey(hParent);
+            if (subKeyCount > 0) {
+                g_logger.Log(L"SCHTASK: kept SandyCleanup (other instances have pending grants)");
+                return;  // other instances still need the task
+            }
+        }
+
+        std::wstring args = L"/Delete /TN \"";
+        args += kCleanupTaskName;
+        args += L"\" /F";
+
+        if (RunSchtasks(args) == 0) {
+            g_logger.Log(L"SCHTASK: deleted SandyCleanup");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Loopback exemption — allow localhost access for AppContainer.
     // Uses CheckNetIsolation.exe (additive, safe for other apps).
     // Requires administrator privileges.
@@ -44,9 +111,9 @@ namespace Sandbox {
         return g_loopbackGranted;
     }
 
-    inline void DisableLoopback()
-    {
+    inline void DisableLoopback() {
         if (!g_loopbackGranted) return;
+        g_logger.Log(L"LOOPBACK: disabling");
 
         wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox";
 
@@ -81,6 +148,7 @@ namespace Sandbox {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
         }
+        g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
     }
 
     // -----------------------------------------------------------------------
@@ -217,7 +285,13 @@ namespace Sandbox {
             std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
             DisableCrashDumps(exeBaseName);
             g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/ACL/WER state");
+            DeleteCleanupTask();  // remove stale task from previous crashed run
         }
+
+        // --- Register cleanup task for crash resilience ---
+        // Runs sandy.exe (no-args = cleanup-only) at next logon if we crash.
+        // Deleted on clean exit below.
+        CreateCleanupTask();
 
         // --- Forensic: Sandy identity ---
         {
@@ -513,9 +587,12 @@ namespace Sandbox {
         }
 
         auto cleanup = [&]() {
+            g_logger.Log(L"CLEANUP: starting");
             RevokeAllGrants();  // restore original DACLs + clear registry
             DisableLoopback();
             DeleteAppContainerProfile(kContainerName);
+            DeleteCleanupTask();  // cancel startup task — we cleaned up fine
+            g_logger.Log(L"CLEANUP: complete");
             if (pContainerSid) FreeSid(pContainerSid);
             if (hRestrictedToken) CloseHandle(hRestrictedToken);
             if (pGrantSid && pGrantSid != pContainerSid) FreeSid(pGrantSid);

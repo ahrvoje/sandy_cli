@@ -20,6 +20,7 @@ static void PrintUsage()
         "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -p <report>       -x <executable> [args...]\n"
+        "  sandy.exe                   (cleanup stale state from crashed runs)\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>   Path to TOML config file\n"
@@ -113,6 +114,7 @@ static void PrintUsage()
         "\n"
         "Crash resilience:\n"
         "  Startup cleans stale state from previous crashed runs.\n"
+        "  Running sandy with no arguments performs cleanup only.\n"
         "  Ctrl+C/Break/close triggers cleanup before exit.\n"
         "  SEH handler catches fatal errors in sandy itself.\n",
         kVersion
@@ -233,10 +235,25 @@ static int RunMain(int argc, wchar_t* argv[])
         return rc;
     }
 
+    // --- Cleanup-only mode (no arguments) ---
+    if (configPath.empty() && configString.empty() && exePath.empty()) {
+        if (argc > 1 && !quiet) {
+            fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
+            PrintUsage();
+            return 1;
+        }
+        Sandbox::ForceDisableLoopback();
+        DeleteAppContainerProfile(Sandbox::kContainerName);
+        Sandbox::RestoreStaleGrants();
+        Sandbox::DeleteCleanupTask();
+        if (!quiet)
+            fprintf(stderr, "Sandy - cleanup complete.\n");
+        return 0;
+    }
+
     // --- Validate required options ---
     if ((configPath.empty() && configString.empty()) || exePath.empty()) {
-        if (argc > 1)
-            fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
+        fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
         PrintUsage();
         return 1;
     }
