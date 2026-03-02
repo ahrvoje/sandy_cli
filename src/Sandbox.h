@@ -226,8 +226,12 @@ namespace Sandbox {
 
             // Use RESTRICTED SID (S-1-5-12) for DACL grants
             SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
-            AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
-                0, 0, 0, 0, 0, 0, 0, &pGrantSid);
+            if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
+                0, 0, 0, 0, 0, 0, 0, &pGrantSid)) {
+                fprintf(stderr, "[Error] Could not allocate restricted SID (error %lu).\n", GetLastError());
+                CloseHandle(hRestrictedToken);
+                return 1;
+            }
 
             g_logger.Log(config.integrity == IntegrityLevel::Low
                          ? L"MODE: restricted token (Low integrity)"
@@ -261,8 +265,8 @@ namespace Sandbox {
             GrantDesktopAccess(pGrantSid);
             g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
 
-            wchar_t msg[512];
-            swprintf(msg, 512, L"WORKDIR: %s", exeFolder.c_str());
+            wchar_t msg[1024];
+            swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
             g_logger.Log(msg);
 
         } else {
@@ -274,7 +278,6 @@ namespace Sandbox {
                 L"Sandboxed environment for running executables",
                 nullptr, 0, &pContainerSid);
 
-            containerCreated = true;
             if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
                 hr = DeriveAppContainerSidFromAppContainerName(kContainerName, &pContainerSid);
                 containerCreated = false;
@@ -285,22 +288,23 @@ namespace Sandbox {
                 return 1;
             }
 
+            containerCreated = (HRESULT_CODE(hr) != ERROR_ALREADY_EXISTS);
             pGrantSid = pContainerSid;  // Use container SID for DACL grants
 
             g_logger.Log(L"MODE: appcontainer");
             {
-                wchar_t msg[512];
-                swprintf(msg, 512, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
+                wchar_t msg[1024];
+                swprintf(msg, 1024, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
                 g_logger.Log(msg);
 
                 LPWSTR sidStr = nullptr;
                 if (ConvertSidToStringSidW(pContainerSid, &sidStr)) {
-                    swprintf(msg, 512, L"CONTAINER_SID: %s", sidStr);
+                    swprintf(msg, 1024, L"CONTAINER_SID: %s", sidStr);
                     g_logger.Log(msg);
                     LocalFree(sidStr);
                 }
 
-                swprintf(msg, 512, L"WORKDIR: %s", exeFolder.c_str());
+                swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
                 g_logger.Log(msg);
             }
         }
@@ -313,8 +317,8 @@ namespace Sandbox {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
             }
-            wchar_t msg[512];
-            swprintf(msg, 512, L"GRANT: [%s] %s -> %s (mask=0x%08X)",
+            wchar_t msg[1024];
+            swprintf(msg, 1024, L"GRANT: [%s] %s -> %s (mask=0x%08X)",
                      AccessTag(entry.access), entry.path.c_str(),
                      ok ? L"OK" : L"FAILED", AccessMask(entry.access));
             g_logger.Log(msg);
@@ -772,8 +776,9 @@ namespace Sandbox {
         GetExitCodeProcess(pi.hProcess, &exitCode);
 
         // --- Handle timeout thread ---
+        // Wait for timeout thread to finish and close handle
         if (hTimeoutThread) {
-            WaitForSingleObject(hTimeoutThread, INFINITE);
+            WaitForSingleObject(hTimeoutThread, 5000);
             CloseHandle(hTimeoutThread);
             if (timeoutCtx.timedOut)
                 fprintf(stderr, "[Sandy] Process killed after %lu second timeout.\n", config.timeoutSeconds);

@@ -36,7 +36,10 @@ namespace Sandbox {
         GetTokenInformation(hToken, TokenUser, nullptr, 0, &userSize);
         std::vector<BYTE> userBuf(userSize);
         auto* pUser = reinterpret_cast<TOKEN_USER*>(userBuf.data());
-        GetTokenInformation(hToken, TokenUser, pUser, userSize, &userSize);
+        if (!GetTokenInformation(hToken, TokenUser, pUser, userSize, &userSize)) {
+            CloseHandle(hToken);
+            return nullptr;
+        }
 
         // Logon SID — needed for desktop access
         PSID pLogonSid = nullptr;
@@ -53,8 +56,11 @@ namespace Sandbox {
         // resources that have explicit ACEs for the restricting SIDs.
         SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
         PSID pRestrictedSid = nullptr;
-        AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
-            0, 0, 0, 0, 0, 0, 0, &pRestrictedSid);
+        if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
+            0, 0, 0, 0, 0, 0, 0, &pRestrictedSid)) {
+            CloseHandle(hToken);
+            return nullptr;
+        }
 
         // Everyone (S-1-1-0) — always included because many system objects
         // (DLLs, registry keys, pipe namespace) use Everyone ACEs. Without
@@ -62,29 +68,38 @@ namespace Sandbox {
         // process can't even load its initial DLLs.
         SID_IDENTIFIER_AUTHORITY worldAuth = SECURITY_WORLD_SID_AUTHORITY;
         PSID pEveryoneSid = nullptr;
-        AllocateAndInitializeSid(&worldAuth, 1, SECURITY_WORLD_RID,
-            0, 0, 0, 0, 0, 0, 0, &pEveryoneSid);
+        if (!AllocateAndInitializeSid(&worldAuth, 1, SECURITY_WORLD_RID,
+            0, 0, 0, 0, 0, 0, 0, &pEveryoneSid)) {
+            FreeSid(pRestrictedSid);
+            CloseHandle(hToken);
+            return nullptr;
+        }
 
         // BUILTIN\Users (S-1-5-32-545) — system directories grant read to Users.
         PSID pUsersSid = nullptr;
-        AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
-            DOMAIN_ALIAS_RID_USERS, 0, 0, 0, 0, 0, 0, &pUsersSid);
+        if (!AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_USERS, 0, 0, 0, 0, 0, 0, &pUsersSid)) {
+            FreeSid(pEveryoneSid);
+            FreeSid(pRestrictedSid);
+            CloseHandle(hToken);
+            return nullptr;
+        }
 
         std::vector<SID_AND_ATTRIBUTES> restrictSids;
         restrictSids.push_back({ pUser->User.Sid, 0 });
         restrictSids.push_back({ pRestrictedSid, 0 });
         restrictSids.push_back({ pUsersSid, 0 });
         if (pLogonSid) restrictSids.push_back({ pLogonSid, 0 });
-        if (pEveryoneSid) restrictSids.push_back({ pEveryoneSid, 0 });
+        restrictSids.push_back({ pEveryoneSid, 0 });
 
         // Authenticated Users (S-1-5-11) — many system objects (WinSxS
         // manifests, CRT DLLs, API set resolvers) grant access to
         // Authenticated Users. Without this, the DLL loader can fail with
         // STATUS_DLL_NOT_FOUND for complex executables like Python.
         PSID pAuthUsersSid = nullptr;
-        AllocateAndInitializeSid(&ntAuth, 1, SECURITY_AUTHENTICATED_USER_RID,
-            0, 0, 0, 0, 0, 0, 0, &pAuthUsersSid);
-        if (pAuthUsersSid) restrictSids.push_back({ pAuthUsersSid, 0 });
+        if (AllocateAndInitializeSid(&ntAuth, 1, SECURITY_AUTHENTICATED_USER_RID,
+            0, 0, 0, 0, 0, 0, 0, &pAuthUsersSid))
+            restrictSids.push_back({ pAuthUsersSid, 0 });
 
         // --- Enumerate privileges -> delete all except SeChangeNotifyPrivilege ---
         DWORD privSize = 0;
@@ -93,8 +108,12 @@ namespace Sandbox {
         auto* pPrivs = reinterpret_cast<TOKEN_PRIVILEGES*>(privBuf.data());
         GetTokenInformation(hToken, TokenPrivileges, pPrivs, privSize, &privSize);
 
-        LUID changeNotifyLuid;
-        LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid);
+        LUID changeNotifyLuid{};
+        if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid)) {
+            // If lookup fails, keep all privileges rather than deleting wrong ones
+            changeNotifyLuid.LowPart = UINT_MAX;
+            changeNotifyLuid.HighPart = INT_MAX;
+        }
 
         std::vector<LUID_AND_ATTRIBUTES> deletePrivs;
         for (DWORD i = 0; i < pPrivs->PrivilegeCount; i++) {
