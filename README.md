@@ -255,9 +255,11 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Environment** | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` |
 | **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` | ⚙️ `[access]` |
 | **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
-| | 🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning | | |
+
+🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
+
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
 
 ### Examples
