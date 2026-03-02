@@ -46,8 +46,8 @@ sandy.exe                   (cleanup stale state from crashed runs)
 | `-p <path>`, `--profile <path>` | Profile unsandboxed run for sandbox feasibility (requires Procmon + admin) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
-| `-v`, `--version` | Print version and exit |
-| `-h`, `--help` | Print full help text with config reference and exit |
+| `-v`, `--version` | Print version |
+| `-h`, `--help` | Print full help text with config reference |
 
 All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it. Sandy forwards the child process's exit code.
 
