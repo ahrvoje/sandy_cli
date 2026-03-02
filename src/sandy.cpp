@@ -104,7 +104,13 @@ static void PrintUsage()
         "  and writes a feasibility report with a suggested TOML config.\n"
         "  Requires: Procmon on PATH + admin privileges.\n"
         "  Report includes: sandboxability verdict, mode recommendations,\n"
-        "  required read/write paths, network/pipe/registry usage.\n",
+        "  Report includes: sandboxability verdict, mode recommendations,\n"
+        "  required read/write paths, network/pipe/registry usage.\n"
+        "\n"
+        "Crash resilience:\n"
+        "  Startup cleans stale state from previous crashed runs.\n"
+        "  Ctrl+C/Break/close triggers cleanup before exit.\n"
+        "  SEH handler catches fatal errors in sandy itself.\n",
         kVersion
     );
 }
@@ -125,9 +131,20 @@ static std::wstring CollectArgs(int start, int argc, wchar_t* argv[])
 }
 
 // -----------------------------------------------------------------------
-// Entry point
+// Console control handler — cleanup on Ctrl+C, Ctrl+Break, window close
 // -----------------------------------------------------------------------
-int wmain(int argc, wchar_t* argv[])
+static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
+{
+    (void)ctrlType;
+    fprintf(stderr, "\n[Sandy] Signal received, cleaning up...\n");
+    Sandbox::CleanupSandbox();
+    return FALSE;  // let default handler terminate the process
+}
+
+// -----------------------------------------------------------------------
+// Sandboxed execution (separated for SEH wrapping)
+// -----------------------------------------------------------------------
+static int RunMain(int argc, wchar_t* argv[])
 {
     std::wstring configPath;
     std::wstring configString;
@@ -242,4 +259,22 @@ int wmain(int argc, wchar_t* argv[])
     Sandbox::CleanupSandbox();
 
     return exitCode;
+}
+
+// -----------------------------------------------------------------------
+// Entry point — SEH wrapper for crash resilience
+// -----------------------------------------------------------------------
+int wmain(int argc, wchar_t* argv[])
+{
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+
+    __try {
+        return RunMain(argc, argv);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DWORD code = GetExceptionCode();
+        fprintf(stderr, "[Sandy] Fatal exception 0x%08X, cleaning up...\n", code);
+        Sandbox::CleanupSandbox();
+        return 1;
+    }
 }

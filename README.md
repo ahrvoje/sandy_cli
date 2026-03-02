@@ -535,6 +535,12 @@ system_dirs = true
 
 ---
 
+## Crash Resilience
+
+Sandy is hardened against abnormal termination. On startup, it proactively cleans up any stale state from a previous crashed run (AppContainer profile, loopback exemptions, WER registry keys). A console signal handler catches Ctrl+C, Ctrl+Break, and window close events to ensure cleanup runs before exit. A top-level structured exception handler catches fatal errors in sandy itself. Combined, these ensure system state is never left dirty regardless of how sandy exits.
+
+---
+
 ## Building
 
 Open `sandy.sln` in Visual Studio and build the `x64 Release` configuration. No external dependencies required.

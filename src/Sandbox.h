@@ -188,6 +188,17 @@ namespace Sandbox {
             g_logger.Start(config.logPath);
         }
 
+        // --- Proactive cleanup of stale state from previous crashed runs ---
+        {
+            DisableLoopback();  // no-op if not exempted
+            DeleteAppContainerProfile(kContainerName);  // no-op if doesn't exist
+            // Clean any stale WER key for the target exe
+            auto slash = exePath.find_last_of(L"\\/");
+            std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
+            DisableCrashDumps(exeBaseName);
+            g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");
+        }
+
         // --- Forensic: Sandy identity ---
         {
             wchar_t msg[512];
