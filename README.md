@@ -50,9 +50,6 @@ sandy.exe -p <report>       -x <executable> [args...]
 
 All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it. Sandy forwards the child process's exit code.
 
-> [!IMPORTANT]
-> The child's working directory is the folder containing `sandy.exe`, not the caller's CWD. Use absolute paths for scripts and config paths.
-
 ---
 
 ## Config File

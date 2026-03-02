@@ -34,7 +34,6 @@ static void PrintUsage()
         "  -h, --help            Print this help text and exit\n"
         "\n"
         "All flags must come before -x. Arguments after -x are forwarded to the child.\n"
-        "The child's working directory is the folder containing sandy.exe (use absolute paths).\n"
         "\n"
         "Config reference (all configs must include [sandbox]):\n"
         "\n"
