@@ -182,9 +182,9 @@ When `inherit = false`, the following essential Windows vars are always passed:
 
 ```toml
 [limit]
-timeout = 300       # kill process after N seconds
-memory = 4096       # max memory in MB
-processes = 10      # max concurrent child processes
+timeout = 300       # kill process after N seconds (exit code 1)
+memory = 4096       # job-wide memory cap in MB (all processes combined)
+processes = 10      # max total active processes (including main)
 ```
 
 ### Config availability summary
@@ -194,6 +194,7 @@ processes = 10      # max concurrent child processes
 | **`[sandbox]`** | ✅ required | ✅ required |
 | &ensp; `token` | ✅ required | ✅ required |
 | &ensp; `integrity` | ❌ error | ✅ optional (default: `'low'`) |
+| &ensp; `workdir` | ✅ optional | ✅ optional |
 | **`[access]`** | ✅ optional | ✅ optional |
 | **`[allow]`** | ✅ optional | ✅ optional |
 | &ensp; `system_dirs` | ✅ | ❌ error |
@@ -201,7 +202,7 @@ processes = 10      # max concurrent child processes
 | &ensp; `localhost` | ✅ | ❌ error |
 | &ensp; `lan` | ✅ | ❌ error |
 | &ensp; `named_pipes` | ❌ error | ✅ |
-| &ensp; `stdin` | ✅ | ✅ |
+| &ensp; `stdin` | ✅ (`true`/`false`/path) | ✅ (`true`/`false`/path) |
 | &ensp; `clipboard_read` | ✅ | ✅ |
 | &ensp; `clipboard_write` | ✅ | ✅ |
 | &ensp; `child_processes` | ✅ | ✅ |
@@ -213,51 +214,35 @@ processes = 10      # max concurrent child processes
 
 ## Sandbox Modes
 
-**🔒** = not configurable (OS-enforced) &nbsp;&nbsp; **⚙️** = configurable via TOML
+Merged view across AppContainer and Restricted Token (Low / Medium integrity). ❌ = blocked · ✅ = allowed · ⚙️ = configurable via TOML.
 
-| Aspect | AppContainer | Restricted Token |
-|--------|--------------|------------------|
-| **Integrity level** | 🔒 Low | ⚙️ `integrity` · `'low'` or `'medium'` (default: `'low'`) |
-| **Named pipes** | 🔒 Blocked (Low IL) | ⚙️ `named_pipes` · default: blocked |
-| **Network** | ⚙️ `network` `localhost` `lan` · default: blocked | 🔒 Unrestricted |
-| **Object namespace** | 🔒 Isolated (private) | 🔒 Shared (global) |
-| **System dirs** (Windows, Program Files) | ⚙️ `system_dirs` · default: read blocked | 🔒 Always readable |
-| **User profile** | 🔒 Read/write blocked | 🔒 Low: read/write blocked · Medium: read/write allowed |
-| **Registry** | 🔒 Private hive (reads OK, writes blocked) | 🔒 Most keys readable · HKCU writes: Low blocked, Medium allowed · HKLM writes: always blocked |
-| **COM/RPC servers** | 🔒 Most blocked | 🔒 Accessible |
-| **Process identity** | 🔒 AppContainer SID | 🔒 User SID (restricted) |
-| **Elevation** | 🔒 Cannot escalate | 🔒 Cannot escalate |
-| **Scheduled tasks** | 🔒 Blocked (COM) | 🔒 Low: blocked · Medium: allowed |
-| **Window messages (UIPI)** | 🔒 Blocked (Low IL) | 🔒 Low: blocked · Medium: allowed |
-| **Clipboard** | ⚙️ `clipboard_read` `clipboard_write` · default: allowed | ⚙️ `clipboard_read` `clipboard_write` · default: allowed |
-| **Child processes** | ⚙️ `child_processes` · default: allowed | ⚙️ `child_processes` · default: allowed |
-| **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` |
-| **Privilege stripping** | 🔒 All stripped | 🔒 All stripped except `SeChangeNotifyPrivilege` |
-| **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` |
-| **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` |
-| **Stdin** | ⚙️ `stdin` · default: inherited | ⚙️ `stdin` · default: inherited |
-
-### Restricted Token: Low vs Medium integrity
-
-Low integrity provides the strongest isolation but may break applications that depend on user-profile writes or certain DLL resolution paths. Medium integrity relaxes the mandatory integrity check, allowing writes to user-owned objects at the cost of weaker isolation.
-
-| | Low | Medium |
-|---|---|---|
-| **User profile (read/write)** | ❌ Blocked (mandatory IL) | ✅ Allowed (User SID matches) |
-| **DLL/API set resolution** | ❌ Breaks some apps (Python 3.14+) | ✅ Works |
-| **Registry (HKCU writes)** | ❌ Blocked (Low IL) | ✅ Allowed |
-| **Registry (HKLM writes)** | ❌ Blocked | ❌ Blocked |
-| **Registry (reads)** | ✅ Most keys readable | ✅ Most keys readable |
-| **Isolation layers** | 2 (SIDs + integrity) | 1 (SIDs only) |
-| **System dir reads** | ✅ Always readable | ✅ Always readable |
-| **System dir writes** | ❌ Blocked | ❌ Blocked |
-| **COM/RPC servers** | ✅ Accessible | ✅ Accessible |
-| **Named pipes** | ⚙️ Configurable | ⚙️ Configurable |
-| **Scheduled tasks** | ❌ Blocked (Low IL) | ✅ Allowed |
-| **Window messages (UIPI)** | ❌ Blocked (Low IL) | ✅ Allowed |
-| **Clipboard** | ⚙️ Configurable | ⚙️ Configurable |
-| **Child processes** | ⚙️ Configurable | ⚙️ Configurable |
-| **Network** | ✅ Unrestricted | ✅ Unrestricted |
+| Aspect | AppContainer | Restricted Low | Restricted Medium |
+|--------|:------------:|:--------------:|:-----------------:|
+| **Integrity level** | ❌ Low (fixed) | ❌ Low | ❌ Medium |
+| **Named pipes** | ❌ Blocked | ⚙️ `named_pipes` | ⚙️ `named_pipes` |
+| **Network** | ⚙️ `network` `lan` `localhost` | ✅ Unrestricted | ✅ Unrestricted |
+| **Object namespace** | ❌ Isolated | ✅ Shared | ✅ Shared |
+| **System dir reads** | ⚙️ `system_dirs` | ✅ Always | ✅ Always |
+| **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
+| **User profile reads** | ❌ Blocked | ✅ Allowed | ✅ Allowed |
+| **User profile writes** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
+| **Registry reads** | ✅ Private hive | ✅ Most keys | ✅ Most keys |
+| **Registry HKCU writes** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
+| **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
+| **DLL/API set resolution** | ✅ Works | ❌ Breaks some apps | ✅ Works |
+| **COM/RPC servers** | ❌ Most blocked | ✅ Accessible | ✅ Accessible |
+| **Scheduled tasks** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
+| **Window messages (UIPI)** | ❌ Blocked | ❌ Blocked (IL) | ✅ Allowed |
+| **Process identity** | ❌ AppContainer SID | ❌ User SID (restricted) | ❌ User SID (restricted) |
+| **Elevation** | ❌ Cannot escalate | ❌ Cannot escalate | ❌ Cannot escalate |
+| **Privilege stripping** | ❌ All stripped | ❌ All except `SeChangeNotify` | ❌ All except `SeChangeNotify` |
+| **Isolation layers** | 2 (SID + namespace) | 2 (SIDs + integrity) | 1 (SIDs only) |
+| **Clipboard** | ⚙️ default: allowed | ⚙️ default: allowed | ⚙️ default: allowed |
+| **Child processes** | ⚙️ default: allowed | ⚙️ default: allowed | ⚙️ default: allowed |
+| **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` | ⚙️ `[access]` |
+| **Stdin** | ⚙️ default: inherited | ⚙️ default: inherited | ⚙️ default: inherited |
+| **Environment** | ⚙️ `[environment]` | ⚙️ `[environment]` | ⚙️ `[environment]` |
+| **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 **Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
