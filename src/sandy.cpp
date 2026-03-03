@@ -376,6 +376,42 @@ static int RunMain(int argc, wchar_t* argv[])
                 found = true;
             }
 
+            // Check Windows AppContainer Mappings for Sandy_ profiles
+            {
+                HKEY hMap = nullptr;
+                const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
+                    L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
+                if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
+                        KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
+                    DWORD subCount = 0;
+                    RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                    for (DWORD i = 0; i < subCount; i++) {
+                        wchar_t sid[256];
+                        DWORD sidLen = 256;
+                        if (RegEnumKeyExW(hMap, i, sid, &sidLen,
+                                nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                            continue;
+                        HKEY hSub = nullptr;
+                        if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                            continue;
+                        wchar_t moniker[256] = {};
+                        DWORD mSize = sizeof(moniker);
+                        bool isSandy = false;
+                        if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
+                                reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
+                            isSandy = (_wcsnicmp(moniker, L"Sandy_", 6) == 0);
+                        }
+                        RegCloseKey(hSub);
+                        if (isSandy) {
+                            fprintf(stderr, "  [PROFILE] %ls  (%ls)\n", moniker, sid);
+                            found = true;
+                        }
+                    }
+                    RegCloseKey(hMap);
+                }
+            }
+
             if (!found) {
                 fprintf(stderr, "Sandy - no active instances or stale state.\n");
             }
@@ -386,6 +422,47 @@ static int RunMain(int argc, wchar_t* argv[])
             Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
             Sandbox::RestoreStaleWER();
             Sandbox::DeleteCleanupTask();
+
+            // Clean orphaned Sandy AppContainer profiles from Windows Mappings
+            {
+                HKEY hMap = nullptr;
+                const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
+                    L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
+                if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
+                        KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
+                    DWORD subCount = 0;
+                    RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                    std::vector<std::wstring> orphans;
+                    for (DWORD i = 0; i < subCount; i++) {
+                        wchar_t sid[256];
+                        DWORD sidLen = 256;
+                        if (RegEnumKeyExW(hMap, i, sid, &sidLen,
+                                nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                            continue;
+                        HKEY hSub = nullptr;
+                        if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                            continue;
+                        wchar_t moniker[256] = {};
+                        DWORD mSize = sizeof(moniker);
+                        if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
+                                reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
+                            if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
+                                orphans.push_back(moniker);
+                        }
+                        RegCloseKey(hSub);
+                    }
+                    RegCloseKey(hMap);
+                    if (!orphans.empty())
+                        fprintf(stderr, "  Cleaning %zu orphaned AppContainer profile(s)...\n",
+                                orphans.size());
+                    for (auto& m : orphans) {
+                        HRESULT hr = DeleteAppContainerProfile(m.c_str());
+                        fprintf(stderr, "  [PROFILE] %ls -> %s\n", m.c_str(),
+                                SUCCEEDED(hr) ? "deleted" : "FAILED");
+                    }
+                }
+            }
             fprintf(stderr, "Sandy - cleanup complete.\n");
             return 0;
         }

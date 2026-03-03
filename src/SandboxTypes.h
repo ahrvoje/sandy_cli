@@ -217,6 +217,7 @@ namespace Sandbox {
             fclose(f);
         }
 
+        bool IsActive() const { return active; }
         void Stop() { active = false; }
         ~SandyLogger() { Stop(); }
     };

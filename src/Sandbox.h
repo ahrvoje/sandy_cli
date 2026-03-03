@@ -313,12 +313,13 @@ namespace Sandbox {
                 if (valueCount > 0) staleWER = true;
             }
             if (staleGrants || staleWER) {
-                fprintf(stderr,
-                    "[Sandy] WARNING: Stale registry entries detected from a previous crashed run.\n"
-                    "        Grants: HKCU\\%ls   WER: HKCU\\%ls\n"
-                    "        Run 'sandy.exe --cleanup' to restore original state.\n"
-                    "        If another sandy instance is running, its entries are expected.\n",
-                    kGrantsParentKey, kWERParentKey);
+                if (!g_logger.IsActive())
+                    fprintf(stderr,
+                        "[Sandy] WARNING: Stale registry entries detected from a previous crashed run.\n"
+                        "        Grants: HKCU\\%ls   WER: HKCU\\%ls\n"
+                        "        Run 'sandy.exe --cleanup' to restore original state.\n"
+                        "        If another sandy instance is running, its entries are expected.\n",
+                        kGrantsParentKey, kWERParentKey);
                 g_logger.Log(L"STARTUP_WARNING: stale registry entries found (use --cleanup)");
             }
         }
@@ -627,9 +628,12 @@ namespace Sandbox {
             g_logger.Log(L"CLEANUP: starting");
             RevokeAllGrants();  // restore original DACLs + clear registry
             DisableLoopback();
-            DeleteAppContainerProfile(containerName.c_str());
+            HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
+            g_logger.Log((L"PROFILE_DELETE: " + containerName +
+                (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
             DeleteCleanupTask();  // cancel startup task — we cleaned up fine
             g_logger.Log(L"CLEANUP: complete");
+            g_logger.Stop();  // must stop here, after cleanup logging
             if (pContainerSid) FreeSid(pContainerSid);
             if (hRestrictedToken) CloseHandle(hRestrictedToken);
             if (pGrantSid && pGrantSid != pContainerSid) FreeSid(pGrantSid);
@@ -954,7 +958,6 @@ namespace Sandbox {
             }
         }
 
-        g_logger.Stop();
 
         // --- Report crash dump if child crashed ---
         if (crashDumpsEnabled) {

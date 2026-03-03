@@ -69,8 +69,10 @@ namespace Sandbox {
         DWORD disposition = 0;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
                 0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
-                nullptr, &hKey, &disposition) != ERROR_SUCCESS)
+                nullptr, &hKey, &disposition) != ERROR_SUCCESS) {
+            g_logger.Log((L"REG_PERSIST: FAILED to create key " + regKey).c_str());
             return;
+        }
 
         // On first creation, store PID and deny Restricted SID write access.
         if (disposition == REG_CREATED_NEW_KEY) {
@@ -128,6 +130,8 @@ namespace Sandbox {
                        reinterpret_cast<const BYTE*>(data.c_str()),
                        static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
+
+        g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(valueCount) + L"] " + data).c_str());
     }
 
     // -----------------------------------------------------------------------
@@ -136,7 +140,8 @@ namespace Sandbox {
     inline void ClearPersistedGrants()
     {
         std::wstring regKey = GetGrantsRegKey();
-        RegDeleteKeyW(HKEY_CURRENT_USER, regKey.c_str());
+        LSTATUS r = RegDeleteKeyW(HKEY_CURRENT_USER, regKey.c_str());
+        g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
         // Try to remove parent key if empty (best-effort, fails if subkeys remain)
         RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
     }
@@ -510,8 +515,10 @@ namespace Sandbox {
                 // PID is alive — collect its paths and skip cleanup
                 CloseHandle(h);
                 collectPaths(hKey, livePaths);
+                g_logger.Log((L"STALE_CHECK: " + subKey + L" -> ALIVE (PID=" + std::to_wstring(pid) + L")").c_str());
             } else {
                 staleKeys.push_back(subKey);
+                g_logger.Log((L"STALE_CHECK: " + subKey + L" -> DEAD (PID=" + std::to_wstring(pid) + L")").c_str());
             }
             RegCloseKey(hKey);
         }
@@ -524,13 +531,17 @@ namespace Sandbox {
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
                 // Delete AppContainer profile if stored
                 std::wstring containerName = readContainer(hKey);
-                if (!containerName.empty())
-                    DeleteAppContainerProfile(containerName.c_str());
+                if (!containerName.empty()) {
+                    HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
+                    g_logger.Log((L"PROFILE_DELETE: " + containerName +
+                        (SUCCEEDED(hr) ? L" -> OK" : L" -> FAILED")).c_str());
+                }
 
                 RestoreGrantsFromKey(hKey, livePaths);
                 RegCloseKey(hKey);
             }
             RegDeleteKeyW(HKEY_CURRENT_USER, fullKey.c_str());
+            g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
         }
 
         // Remove parent key if now empty
