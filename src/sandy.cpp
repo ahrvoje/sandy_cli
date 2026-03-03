@@ -366,8 +366,7 @@ static int RunMain(int argc, wchar_t* argv[])
         }
         if (arg == L"--cleanup") {
             Sandbox::ForceDisableLoopback();
-            DeleteAppContainerProfile(Sandbox::kContainerName);
-            Sandbox::RestoreStaleGrants();
+            Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
             Sandbox::RestoreStaleWER();
             Sandbox::DeleteCleanupTask();
             fprintf(stderr, "Sandy - cleanup complete.\n");

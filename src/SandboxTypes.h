@@ -13,8 +13,27 @@
 
 namespace Sandbox {
 
-    // Container identity — used for both creation and cleanup
-    constexpr const wchar_t* kContainerName = L"SandySandbox";
+    // Container identity — per-instance UUID for isolation
+    constexpr const wchar_t* kContainerPrefix = L"Sandy_";
+
+    // Generate a UUID string for this instance (e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+    inline std::wstring GenerateInstanceId()
+    {
+        GUID guid{};
+        CoCreateGuid(&guid);
+        wchar_t buf[40];
+        swprintf(buf, 40, L"%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                 guid.Data1, guid.Data2, guid.Data3,
+                 guid.Data4[0], guid.Data4[1], guid.Data4[2], guid.Data4[3],
+                 guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
+        return buf;
+    }
+
+    // Build AppContainer name from instance ID: "Sandy_<uuid>"
+    inline std::wstring ContainerNameFromId(const std::wstring& instanceId)
+    {
+        return kContainerPrefix + instanceId;
+    }
 
     // -----------------------------------------------------------------------
     // Folder access level

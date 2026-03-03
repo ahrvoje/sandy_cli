@@ -258,6 +258,10 @@ namespace Sandbox {
                             const std::wstring& auditLogPath = L"",
                             const std::wstring& dumpPath = L"")
     {
+        // --- Generate instance ID (UUID) for this run ---
+        g_instanceId = GenerateInstanceId();
+        std::wstring containerName = ContainerNameFromId(g_instanceId);
+
         // --- Mode-specific state ---
         PSID pContainerSid = nullptr;
         HANDLE hRestrictedToken = nullptr;
@@ -280,7 +284,7 @@ namespace Sandbox {
         // Instance-specific stale grants/WER are handled exclusively by --cleanup.
         {
             ForceDisableLoopback();  // unconditional — g_loopbackGranted is false at startup
-            DeleteAppContainerProfile(kContainerName);  // no-op if doesn't exist
+            // Note: stale AppContainer profiles are now cleaned by RestoreStaleGrants()
             // Clean any stale WER key for the current target exe only
             auto slash = exePath.find_last_of(L"\\/");
             std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
@@ -410,12 +414,12 @@ namespace Sandbox {
             // APPCONTAINER PATH
             // =============================================================
             HRESULT hr = CreateAppContainerProfile(
-                kContainerName, L"Sandy Sandbox",
+                containerName.c_str(), L"Sandy Sandbox",
                 L"Sandboxed environment for running executables",
                 nullptr, 0, &pContainerSid);
 
             if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
-                hr = DeriveAppContainerSidFromAppContainerName(kContainerName, &pContainerSid);
+                hr = DeriveAppContainerSidFromAppContainerName(containerName.c_str(), &pContainerSid);
                 containerCreated = false;
             } else {
                 containerCreated = SUCCEEDED(hr);
@@ -623,7 +627,7 @@ namespace Sandbox {
             g_logger.Log(L"CLEANUP: starting");
             RevokeAllGrants();  // restore original DACLs + clear registry
             DisableLoopback();
-            DeleteAppContainerProfile(kContainerName);
+            DeleteAppContainerProfile(containerName.c_str());
             DeleteCleanupTask();  // cancel startup task — we cleaned up fine
             g_logger.Log(L"CLEANUP: complete");
             if (pContainerSid) FreeSid(pContainerSid);
@@ -983,7 +987,8 @@ namespace Sandbox {
     {
         RevokeAllGrants();  // restore DACLs (from memory if available, clears registry)
         DisableLoopback();
-        DeleteAppContainerProfile(kContainerName);
+        // Note: stale AppContainer profiles are now cleaned by RestoreStaleGrants()
+        RestoreStaleGrants();  // restores DACLs and deletes stale container profiles
         RestoreStaleWER();  // clean WER keys using persisted exe names
         DeleteCleanupTask();  // cancel startup task — we cleaned up fine
     }
