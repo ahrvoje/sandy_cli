@@ -446,7 +446,7 @@ namespace Sandbox {
                 }
 
                 swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
-                g_logger.Log(msg);
+                    g_logger.Log(msg);
             }
         }
 
@@ -982,15 +982,17 @@ namespace Sandbox {
         cleanup();
         return static_cast<int>(exitCode);
     }
-
     // -----------------------------------------------------------------------
     // Delete the AppContainer profile and clean up loopback exemption
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
-        RevokeAllGrants();  // restore DACLs (from memory if available, clears registry)
+        RevokeAllGrants();  // restore DACLs (atomic guard inside prevents double cleanup)
         DisableLoopback();
-        // Note: stale AppContainer profiles are now cleaned by RestoreStaleGrants()
+        // Delete this instance's AppContainer profile (Bug 1 fix)
+        std::wstring containerName = ContainerNameFromId(g_instanceId);
+        if (!containerName.empty())
+            DeleteAppContainerProfile(containerName.c_str());
         RestoreStaleGrants();  // restores DACLs and deletes stale container profiles
         RestoreStaleWER();  // clean WER keys using persisted exe names
         DeleteCleanupTask();  // cancel startup task — we cleaned up fine

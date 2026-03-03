@@ -298,17 +298,13 @@ static int RunMain(int argc, wchar_t* argv[])
                         // Read _pid from subkey
                         std::wstring fullKey = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + name;
                         HKEY hSub = nullptr;
-                        DWORD pid = 0;
+                        DWORD pid = 0; ULONGLONG ctime = 0;
                         if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                                           KEY_READ, &hSub) == ERROR_SUCCESS) {
-                            DWORD size = sizeof(DWORD);
-                            RegQueryValueExW(hSub, L"_pid", nullptr, nullptr,
-                                             reinterpret_cast<BYTE*>(&pid), &size);
+                            Sandbox::ReadPidAndCtime(hSub, pid, ctime);
                             RegCloseKey(hSub);
                         }
-                        HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
-                        if (h) {
-                            CloseHandle(h);
+                        if (Sandbox::IsProcessAlive(pid, ctime)) {
                             fprintf(stderr, "  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
                         } else {
                             fprintf(stderr, "  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);

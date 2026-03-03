@@ -45,6 +45,7 @@ namespace Sandbox {
     };
     inline std::vector<ACLGrant> g_aclGrants;
     inline SRWLOCK g_aclGrantsLock = SRWLOCK_INIT;
+    inline std::atomic<bool> g_cleanedUp{false};
 
     static const wchar_t* kGrantsParentKey = L"Software\\Sandy\\Grants";
 
@@ -61,6 +62,45 @@ namespace Sandbox {
     // Stores PID as value for liveness checks during stale cleanup.
     // Denies Restricted SID (S-1-5-12) access to prevent sandbox tampering.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Check if a PID is alive AND belongs to the sandy process that stored it.
+    // Compares process creation time to guard against PID reuse.
+    // -----------------------------------------------------------------------
+    inline bool IsProcessAlive(DWORD pid, ULONGLONG storedCreationTime)
+    {
+        if (!pid) return false;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h) return false;
+
+        bool alive = true;
+        if (storedCreationTime != 0) {
+            FILETIME ftCreate{}, ftExit{}, ftKernel{}, ftUser{};
+            if (GetProcessTimes(h, &ftCreate, &ftExit, &ftKernel, &ftUser)) {
+                ULARGE_INTEGER li;
+                li.LowPart = ftCreate.dwLowDateTime;
+                li.HighPart = ftCreate.dwHighDateTime;
+                alive = (li.QuadPart == storedCreationTime);
+            }
+        }
+        CloseHandle(h);
+        return alive;
+    }
+
+    // -----------------------------------------------------------------------
+    // Get the current process creation time as a 64-bit value
+    // -----------------------------------------------------------------------
+    inline ULONGLONG GetCurrentProcessCreationTime()
+    {
+        FILETIME ftCreate{}, ftExit{}, ftKernel{}, ftUser{};
+        if (GetProcessTimes(GetCurrentProcess(), &ftCreate, &ftExit, &ftKernel, &ftUser)) {
+            ULARGE_INTEGER li;
+            li.LowPart = ftCreate.dwLowDateTime;
+            li.HighPart = ftCreate.dwHighDateTime;
+            return li.QuadPart;
+        }
+        return 0;
+    }
+
     inline void PersistGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
                              const std::wstring& sddl)
     {
@@ -74,12 +114,16 @@ namespace Sandbox {
             return;
         }
 
-        // On first creation, store PID and deny Restricted SID write access.
+        // On first creation, store PID + creation time and deny Restricted SID write access.
         if (disposition == REG_CREATED_NEW_KEY) {
-            // Store PID for liveness checks
             DWORD pid = GetCurrentProcessId();
             RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
                            reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD));
+
+            // Store creation time for PID reuse detection
+            ULONGLONG ct = GetCurrentProcessCreationTime();
+            RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
+                           reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG));
 
             // Store container name for cleanup
             std::wstring containerName = ContainerNameFromId(g_instanceId);
@@ -243,23 +287,26 @@ namespace Sandbox {
     inline void RestoreGrantsFromKey(HKEY hKey,
                                       const std::set<std::wstring>& protectedPaths = {})
     {
+        // Use RegEnumValueW to iterate all values (avoids index-offset bug
+        // where _pid, _ctime, _container consume indices 0-2).
         DWORD valueCount = 0;
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
-        for (LONG i = static_cast<LONG>(valueCount) - 1; i >= 0; i--) {
-            wchar_t valueName[32];
-            swprintf(valueName, 32, L"%ld", i);
-
-            DWORD dataSize = 0;
-            if (RegQueryValueExW(hKey, valueName, nullptr, nullptr, nullptr, &dataSize) != ERROR_SUCCESS)
+        for (DWORD vi = 0; vi < valueCount; vi++) {
+            wchar_t vname[64];
+            DWORD vnameLen = 64;
+            DWORD dataSize = 0, dataType = 0;
+            if (RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, &dataType,
+                              nullptr, &dataSize) != ERROR_SUCCESS)
                 continue;
+            // Skip metadata values
+            if (vname[0] == L'_' || dataType != REG_SZ) continue;
 
             std::wstring data(dataSize / sizeof(wchar_t), L'\0');
-            if (RegQueryValueExW(hKey, valueName, nullptr, nullptr,
-                                 reinterpret_cast<BYTE*>(&data[0]), &dataSize) != ERROR_SUCCESS)
-                continue;
-
+            vnameLen = 64;
+            RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, nullptr,
+                          reinterpret_cast<BYTE*>(&data[0]), &dataSize);
             while (!data.empty() && data.back() == L'\0') data.pop_back();
 
             // Parse TYPE|PATH|SDDL — use rfind for last '|' (safe for paths with '|')
@@ -286,7 +333,6 @@ namespace Sandbox {
                 BOOL present = FALSE, defaulted = FALSE;
                 PACL pDacl = nullptr;
                 if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                    // Use TreeSetNamedSecurityInfo for dirs to propagate removal
                     DWORD a2 = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
                     bool dir2 = (objType == SE_FILE_OBJECT) && (a2 != INVALID_FILE_ATTRIBUTES)
                                 && (a2 & FILE_ATTRIBUTE_DIRECTORY);
@@ -311,6 +357,21 @@ namespace Sandbox {
     // Collect paths granted by OTHER sandy instances (from registry).
     // Used to avoid revoking ACEs that another live instance still needs.
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Helper: read PID and creation time from a grants subkey
+    // -----------------------------------------------------------------------
+    inline bool ReadPidAndCtime(HKEY hKey, DWORD& pid, ULONGLONG& ctime)
+    {
+        pid = 0; ctime = 0;
+        DWORD size = sizeof(DWORD);
+        RegQueryValueExW(hKey, L"_pid", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&pid), &size);
+        size = sizeof(ULONGLONG);
+        RegQueryValueExW(hKey, L"_ctime", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&ctime), &size);
+        return pid != 0;
+    }
+
     inline std::set<std::wstring> GetOtherInstancePaths(const std::wstring& excludeId)
     {
         std::set<std::wstring> paths;
@@ -332,12 +393,19 @@ namespace Sandbox {
 
             if (excludeId == name) continue;  // skip our own instance
 
-            // Read this instance's grants
             std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
                 continue;
+
+            // Only collect paths from LIVE instances (Bug 6 fix)
+            DWORD pid = 0; ULONGLONG ctime = 0;
+            ReadPidAndCtime(hKey, pid, ctime);
+            if (!IsProcessAlive(pid, ctime)) {
+                RegCloseKey(hKey);
+                continue;  // dead instance — don't protect its paths
+            }
 
             DWORD valueCount = 0;
             RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -352,9 +420,7 @@ namespace Sandbox {
                                   nullptr, &dataSize) != ERROR_SUCCESS)
                     continue;
 
-                // Skip metadata values (_pid, _container)
-                if (vname[0] == L'_') continue;
-                if (dataType != REG_SZ) continue;
+                if (vname[0] == L'_' || dataType != REG_SZ) continue;
 
                 std::wstring data(dataSize / sizeof(wchar_t), L'\0');
                 vnameLen = 64;
@@ -362,7 +428,6 @@ namespace Sandbox {
                               reinterpret_cast<BYTE*>(&data[0]), &dataSize);
                 while (!data.empty() && data.back() == L'\0') data.pop_back();
 
-                // Parse TYPE|PATH|SDDL — extract just the path
                 auto sep1 = data.find(L'|');
                 auto sep2 = data.rfind(L'|');
                 if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1) {
@@ -383,6 +448,9 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void RevokeAllGrants()
     {
+        // Guard against double cleanup (Ctrl+C handler vs normal exit race)
+        if (g_cleanedUp.exchange(true)) return;
+
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
         // Check which paths other instances still need
@@ -450,13 +518,7 @@ namespace Sandbox {
         }
         RegCloseKey(hParent);
 
-        // Helper: read _pid DWORD from a subkey
-        auto readPid = [](HKEY hKey) -> DWORD {
-            DWORD pid = 0, size = sizeof(DWORD);
-            RegQueryValueExW(hKey, L"_pid", nullptr, nullptr,
-                             reinterpret_cast<BYTE*>(&pid), &size);
-            return pid;
-        };
+        // readPidCtime replaced by ReadPidAndCtime() helper above
 
         // Helper: read _container string from a subkey
         auto readContainer = [](HKEY hKey) -> std::wstring {
@@ -509,11 +571,9 @@ namespace Sandbox {
                 continue;
             }
 
-            DWORD pid = readPid(hKey);
-            HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
-            if (h) {
-                // PID is alive — collect its paths and skip cleanup
-                CloseHandle(h);
+            DWORD pid = 0; ULONGLONG ctime = 0;
+            ReadPidAndCtime(hKey, pid, ctime);
+            if (IsProcessAlive(pid, ctime)) {
                 collectPaths(hKey, livePaths);
                 g_logger.Log((L"STALE_CHECK: " + subKey + L" -> ALIVE (PID=" + std::to_wstring(pid) + L")").c_str());
             } else {
@@ -540,12 +600,13 @@ namespace Sandbox {
                 RestoreGrantsFromKey(hKey, livePaths);
                 RegCloseKey(hKey);
             }
-            RegDeleteKeyW(HKEY_CURRENT_USER, fullKey.c_str());
+            // Use RegDeleteTreeW — robust even if subkeys exist (Bug 4 fix)
+            RegDeleteTreeW(HKEY_CURRENT_USER, fullKey.c_str());
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
         }
 
         // Remove parent key if now empty
-        RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
+        RegDeleteTreeW(HKEY_CURRENT_USER, kGrantsParentKey);
     }
 
 } // namespace Sandbox
