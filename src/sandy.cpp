@@ -20,7 +20,10 @@ static void PrintUsage()
         "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -p <report>       -x <executable> [args...]\n"
-        "  sandy.exe                   (cleanup stale state from crashed runs)\n"
+        "  sandy.exe --print-container-toml          (print default appcontainer config)\n"
+        "  sandy.exe --print-restricted-toml         (print default restricted config)\n"
+        "  sandy.exe --cleanup                       (restore stale state from crashed runs)\n"
+        "  sandy.exe --status                        (show active instances and stale state)\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>   Path to TOML config file\n"
@@ -41,16 +44,16 @@ static void PrintUsage()
         "  [sandbox]                              (required)\n"
         "  token = 'appcontainer'                 # required: 'appcontainer' or 'restricted'\n"
         "  # integrity = 'low'                    # required (restricted only): 'low' or 'medium'\n"
-        "  # workdir = 'C:\\\\projects\\\\myapp'      # optional: child working dir\n"
+        "  workdir = 'inherit'                    # required: absolute path or 'inherit' (exe folder)\n"
         "\n"
-        "  [access]                               (optional, both modes)\n"
+        "  [access]                               (required, both modes)\n"
         "  read    = ['C:\\\\path']                 # read files, list dirs (no execute)\n"
-        "  write   = ['C:\\\\path']                 # create/modify files (no read)\n"
-        "  execute = ['C:\\\\path']                 # execute only (no read)\n"
-        "  append  = ['C:\\\\path']                 # append only (no overwrite)\n"
-        "  delete  = ['C:\\\\path']                 # delete only\n"
-        "  all     = ['C:\\\\path']                 # full access\n"
-        "  Permissions are independent: read!=execute, write!=read. Use absolute paths.\n"
+        "  write   = []                           # create/modify files (no read)\n"
+        "  execute = []                           # execute only (no read)\n"
+        "  append  = []                           # append only (no overwrite)\n"
+        "  delete  = []                           # delete only\n"
+        "  all     = []                           # full access\n"
+        "  All 6 keys required. Use [] for no grants. Absolute paths only.\n"
         "\n"
         "  [allow]                                (required, all keys mandatory per mode)\n"
         "  system_dirs     = true                 # required (appcontainer)\n"
@@ -63,18 +66,20 @@ static void PrintUsage()
         "  clipboard_write = true                 # required (both)\n"
         "  child_processes = true                 # required (both)\n"
         "\n"
-        "  [registry]                             (optional, restricted only)\n"
+        "  [registry]                             (required, restricted only)\n"
         "  read  = ['HKCU\\\\Software\\\\MyApp']\n"
-        "  write = ['HKCU\\\\Software\\\\MyApp\\\\Settings']\n"
+        "  write = []\n"
+        "  Both keys required. Use [] for no grants.\n"
         "\n"
         "  [environment]                          (required)\n"
         "  inherit = true                         # required: true or false\n"
-        "  pass = ['PATH', 'USERPROFILE']         # optional: extends clean env\n"
+        "  pass = ['PATH', 'USERPROFILE']         # required: [] or list of var names\n"
         "\n"
-        "  [limit]                                (optional, both modes)\n"
-        "  timeout = 300                          # kill after N seconds (exit code 1)\n"
-        "  memory = 4096                          # job-wide memory cap in MB (all combined)\n"
-        "  processes = 10                         # max active processes incl. main\n"
+        "  [limit]                                (required, both modes)\n"
+        "  timeout   = 0                          # 0 = no timeout, positive = seconds\n"
+        "  memory    = 0                          # 0 = no cap, positive = MB\n"
+        "  processes = 0                          # 0 = no cap, positive = max processes\n"
+        "  All 3 keys required. Use 0 for unlimited.\n"
         "\n"
         "Mode comparison:          AppContainer          Restricted Low        Restricted Medium\n"
         "  Integrity level         Low (fixed)           Low (fixed)           Medium (fixed)\n"
@@ -86,8 +91,8 @@ static void PrintUsage()
         "  Network                 configurable          allowed               allowed\n"
         "  System dir reads        configurable          allowed               allowed\n"
         "  System dir writes       blocked               blocked               blocked\n"
-        "  User profile reads      blocked               allowed               allowed\n"
-        "  User profile writes     blocked               blocked               allowed\n"
+        "  User profile reads      configurable          allowed               allowed\n"
+        "  User profile writes     configurable          configurable          allowed\n"
         "  Registry reads          private hive          allowed               allowed\n"
         "  Registry HKCU writes    blocked               blocked               allowed\n"
         "  Registry HKLM writes    blocked               blocked               blocked\n"
@@ -113,11 +118,88 @@ static void PrintUsage()
         "  required read/write paths, network/pipe/registry usage.\n"
         "\n"
         "Crash resilience:\n"
-        "  Startup cleans stale state from previous crashed runs.\n"
-        "  Running sandy with no arguments performs cleanup only.\n"
+        "  A scheduled task (SandyCleanup) restores stale state at next logon.\n"
+        "  Use --cleanup to manually restore stale state from crashed runs.\n"
         "  Ctrl+C/Break/close triggers cleanup before exit.\n"
         "  SEH handler catches fatal errors in sandy itself.\n",
         kVersion
+    );
+}
+
+// -----------------------------------------------------------------------
+// Print default TOML configs to stdout
+// -----------------------------------------------------------------------
+static void PrintContainerToml()
+{
+    printf(
+        "[sandbox]\n"
+        "token = 'appcontainer'\n"
+        "workdir = 'inherit'\n"
+        "\n"
+        "[access]\n"
+        "read    = []\n"
+        "write   = []\n"
+        "execute = []\n"
+        "append  = []\n"
+        "delete  = []\n"
+        "all     = []\n"
+        "\n"
+        "[allow]\n"
+        "system_dirs     = true\n"
+        "network         = false\n"
+        "localhost       = false\n"
+        "lan             = false\n"
+        "stdin           = false\n"
+        "clipboard_read  = false\n"
+        "clipboard_write = false\n"
+        "child_processes = true\n"
+        "\n"
+        "[environment]\n"
+        "inherit = true\n"
+        "pass    = []\n"
+        "\n"
+        "[limit]\n"
+        "timeout   = 0\n"
+        "memory    = 0\n"
+        "processes = 0\n"
+    );
+}
+
+static void PrintRestrictedToml()
+{
+    printf(
+        "[sandbox]\n"
+        "token     = 'restricted'\n"
+        "integrity = 'low'\n"
+        "workdir   = 'inherit'\n"
+        "\n"
+        "[access]\n"
+        "read    = []\n"
+        "write   = []\n"
+        "execute = []\n"
+        "append  = []\n"
+        "delete  = []\n"
+        "all     = []\n"
+        "\n"
+        "[allow]\n"
+        "named_pipes     = false\n"
+        "stdin           = false\n"
+        "clipboard_read  = false\n"
+        "clipboard_write = false\n"
+        "child_processes = true\n"
+        "\n"
+        "[registry]\n"
+        "read  = []\n"
+        "write = []\n"
+        "\n"
+        "[environment]\n"
+        "inherit = true\n"
+        "pass    = []\n"
+        "\n"
+        "[limit]\n"
+        "timeout   = 0\n"
+        "memory    = 0\n"
+        "processes = 0\n"
     );
 }
 
@@ -183,6 +265,114 @@ static int RunMain(int argc, wchar_t* argv[])
             PrintUsage();
             return 0;
         }
+        if (arg == L"--print-container-toml") {
+            PrintContainerToml();
+            return 0;
+        }
+        if (arg == L"--print-restricted-toml") {
+            PrintRestrictedToml();
+            return 0;
+        }
+        if (arg == L"--status") {
+            bool found = false;
+
+            // Check Grants registry
+            HKEY hGrants = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
+                              KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
+                DWORD subKeyCount = 0;
+                RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr, &subKeyCount,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                for (DWORD i = 0; i < subKeyCount; i++) {
+                    wchar_t name[64];
+                    DWORD nameLen = 64;
+                    if (RegEnumKeyExW(hGrants, i, name, &nameLen,
+                            nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                        DWORD pid = static_cast<DWORD>(_wtoi(name));
+                        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                        if (h) {
+                            CloseHandle(h);
+                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  grants registered\n", pid);
+                        } else {
+                            fprintf(stderr, "  [STALE]   PID %-6lu  grants (dead process)\n", pid);
+                        }
+                        found = true;
+                    }
+                }
+                RegCloseKey(hGrants);
+            }
+
+            // Check WER registry
+            HKEY hWER = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
+                              KEY_READ, &hWER) == ERROR_SUCCESS) {
+                DWORD valueCount = 0;
+                RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 &valueCount, nullptr, nullptr, nullptr, nullptr);
+                for (DWORD i = 0; i < valueCount; i++) {
+                    wchar_t name[64];
+                    DWORD nameLen = 64;
+                    DWORD dataSize = 0;
+                    if (RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
+                                      nullptr, &dataSize) == ERROR_SUCCESS) {
+                        DWORD pid = static_cast<DWORD>(_wtoi(name));
+                        // Read the exe name
+                        std::wstring exeName(dataSize / sizeof(wchar_t), L'\0');
+                        nameLen = 64;
+                        RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
+                                      reinterpret_cast<BYTE*>(&exeName[0]), &dataSize);
+                        while (!exeName.empty() && exeName.back() == L'\0') exeName.pop_back();
+
+                        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                        if (h) {
+                            CloseHandle(h);
+                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
+                        } else {
+                            fprintf(stderr, "  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
+                        }
+                        found = true;
+                    }
+                }
+                RegCloseKey(hWER);
+            }
+
+            // Check scheduled task
+            bool taskExists = false;
+            {
+                STARTUPINFOW si = { sizeof(si) };
+                PROCESS_INFORMATION pi = {};
+                si.dwFlags = STARTF_USESHOWWINDOW;
+                si.wShowWindow = SW_HIDE;
+                wchar_t cmd[] = L"schtasks.exe /Query /TN \"SandyCleanup\"";
+                if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                    WaitForSingleObject(pi.hProcess, 5000);
+                    DWORD exitCode = 1;
+                    GetExitCodeProcess(pi.hProcess, &exitCode);
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    taskExists = (exitCode == 0);
+                }
+            }
+            if (taskExists) {
+                fprintf(stderr, "  [TASK]    SandyCleanup scheduled task exists\n");
+                found = true;
+            }
+
+            if (!found) {
+                fprintf(stderr, "Sandy - no active instances or stale state.\n");
+            }
+            return 0;
+        }
+        if (arg == L"--cleanup") {
+            Sandbox::ForceDisableLoopback();
+            DeleteAppContainerProfile(Sandbox::kContainerName);
+            Sandbox::RestoreStaleGrants();
+            Sandbox::RestoreStaleWER();
+            Sandbox::DeleteCleanupTask();
+            fprintf(stderr, "Sandy - cleanup complete.\n");
+            return 0;
+        }
         if (arg == L"-q" || arg == L"--quiet") {
             quiet = true;
         }
@@ -235,23 +425,7 @@ static int RunMain(int argc, wchar_t* argv[])
         return rc;
     }
 
-    // --- Cleanup-only mode (no arguments) ---
-    if (configPath.empty() && configString.empty() && exePath.empty()) {
-        if (argc > 1 && !quiet) {
-            fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
-            PrintUsage();
-            return 1;
-        }
-        Sandbox::ForceDisableLoopback();
-        DeleteAppContainerProfile(Sandbox::kContainerName);
-        Sandbox::RestoreStaleGrants();
-        Sandbox::DeleteCleanupTask();
-        if (!quiet)
-            fprintf(stderr, "Sandy - cleanup complete.\n");
-        return 0;
-    }
-
-    // --- Validate required options ---
+    // --- No config/exec provided ---
     if ((configPath.empty() && configString.empty()) || exePath.empty()) {
         fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
         PrintUsage();

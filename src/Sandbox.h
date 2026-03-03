@@ -48,7 +48,7 @@ namespace Sandbox {
         args += kCleanupTaskName;
         args += L"\" /TR \"\\\"";
         args += exePath;
-        args += L"\\\"\" /SC ONLOGON /F /RL HIGHEST";
+        args += L"\\\" --cleanup\" /SC ONLOGON /F /RL HIGHEST";
 
         if (RunSchtasks(args) == 0) {
             g_logger.Log(L"SCHTASK: created SandyCleanup (logon trigger)");
@@ -275,21 +275,52 @@ namespace Sandbox {
             g_logger.Start(config.logPath);
         }
 
-        // --- Proactive cleanup of stale state from previous crashed runs ---
+        // --- Lightweight cleanup of non-instance-specific stale state ---
+        // Only cleans resources that are safe to touch during concurrent use.
+        // Instance-specific stale grants/WER are handled exclusively by --cleanup.
         {
             ForceDisableLoopback();  // unconditional — g_loopbackGranted is false at startup
             DeleteAppContainerProfile(kContainerName);  // no-op if doesn't exist
-            RestoreStaleGrants();  // restore ACLs from registry if previous run crashed
-            // Clean any stale WER key for the target exe
+            // Clean any stale WER key for the current target exe only
             auto slash = exePath.find_last_of(L"\\/");
             std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
             DisableCrashDumps(exeBaseName);
-            g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/ACL/WER state");
-            DeleteCleanupTask();  // remove stale task from previous crashed run
+            g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");
+        }
+
+        // --- Warn about stale registry entries from crashed runs ---
+        {
+            bool staleGrants = false, staleWER = false;
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                              KEY_READ, &hKey) == ERROR_SUCCESS) {
+                DWORD subKeyCount = 0;
+                RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subKeyCount,
+                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                RegCloseKey(hKey);
+                if (subKeyCount > 0) staleGrants = true;
+            }
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                              KEY_READ, &hKey) == ERROR_SUCCESS) {
+                DWORD valueCount = 0;
+                RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                 &valueCount, nullptr, nullptr, nullptr, nullptr);
+                RegCloseKey(hKey);
+                if (valueCount > 0) staleWER = true;
+            }
+            if (staleGrants || staleWER) {
+                fprintf(stderr,
+                    "[Sandy] WARNING: Stale registry entries detected from a previous crashed run.\n"
+                    "        Grants: HKCU\\%ls   WER: HKCU\\%ls\n"
+                    "        Run 'sandy.exe --cleanup' to restore original state.\n"
+                    "        If another sandy instance is running, its entries are expected.\n",
+                    kGrantsParentKey, kWERParentKey);
+                g_logger.Log(L"STARTUP_WARNING: stale registry entries found (use --cleanup)");
+            }
         }
 
         // --- Register cleanup task for crash resilience ---
-        // Runs sandy.exe (no-args = cleanup-only) at next logon if we crash.
+        // Runs sandy.exe --cleanup at next logon if we crash.
         // Deleted on clean exit below.
         CreateCleanupTask();
 
@@ -534,6 +565,8 @@ namespace Sandbox {
             auto slash = exePath.find_last_of(L"\\/");
             crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
             crashDumpsEnabled = EnableCrashDumps(crashExeName);
+            if (crashDumpsEnabled)
+                PersistWERExeName(crashExeName);
         }
 
         // --- Prepare capabilities (AppContainer only) ---
@@ -932,6 +965,7 @@ namespace Sandbox {
                     fprintf(stderr, "[Dump] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
             }
             DisableCrashDumps(crashExeName);
+            ClearWERExeName();
         }
 
         // --- Cleanup ---
@@ -950,6 +984,8 @@ namespace Sandbox {
         RevokeAllGrants();  // restore DACLs (from memory if available, clears registry)
         DisableLoopback();
         DeleteAppContainerProfile(kContainerName);
+        RestoreStaleWER();  // clean WER keys using persisted exe names
+        DeleteCleanupTask();  // cancel startup task — we cleaned up fine
     }
 
 } // namespace Sandbox

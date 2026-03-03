@@ -538,6 +538,82 @@ namespace Sandbox {
         RegDeleteKeyW(HKEY_LOCAL_MACHINE, keyPath.c_str());
     }
 
+    // -----------------------------------------------------------------------
+    // WER state persistence — allow all cleanup paths to revert WER keys
+    // Stores exe basename under HKCU\Software\Sandy\WER (PID as value name)
+    // -----------------------------------------------------------------------
+    static const wchar_t* kWERParentKey = L"Software\\Sandy\\WER";
+
+    inline void PersistWERExeName(const std::wstring& exeName)
+    {
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0, nullptr,
+                0, KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+            return;
+        wchar_t valueName[32];
+        swprintf(valueName, 32, L"%lu", GetCurrentProcessId());
+        RegSetValueExW(hKey, valueName, 0, REG_SZ,
+                       reinterpret_cast<const BYTE*>(exeName.c_str()),
+                       static_cast<DWORD>((exeName.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(hKey);
+    }
+
+    inline void ClearWERExeName()
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                          KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
+            return;
+        wchar_t valueName[32];
+        swprintf(valueName, 32, L"%lu", GetCurrentProcessId());
+        RegDeleteValueW(hKey, valueName);
+        RegCloseKey(hKey);
+        // Try to remove parent key if empty
+        RegDeleteKeyW(HKEY_CURRENT_USER, kWERParentKey);
+    }
+
+    // Enumerate all persisted WER entries and clean them
+    inline void RestoreStaleWER()
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                          KEY_READ, &hKey) != ERROR_SUCCESS)
+            return;
+
+        DWORD valueCount = 0;
+        RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                         &valueCount, nullptr, nullptr, nullptr, nullptr);
+
+        // Collect all entries first (value name = PID, data = exe basename)
+        std::vector<std::pair<std::wstring, std::wstring>> entries;
+        for (DWORD i = 0; i < valueCount; i++) {
+            wchar_t name[64];
+            DWORD nameLen = 64;
+            DWORD dataSize = 0;
+            if (RegEnumValueW(hKey, i, name, &nameLen, nullptr, nullptr, nullptr, &dataSize) == ERROR_SUCCESS) {
+                std::wstring data(dataSize / sizeof(wchar_t), L'\0');
+                nameLen = 64;  // reset — RegEnumValueW modifies it
+                if (RegEnumValueW(hKey, i, name, &nameLen, nullptr, nullptr,
+                                  reinterpret_cast<BYTE*>(&data[0]), &dataSize) == ERROR_SUCCESS) {
+                    while (!data.empty() && data.back() == L'\0') data.pop_back();
+                    entries.push_back({ name, data });
+                }
+            }
+        }
+        RegCloseKey(hKey);
+
+        // Clean each WER key and delete the registry entry
+        for (const auto& entry : entries) {
+            if (!entry.second.empty()) {
+                DisableCrashDumps(entry.second);
+                g_logger.Log((L"WER_RESTORE: " + entry.second).c_str());
+            }
+        }
+
+        // Delete the entire WER parent key
+        RegDeleteKeyW(HKEY_CURRENT_USER, kWERParentKey);
+    }
+
     // Check if exit code looks like a native crash.
     // Covers NTSTATUS codes (0xC000xxxx) and C runtime abort() (exit code 3).
     inline bool IsCrashExitCode(DWORD exitCode)

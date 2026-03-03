@@ -4,6 +4,7 @@
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
+workdir = 'inherit'
 
 [access]
 read = [
@@ -17,6 +18,9 @@ write = [
     'C:\Users\H\test_W',
     'C:\Users\H\test_file_W.txt',
 ]
+execute = []
+append = []
+delete = []
 all = [
     'C:\Users\H\test_RW',
     'C:\Users\H\test_file_RW.txt',
@@ -31,3 +35,13 @@ child_processes = true
 
 [environment]
 inherit = true
+pass = []
+
+[registry]
+read = []
+write = []
+
+[limit]
+timeout = 0
+memory = 0
+processes = 0

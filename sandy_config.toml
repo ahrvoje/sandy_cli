@@ -14,6 +14,7 @@
 [sandbox]
 token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # integrity = 'low'        # required (restricted only): 'low' or 'medium'
+workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
 
 # ============================================================
 # ACCESS — File and folder grants
@@ -22,18 +23,16 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # Use single quotes for Windows paths (no backslash escaping needed).
 
 [access]
+read = []
 # read = [
 #     'C:\data\config.json',          # single file
 #     'C:\Python314',                 # entire folder (recursive)
 # ]
-# write = [
-#     'C:\logs\agent.log',            # single log file
-#     'C:\temp\output',               # output folder
-# ]
-# execute = ['C:\tools\bin']          # execute-only (no read)
-# append = ['C:\logs\audit.log']      # append-only (no overwrite)
-# delete = ['C:\temp\scratch']        # delete-only
-# all = ['C:\workspace']              # full access
+write = []
+execute = []
+append = []
+delete = []
+all = []
 
 # ============================================================
 # PERMISSIONS — All keys mandatory per mode
@@ -66,14 +65,13 @@ child_processes = true
 
 [environment]
 inherit = true                            # required: true or false
-# pass = ['PATH', 'PYTHONPATH', 'HOME']   # extends clean env when inherit = false
+pass = []                                 # required: [] or ['PATH', 'PYTHONPATH']
 
 # ============================================================
-# RESOURCE LIMITS
+# RESOURCE LIMITS — all keys required (0 = unlimited)
 # ============================================================
-# Constrain resource usage. Comment out for unlimited.
 
 [limit]
-# timeout = 300      # kill process after N seconds
-# memory = 4096      # maximum memory in MB
-# processes = 10     # maximum concurrent child processes
+timeout = 0        # 0 = no timeout, positive = kill after N seconds
+memory = 0         # 0 = no cap, positive = limit in MB
+processes = 0      # 0 = no cap, positive = max active processes

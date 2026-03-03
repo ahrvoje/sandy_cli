@@ -33,7 +33,10 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -p <report>       -x <executable> [args...]
-sandy.exe                   (cleanup stale state from crashed runs)
+sandy.exe --print-container-toml          (print default appcontainer config)
+sandy.exe --print-restricted-toml         (print default restricted config)
+sandy.exe --cleanup                       (restore stale state from crashed runs)
+sandy.exe --status                        (show active instances and stale state)
 ```
 
 | Flag | Description |
@@ -48,6 +51,10 @@ sandy.exe                   (cleanup stale state from crashed runs)
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version |
 | `-h`, `--help` | Print full help text with config reference |
+| `--print-container-toml` | Print default AppContainer config to stdout |
+| `--print-restricted-toml` | Print default Restricted Token config to stdout |
+| `--cleanup` | Restore stale state from crashed runs (loopback, ACLs, WER, scheduled task) |
+| `--status` | Show active sandy instances, stale grants, and scheduled task |
 
 All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it. Sandy forwards the child process's exit code.
 
@@ -202,8 +209,9 @@ processes = 10      # max total active processes (including main)
 | **`[sandbox]`** | 🟢 required | 🟢 required |
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
-| &ensp; `workdir` | 🟡 optional | 🟡 optional |
-| **`[access]`** | 🟡 optional | 🟡 optional |
+| &ensp; `workdir` | 🟢 required (`'inherit'` or path) | 🟢 required (`'inherit'` or path) |
+| **`[access]`** | 🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
+| &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
 | **`[allow]`** | 🟢 required | 🟢 required |
 | &ensp; `system_dirs` | 🟢 required | 🔴 n/a |
 | &ensp; `network` | 🟢 required | 🔴 n/a |
@@ -214,13 +222,15 @@ processes = 10      # max total active processes (including main)
 | &ensp; `clipboard_read` | 🟢 required | 🟢 required |
 | &ensp; `clipboard_write` | 🟢 required | 🟢 required |
 | &ensp; `child_processes` | 🟢 required | 🟢 required |
-| **`[registry]`** | 🔴 n/a | 🟡 optional |
+| **`[registry]`** | 🔴 n/a | 🟢 required (both keys) |
+| &ensp; `read` `write` | 🔴 n/a | 🟢 required (`[]` for none) |
 | **`[environment]`** | 🟢 required | 🟢 required |
 | &ensp; `inherit` | 🟢 required | 🟢 required |
-| &ensp; `pass` | 🟡 optional | 🟡 optional |
-| **`[limit]`** | 🟡 optional | 🟡 optional |
+| &ensp; `pass` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
+| **`[limit]`** | 🟢 required (all 3 keys) | 🟢 required (all 3 keys) |
+| &ensp; `timeout` `memory` `processes` | 🟢 required (`0` = unlimited) | 🟢 required (`0` = unlimited) |
 
-🟢 required · 🟡 optional · 🔴 not available (parse error if used)
+🟢 required · 🔴 not available (parse error if used)
 
 ---
 
@@ -240,8 +250,8 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Network** | ⚙️ `network` `lan` `localhost` | ✅ Allowed | ✅ Allowed |
 | **System dir reads** | ⚙️ `system_dirs` | ✅ Allowed | ✅ Allowed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **User profile reads** | ❌ Blocked | ✅ Allowed | ✅ Allowed |
-| **User profile writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
+| **User profile reads** | ⚙️ `[access]` | ✅ Allowed | ✅ Allowed |
+| **User profile writes** | ⚙️ `[access]` | ⚙️ `[access]` ¹ | ✅ Allowed |
 | **Registry reads** | ✅ Private hive | ✅ Allowed | ✅ Allowed |
 | **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
@@ -257,6 +267,8 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
 
 🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning
+
+¹ Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[access]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 
@@ -567,17 +579,47 @@ system_dirs = true
 
 ## Cleanup &amp; Crash Resilience
 
-Sandy never leaves system state dirty. All sandbox artifacts — ACL grants, AppContainer profiles, loopback exemptions, WER registry keys — are cleaned up regardless of how the process exits. A defense-in-depth strategy ensures reliability across all termination scenarios:
+Sandy never leaves system state dirty. Six resources are tracked and cleaned regardless of how the process exits:
 
-| Scenario | ACLs | AppContainer | Loopback | WER Keys | Mechanism |
-|----------|:----:|:------------:|:--------:|:--------:|-----------|
-| Clean exit | ✅ | ✅ | ✅ | ✅ | Normal cleanup path in `RunSandboxed` |
-| Child crash | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect sandy |
-| Sandy crash | ✅ | ✅ | ✅ | ✅ | SEH `__except` handler runs cleanup |
-| Ctrl+C / kill | ✅ | ✅ | ✅ | ✅ | Console signal handler runs cleanup |
-| Power loss / hard kill | ✅ | ✅ | ✅ | ✅ | Scheduled task + registry restore at next logon |
+| Resource | Created by | Persistence |
+|----------|-----------|-------------|
+| **ACL grants** | `[access]` folder/file grants | `HKCU\Software\Sandy\Grants\<PID>` (write-ahead SDDL) |
+| **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
+| **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
+| **AppContainer profile** | Container creation | OS-managed (`SandySandbox`) |
+| **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup`) |
+| **WER keys** | `-a` or `-d` crash dumps | `HKCU\Software\Sandy\WER` (PID as value name) |
 
-**How it works:** Before modifying any DACL, Sandy saves the original security descriptor to `HKCU\Software\Sandy\Grants\<PID>` (write-ahead) and registers a Windows scheduled task (`SandyCleanup`) that runs `sandy.exe` with no arguments at next logon. On normal exit, ACLs are restored from memory and the registry subkey is cleared. The scheduled task is only deleted when no other instances have pending grants — the per-PID grant subkeys serve as a natural reference counter. If sandy is killed or power is lost, the next logon triggers the scheduled task, which runs sandy in cleanup-only mode — restoring all DACLs, removing the AppContainer profile, and clearing the loopback exemption. Running `sandy.exe` with no arguments also performs cleanup manually.
+### Exit scenarios
+
+| Scenario | ACLs | Loopback | AppContainer | Sched. Task | WER | Registry | Mechanism |
+|----------|:----:|:--------:|:------------:|:-----------:|:---:|:--------:|-----------|
+| **Clean exit** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `cleanup()` lambda in `RunSandboxed` |
+| **Child crash** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect Sandy |
+| **Ctrl+C / close** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Console signal handler → `CleanupSandbox()` |
+| **Sandy crash (SEH)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `__except` handler → `CleanupSandbox()` |
+| **Power loss / taskkill** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Scheduled task at logon → `sandy.exe --cleanup` |
+
+### How it works
+
+1. **Write-ahead logging:** Before modifying any DACL, Sandy persists the original SDDL to `HKCU\Software\Sandy\Grants\<PID>`. WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
+
+2. **Scheduled task safety net:** A `SandyCleanup` scheduled task is created to run `sandy.exe --cleanup` at next logon. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
+
+3. **Multi-instance safety:** Each instance writes to its own PID-scoped registry subkey. `DeleteCleanupTask` only removes the scheduled task when no other instances have pending grants — the PID subkeys serve as a natural reference counter.
+
+4. **Stale entry warning:** On startup, Sandy checks for leftover registry entries and warns:
+   ```
+   [Sandy] WARNING: Stale registry entries detected from a previous crashed run.
+           Grants: HKCU\Software\Sandy\Grants   WER: HKCU\Software\Sandy\WER
+           Run 'sandy.exe --cleanup' to restore original state.
+           If another sandy instance is running, its entries are expected.
+   ```
+
+5. **Explicit cleanup only:** Stale state restoration (ACL reverts, WER key removal) is performed exclusively by `sandy.exe --cleanup` — never during normal startup. This prevents a new instance from reverting a concurrent instance's live grants.
+
+> [!IMPORTANT]
+> If Sandy is killed via `taskkill /F` or power is lost, run `sandy.exe --cleanup` manually or wait for the next logon (the scheduled task handles it automatically).
 
 ---
 

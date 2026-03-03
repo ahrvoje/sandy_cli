@@ -4,12 +4,18 @@
 
 [sandbox]
 token = 'appcontainer'
+workdir = 'inherit'
 
 [access]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\repos\sandy_cli\',
 ]
+write = []
+execute = []
+append = []
+delete = []
+all = []
 
 [allow]
 system_dirs = true
@@ -23,6 +29,7 @@ child_processes = true
 
 [environment]
 inherit = true
+pass = []
 
 [limit]
 timeout = 5

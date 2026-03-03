@@ -81,6 +81,7 @@ namespace Sandbox {
 
         // --- [sandbox] ---
         bool integritySeen = false;
+        bool workdirSeen = false;
         if (sandboxSeen) {
             const Toml::TomlSection& sec = doc.find(L"sandbox")->second;
             for (auto it = sec.begin(); it != sec.end(); ++it) {
@@ -102,7 +103,11 @@ namespace Sandbox {
                         config.parseError = true;
                     }
                 } else if (key == L"workdir") {
-                    config.workdir = val.str;
+                    workdirSeen = true;
+                    if (val.str == L"inherit")
+                        config.workdir.clear();  // inherit = use exe folder
+                    else
+                        config.workdir = val.str;
                 } else {
                     fprintf(stderr, "Error: Unknown key in [sandbox]: %ls\n", key.c_str());
                     config.parseError = true;
@@ -111,6 +116,7 @@ namespace Sandbox {
         }
 
         // --- [access] ---
+        std::set<std::wstring> accessSeen;
         {
             auto sit = doc.find(L"access");
             if (sit != doc.end()) {
@@ -129,6 +135,7 @@ namespace Sandbox {
                         continue;
                     }
                     if (val.isArray) {
+                        accessSeen.insert(key);
                         for (size_t i = 0; i < val.arr.size(); i++)
                             config.folders.push_back({ val.arr[i], it->second });
                     } else {
@@ -140,6 +147,8 @@ namespace Sandbox {
         }
 
         // --- [registry] ---
+        bool registryReadSeen = false;
+        bool registryWriteSeen = false;
         {
             auto sit = doc.find(L"registry");
             if (sit != doc.end()) {
@@ -147,9 +156,11 @@ namespace Sandbox {
                     const std::wstring& key = rit->first;
                     const Toml::TomlValue& val = rit->second;
                     if (key == L"read") {
+                        registryReadSeen = true;
                         if (!val.isArray) { fprintf(stderr, "Error: 'read' in [registry] must be an array, e.g. ['HKCU\\...'].\n"); config.parseError = true; }
                         else { for (size_t i = 0; i < val.arr.size(); i++) config.registryRead.push_back(val.arr[i]); }
                     } else if (key == L"write") {
+                        registryWriteSeen = true;
                         if (!val.isArray) { fprintf(stderr, "Error: 'write' in [registry] must be an array, e.g. ['HKCU\\...'].\n"); config.parseError = true; }
                         else { for (size_t i = 0; i < val.arr.size(); i++) config.registryWrite.push_back(val.arr[i]); }
                     } else {
@@ -213,6 +224,7 @@ namespace Sandbox {
 
         // --- [environment] ---
         bool inheritSeen = false;
+        bool passSeen = false;
         {
             auto sit = doc.find(L"environment");
             if (sit != doc.end()) {
@@ -227,7 +239,13 @@ namespace Sandbox {
                         config.envInherit = (val.str == L"true");
                         inheritSeen = true;
                     } else if (key == L"pass") {
-                        if (val.isArray) config.envPass = val.arr;
+                        passSeen = true;
+                        if (val.isArray) {
+                            config.envPass = val.arr;
+                        } else {
+                            fprintf(stderr, "Error: 'pass' in [environment] must be an array, e.g. pass = ['PATH']. Got scalar value.\n");
+                            config.parseError = true;
+                        }
                     } else {
                         fprintf(stderr, "Error: Unknown key in [environment]: %ls\n", key.c_str());
                         config.parseError = true;
@@ -237,6 +255,7 @@ namespace Sandbox {
         }
 
         // --- [limit] ---
+        std::set<std::wstring> limitSeen;
         {
             auto sit = doc.find(L"limit");
             if (sit != doc.end()) {
@@ -244,13 +263,21 @@ namespace Sandbox {
                     const std::wstring& key = lit->first;
                     const Toml::TomlValue& val = lit->second;
                     int v = _wtoi(val.str.c_str());
+                    // _wtoi returns 0 for non-numeric input — validate digits
+                    bool isNumeric = !val.str.empty();
+                    for (size_t ci = 0; ci < val.str.size() && isNumeric; ci++)
+                        isNumeric = iswdigit(val.str[ci]);
                     if (key != L"timeout" && key != L"memory" && key != L"processes") {
                         fprintf(stderr, "Error: Unknown key in [limit]: %ls\n", key.c_str());
                         config.parseError = true;
-                    } else if (v <= 0) {
-                        fprintf(stderr, "Error: '%ls' in [limit] must be a positive integer, got '%ls'.\n", key.c_str(), val.str.c_str());
+                    } else if (!isNumeric) {
+                        fprintf(stderr, "Error: '%ls' in [limit] must be a non-negative integer, got '%ls'.\n", key.c_str(), val.str.c_str());
+                        config.parseError = true;
+                    } else if (v < 0) {
+                        fprintf(stderr, "Error: '%ls' in [limit] must be 0 (unlimited) or a positive integer, got '%ls'.\n", key.c_str(), val.str.c_str());
                         config.parseError = true;
                     } else {
+                        limitSeen.insert(key);
                         if (key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(v);
                         else if (key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(v);
                         else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(v);
@@ -311,10 +338,70 @@ namespace Sandbox {
             requireKey(L"clipboard_write", L"allow");
             requireKey(L"child_processes", L"allow");
 
-            // [environment] inherit is mandatory
+            // [environment] inherit + pass are mandatory
             if (!inheritSeen) {
                 fprintf(stderr, "Error: 'inherit' is required in [environment]. All settings must be explicit.\n");
                 config.parseError = true;
+            }
+            if (!passSeen) {
+                fprintf(stderr, "Error: 'pass' is required in [environment]. Use pass = [] for no extra variables.\n");
+                config.parseError = true;
+            }
+
+            // [sandbox] workdir is mandatory
+            if (!workdirSeen) {
+                fprintf(stderr, "Error: 'workdir' is required in [sandbox]. Use workdir = 'inherit' for exe folder.\n");
+                config.parseError = true;
+            }
+
+            // [access] section + all 6 keys mandatory
+            if (doc.find(L"access") == doc.end()) {
+                fprintf(stderr, "Error: [access] section is required. Use empty arrays [] for no grants.\n");
+                config.parseError = true;
+            } else {
+                static const wchar_t* accessKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
+                for (auto ak : accessKeys) {
+                    if (accessSeen.find(ak) == accessSeen.end()) {
+                        fprintf(stderr, "Error: '%ls' is required in [access]. Use %ls = [] for no grants.\n", ak, ak);
+                        config.parseError = true;
+                    }
+                }
+            }
+
+            // [registry] section + both keys mandatory (restricted only)
+            if (isRT) {
+                if (!registrySeen) {
+                    fprintf(stderr, "Error: [registry] section is required in restricted mode. Use empty arrays [] for no grants.\n");
+                    config.parseError = true;
+                } else {
+                    if (!registryReadSeen) {
+                        fprintf(stderr, "Error: 'read' is required in [registry]. Use read = [] for no grants.\n");
+                        config.parseError = true;
+                    }
+                    if (!registryWriteSeen) {
+                        fprintf(stderr, "Error: 'write' is required in [registry]. Use write = [] for no grants.\n");
+                        config.parseError = true;
+                    }
+                }
+            }
+
+            // [limit] section + all 3 keys mandatory
+            if (doc.find(L"limit") == doc.end()) {
+                fprintf(stderr, "Error: [limit] section is required. Use 0 for unlimited.\n");
+                config.parseError = true;
+            } else {
+                if (limitSeen.find(L"timeout") == limitSeen.end()) {
+                    fprintf(stderr, "Error: 'timeout' is required in [limit]. Use timeout = 0 for no timeout.\n");
+                    config.parseError = true;
+                }
+                if (limitSeen.find(L"memory") == limitSeen.end()) {
+                    fprintf(stderr, "Error: 'memory' is required in [limit]. Use memory = 0 for no limit.\n");
+                    config.parseError = true;
+                }
+                if (limitSeen.find(L"processes") == limitSeen.end()) {
+                    fprintf(stderr, "Error: 'processes' is required in [limit]. Use processes = 0 for no limit.\n");
+                    config.parseError = true;
+                }
             }
         }
 
