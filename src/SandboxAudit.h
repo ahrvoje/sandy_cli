@@ -731,11 +731,67 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Count path depth (number of components below drive root)
+    // e.g. "C:\" = 0, "C:\Users" = 1, "C:\Users\H\AppData" = 3
+    // -----------------------------------------------------------------------
+    inline int PathDepth(const std::string& p)
+    {
+        int depth = 0;
+        for (size_t i = 0; i < p.size(); i++)
+            if ((p[i] == '\\' || p[i] == '/') && i > 2) depth++;
+        return depth;
+    }
+
+    // -----------------------------------------------------------------------
+    // Filter probe noise: remove drive roots, shallow paths, and well-known
+    // transient entries that don't represent real access requirements.
+    // Runtime path probes (Python sys.path, DLL search order) touch root
+    // directories without actually needing access to them.
+    // -----------------------------------------------------------------------
+    inline void FilterProbeNoise(std::set<std::string>& dirs)
+    {
+        for (auto it = dirs.begin(); it != dirs.end(); ) {
+            const auto& p = *it;
+            auto lower = p;
+            for (auto& c : lower) c = (char)tolower((unsigned char)c);
+
+            bool isNoise = false;
+
+            // Drive roots (C:\, D:\, etc.) — always probe noise
+            if (p.size() <= 3) isNoise = true;
+
+            // Well-known transient system paths accessed during module search
+            else if (lower == "c:\\system volume information" ||
+                     lower == "c:\\$recycle.bin" ||
+                     lower == "c:\\config.sys" ||
+                     lower == "c:\\recovery" ||
+                     lower == "c:\\programdata" ||
+                     lower == "c:\\documents and settings")
+                isNoise = true;
+
+            // Depth-1 paths under C:\ (e.g. "C:\Users" bare) are almost always
+            // probe artifacts unless they are real app directories
+            else if (PathDepth(lower) == 0 && lower.find("c:\\") == 0) {
+                // Keep known useful depth-1 dirs (repos, Python installations)
+                // but filter out broad directories that are clearly probes
+                if (lower == "c:\\users" || lower == "c:\\programdata")
+                    isNoise = true;
+            }
+
+            if (isNoise) it = dirs.erase(it);
+            else ++it;
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Collapse subdirectories: if parent is in set, remove children
     // e.g. {C:\Py\Lib, C:\Py\Lib\re, C:\Py\Lib\re\__pycache__} → {C:\Py\Lib}
     // -----------------------------------------------------------------------
     inline void CollapseSubdirs(std::set<std::string>& dirs)
     {
+        // First filter transient probe noise
+        FilterProbeNoise(dirs);
+
         std::vector<std::string> sorted(dirs.begin(), dirs.end());
         std::sort(sorted.begin(), sorted.end());
         std::set<std::string> collapsed;
@@ -1007,7 +1063,7 @@ namespace Sandbox {
         if (r.usesNamedPipes) fprintf(out, "  named_pipes = true\n");
         fprintf(out, "\n");
 
-        // --- Suggested TOML ---
+        // --- Suggested TOML (fully compliant with Sandy's strict parser) ---
         fprintf(out, "--- Suggested TOML Config ---\n");
         fprintf(out, "[sandbox]\n");
 
@@ -1019,31 +1075,30 @@ namespace Sandbox {
         } else {
             fprintf(out, "token = 'restricted'\nintegrity = 'medium'\n");
         }
+        fprintf(out, "workdir = 'inherit'\n");
 
-        // Access section
-        if (!r.readDirs.empty() || !r.writeDirs.empty()) {
-            fprintf(out, "\n[access]\n");
-            if (!r.readDirs.empty()) {
-                fprintf(out, "read = [");
+        // Access section — all 6 keys mandatory
+        auto printPathList = [&](const char* key, const std::set<std::string>& dirs) {
+            if (dirs.empty()) {
+                fprintf(out, "%s = []\n", key);
+            } else {
+                fprintf(out, "%s = [", key);
                 bool first = true;
-                for (const auto& d : r.readDirs) {
+                for (const auto& d : dirs) {
                     if (!first) fprintf(out, ", ");
                     fprintf(out, "'%s'", d.c_str());
                     first = false;
                 }
                 fprintf(out, "]\n");
             }
-            if (!r.writeDirs.empty()) {
-                fprintf(out, "write = [");
-                bool first = true;
-                for (const auto& d : r.writeDirs) {
-                    if (!first) fprintf(out, ", ");
-                    fprintf(out, "'%s'", d.c_str());
-                    first = false;
-                }
-                fprintf(out, "]\n");
-            }
-        }
+        };
+        fprintf(out, "\n[access]\n");
+        printPathList("read", r.readDirs);
+        printPathList("write", r.writeDirs);
+        fprintf(out, "execute = []\n");
+        fprintf(out, "append = []\n");
+        fprintf(out, "delete = []\n");
+        fprintf(out, "all = []\n");
 
         // Allow section — all mandatory keys for selected mode
         fprintf(out, "\n[allow]\n");
@@ -1060,9 +1115,23 @@ namespace Sandbox {
         fprintf(out, "clipboard_write = false\n");
         fprintf(out, "child_processes = %s\n", r.spawnsChildren ? "true" : "false");
 
-        // Environment section
+        // Registry section — required for restricted mode
+        if (!appcontainerOK) {
+            fprintf(out, "\n[registry]\n");
+            fprintf(out, "read = []\n");
+            fprintf(out, "write = []\n");
+        }
+
+        // Environment section — both keys mandatory
         fprintf(out, "\n[environment]\n");
         fprintf(out, "inherit = true\n");
+        fprintf(out, "pass = []\n");
+
+        // Limit section — all 3 keys mandatory
+        fprintf(out, "\n[limit]\n");
+        fprintf(out, "timeout = 0\n");
+        fprintf(out, "memory = 0\n");
+        fprintf(out, "processes = 0\n");
 
         fclose(out);
         return true;
