@@ -189,7 +189,7 @@ namespace Sandbox {
                 if (_wcsicmp(name.c_str(), e) == 0) return true;
             }
             // Check pass list
-            for (auto& allowed : config.envPass) {
+            for (const auto& allowed : config.envPass) {
                 if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
             }
             return false;
@@ -207,11 +207,11 @@ namespace Sandbox {
             });
 
         // Serialize: hidden vars first, then KEY=VALUE\0...\0
-        for (auto& h : hiddenVars) {
+        for (const auto& h : hiddenVars) {
             block.insert(block.end(), h.begin(), h.end());
             block.push_back(L'\0');
         }
-        for (auto& p : env) {
+        for (const auto& p : env) {
             std::wstring line = p.first + L"=" + p.second;
             block.insert(block.end(), line.begin(), line.end());
             block.push_back(L'\0');
@@ -219,8 +219,6 @@ namespace Sandbox {
         block.push_back(L'\0');
         return block;
     }
-
-
 
     inline int RunSandboxed(const SandboxConfig& config,
                             const std::wstring& exePath,
@@ -712,7 +710,7 @@ namespace Sandbox {
                 g_logger.Log(L"ENV_ESSENTIAL: SYSTEMROOT SYSTEMDRIVE WINDIR TEMP TMP COMSPEC PATHEXT LOCALAPPDATA APPDATA USERPROFILE HOMEDRIVE HOMEPATH PROCESSOR_ARCHITECTURE NUMBER_OF_PROCESSORS OS");
                 if (!config.envPass.empty()) {
                     std::wstring passVars = L"ENV_PASS:";
-                    for (auto& v : config.envPass) passVars += L" " + v;
+                    for (const auto& v : config.envPass) passVars += L" " + v;
                     g_logger.Log(passVars.c_str());
                 }
             }
@@ -927,7 +925,6 @@ namespace Sandbox {
                 g_logger.Log(wTree.c_str());
             }
         }
-
 
         // --- Report crash dump if child crashed ---
         if (crashDumpsEnabled) {

@@ -68,8 +68,7 @@ namespace Sandbox {
         bool registrySeen = doc.count(L"registry") > 0;
 
         // Reject unknown sections
-        for (auto dit = doc.begin(); dit != doc.end(); ++dit) {
-            const std::wstring& name = dit->first;
+        for (const auto& [name, section] : doc) {
             if (!name.empty() &&
                 name != L"sandbox" && name != L"access" && name != L"allow" &&
                 name != L"registry" && name != L"environment" && name != L"limit")
@@ -84,9 +83,7 @@ namespace Sandbox {
         bool workdirSeen = false;
         if (sandboxSeen) {
             const Toml::TomlSection& sec = doc.find(L"sandbox")->second;
-            for (auto it = sec.begin(); it != sec.end(); ++it) {
-                const std::wstring& key = it->first;
-                const Toml::TomlValue& val = it->second;
+            for (const auto& [key, val] : sec) {
                 if (key == L"token") {
                     if (val.str == L"restricted") config.tokenMode = TokenMode::Restricted;
                     else if (val.str == L"appcontainer") config.tokenMode = TokenMode::AppContainer;
@@ -125,9 +122,7 @@ namespace Sandbox {
                     {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
                     {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All}
                 };
-                for (auto ait = sit->second.begin(); ait != sit->second.end(); ++ait) {
-                    const std::wstring& key = ait->first;
-                    const Toml::TomlValue& val = ait->second;
+                for (const auto& [key, val] : sit->second) {
                     auto it = accessKeys.find(key);
                     if (it == accessKeys.end()) {
                         fprintf(stderr, "Error: Unknown key in [access]: %ls\n", key.c_str());
@@ -152,9 +147,7 @@ namespace Sandbox {
         {
             auto sit = doc.find(L"registry");
             if (sit != doc.end()) {
-                for (auto rit = sit->second.begin(); rit != sit->second.end(); ++rit) {
-                    const std::wstring& key = rit->first;
-                    const Toml::TomlValue& val = rit->second;
+                for (const auto& [key, val] : sit->second) {
                     if (key == L"read") {
                         registryReadSeen = true;
                         if (!val.isArray) { fprintf(stderr, "Error: 'read' in [registry] must be an array, e.g. ['HKCU\\...'].\n"); config.parseError = true; }
@@ -185,9 +178,8 @@ namespace Sandbox {
                     }
                     return true;
                 };
-                for (auto ait = sit->second.begin(); ait != sit->second.end(); ++ait) {
-                    const std::wstring& key = ait->first;
-                    const std::wstring& valStr = ait->second.str;
+                for (const auto& [key, valObj] : sit->second) {
+                    const std::wstring& valStr = valObj.str;
                     allowSeen.insert(key);
                     if (key == L"stdin") {
                         // true = inherit, false = NUL, anything else = file path
@@ -228,9 +220,7 @@ namespace Sandbox {
         {
             auto sit = doc.find(L"environment");
             if (sit != doc.end()) {
-                for (auto eit = sit->second.begin(); eit != sit->second.end(); ++eit) {
-                    const std::wstring& key = eit->first;
-                    const Toml::TomlValue& val = eit->second;
+                for (const auto& [key, val] : sit->second) {
                     if (key == L"inherit") {
                         if (val.str != L"true" && val.str != L"false") {
                             fprintf(stderr, "Error: 'inherit' in [environment] must be 'true' or 'false', got '%ls'.\n", val.str.c_str());
@@ -259,9 +249,7 @@ namespace Sandbox {
         {
             auto sit = doc.find(L"limit");
             if (sit != doc.end()) {
-                for (auto lit = sit->second.begin(); lit != sit->second.end(); ++lit) {
-                    const std::wstring& key = lit->first;
-                    const Toml::TomlValue& val = lit->second;
+                for (const auto& [key, val] : sit->second) {
                     int v = _wtoi(val.str.c_str());
                     // _wtoi returns 0 for non-numeric input — validate digits
                     bool isNumeric = !val.str.empty();
@@ -272,9 +260,6 @@ namespace Sandbox {
                         config.parseError = true;
                     } else if (!isNumeric) {
                         fprintf(stderr, "Error: '%ls' in [limit] must be a non-negative integer, got '%ls'.\n", key.c_str(), val.str.c_str());
-                        config.parseError = true;
-                    } else if (v < 0) {
-                        fprintf(stderr, "Error: '%ls' in [limit] must be 0 (unlimited) or a positive integer, got '%ls'.\n", key.c_str(), val.str.c_str());
                         config.parseError = true;
                     } else {
                         limitSeen.insert(key);

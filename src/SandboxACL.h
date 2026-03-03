@@ -57,11 +57,31 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Persist a grant to registry (write-ahead, before modifying DACL)
-    // Uses instance UUID subkey to isolate concurrent sandy instances.
-    // Stores PID as value for liveness checks during stale cleanup.
-    // Denies Restricted SID (S-1-5-12) access to prevent sandbox tampering.
+    // Read a REG_SZ value by enumeration index.  Returns false if the index
+    // has no string data or is a metadata value (name starts with L'_').
+    // On success, `name` and `data` are populated with the trimmed strings.
     // -----------------------------------------------------------------------
+    inline bool ReadRegSzEnum(HKEY hKey, DWORD index,
+                              std::wstring& name, std::wstring& data)
+    {
+        wchar_t vname[64];
+        DWORD vnameLen = 64;
+        DWORD dataSize = 0, dataType = 0;
+        if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, &dataType,
+                          nullptr, &dataSize) != ERROR_SUCCESS)
+            return false;
+        if (vname[0] == L'_' || dataType != REG_SZ) return false;
+
+        data.assign(dataSize / sizeof(wchar_t), L'\0');
+        vnameLen = 64;
+        if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, nullptr,
+                          reinterpret_cast<BYTE*>(&data[0]), &dataSize) != ERROR_SUCCESS)
+            return false;
+        while (!data.empty() && data.back() == L'\0') data.pop_back();
+        name = vname;
+        return true;
+    }
+
     // -----------------------------------------------------------------------
     // Check if a PID is alive AND belongs to the sandy process that stored it.
     // Compares process creation time to guard against PID reuse.
@@ -328,20 +348,8 @@ namespace Sandbox {
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
         for (DWORD vi = 0; vi < valueCount; vi++) {
-            wchar_t vname[64];
-            DWORD vnameLen = 64;
-            DWORD dataSize = 0, dataType = 0;
-            if (RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, &dataType,
-                              nullptr, &dataSize) != ERROR_SUCCESS)
-                continue;
-            // Skip metadata values
-            if (vname[0] == L'_' || dataType != REG_SZ) continue;
-
-            std::wstring data(dataSize / sizeof(wchar_t), L'\0');
-            vnameLen = 64;
-            RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, nullptr,
-                          reinterpret_cast<BYTE*>(&data[0]), &dataSize);
-            while (!data.empty() && data.back() == L'\0') data.pop_back();
+            std::wstring vname, data;
+            if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
 
             // Parse TYPE|PATH|SDDL — use rfind for last '|' (safe for paths with '|')
             auto sep1 = data.find(L'|');
@@ -367,9 +375,6 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Collect paths granted by OTHER sandy instances (from registry).
     // Used to avoid revoking ACEs that another live instance still needs.
-    // -----------------------------------------------------------------------
-    // -----------------------------------------------------------------------
-    // Helper: read PID and creation time from a grants subkey
     // -----------------------------------------------------------------------
     inline bool ReadPidAndCtime(HKEY hKey, DWORD& pid, ULONGLONG& ctime)
     {
@@ -423,21 +428,8 @@ namespace Sandbox {
                              &valueCount, nullptr, nullptr, nullptr, nullptr);
 
             for (DWORD vi = 0; vi < valueCount; vi++) {
-                wchar_t vname[64];
-                DWORD vnameLen = 64;
-                DWORD dataSize = 0;
-                DWORD dataType = 0;
-                if (RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, &dataType,
-                                  nullptr, &dataSize) != ERROR_SUCCESS)
-                    continue;
-
-                if (vname[0] == L'_' || dataType != REG_SZ) continue;
-
-                std::wstring data(dataSize / sizeof(wchar_t), L'\0');
-                vnameLen = 64;
-                RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, nullptr,
-                              reinterpret_cast<BYTE*>(&data[0]), &dataSize);
-                while (!data.empty() && data.back() == L'\0') data.pop_back();
+                std::wstring vname, data;
+                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
 
                 auto sep1 = data.find(L'|');
                 auto sep2 = data.rfind(L'|');
@@ -506,9 +498,6 @@ namespace Sandbox {
                 subKeys.push_back(name);
         }
         RegCloseKey(hParent);
-
-
-
         // Helper: read _container string from a subkey
         auto readContainer = [](HKEY hKey) -> std::wstring {
             DWORD size = 0;
@@ -528,18 +517,8 @@ namespace Sandbox {
             RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                              &valueCount, nullptr, nullptr, nullptr, nullptr);
             for (DWORD vi = 0; vi < valueCount; vi++) {
-                wchar_t vname[64];
-                DWORD vnameLen = 64;
-                DWORD dataSize = 0, dataType = 0;
-                if (RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, &dataType,
-                                  nullptr, &dataSize) != ERROR_SUCCESS)
-                    continue;
-                if (vname[0] == L'_' || dataType != REG_SZ) continue;
-                std::wstring data(dataSize / sizeof(wchar_t), L'\0');
-                vnameLen = 64;
-                RegEnumValueW(hKey, vi, vname, &vnameLen, nullptr, nullptr,
-                              reinterpret_cast<BYTE*>(&data[0]), &dataSize);
-                while (!data.empty() && data.back() == L'\0') data.pop_back();
+                std::wstring vname, data;
+                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
                 auto sep1 = data.find(L'|');
                 auto sep2 = data.rfind(L'|');
                 if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1)

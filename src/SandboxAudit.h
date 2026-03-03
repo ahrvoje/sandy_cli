@@ -31,7 +31,7 @@ namespace Sandbox {
         // that extracts Procmon64.exe to %TEMP% and re-launches, which can fail
         // if exe execution from temp is restricted.
         const wchar_t* names[] = { L"Procmon64.exe", L"Procmon64a.exe", L"Procmon.exe" };
-        for (auto n : names)
+        for (const auto* n : names)
             if (SearchPathW(nullptr, n, nullptr, MAX_PATH, buf, nullptr))
                 return buf;
 
@@ -39,7 +39,7 @@ namespace Sandbox {
             L"C:\\SysinternalsSuite\\Procmon64.exe",  L"C:\\SysinternalsSuite\\Procmon.exe",
             L"C:\\Tools\\Procmon64.exe",              L"C:\\Tools\\Procmon.exe",
         };
-        for (auto p : paths)
+        for (const auto* p : paths)
             if (GetFileAttributesW(p) != INVALID_FILE_ATTRIBUTES)
                 return p;
         return L"";
@@ -166,37 +166,53 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // CSV column mapping — shared by WriteAuditLog and AnalyzeProfileCsv.
+    // Opens a Procmon CSV, strips BOM, parses header, and locates columns.
+    // -----------------------------------------------------------------------
+    struct CsvReader {
+        std::ifstream stream;
+        int cTime = -1, cProc = -1, cPid = -1, cOp = -1;
+        int cPath = -1, cRes  = -1, cDet = -1, cTid = -1;
+
+        bool Open(const std::wstring& csvPath) {
+            char csvPathA[MAX_PATH];
+            WideCharToMultiByte(CP_ACP, 0, csvPath.c_str(), -1, csvPathA, MAX_PATH, nullptr, nullptr);
+            stream.open(csvPathA);
+            if (!stream.is_open()) return false;
+
+            std::string hdr;
+            std::getline(stream, hdr);
+            if (hdr.size() >= 3 && (unsigned char)hdr[0] == 0xEF) hdr = hdr.substr(3);
+            auto cols = ParseCsvLine(hdr);
+
+            for (int i = 0; i < (int)cols.size(); i++) {
+                if      (cols[i] == "Time of Day")   cTime = i;
+                else if (cols[i] == "Process Name")  cProc = i;
+                else if (cols[i] == "PID")           cPid  = i;
+                else if (cols[i] == "Operation")     cOp   = i;
+                else if (cols[i] == "Path")          cPath = i;
+                else if (cols[i] == "Result")        cRes  = i;
+                else if (cols[i] == "Detail")        cDet  = i;
+                else if (cols[i] == "TID")           cTid  = i;
+            }
+            return true;
+        }
+    };
+
+    // -----------------------------------------------------------------------
     // Parse Procmon CSV → write audit log filtered by child PID tree.
     // Returns process tree text (for session log). Empty string on failure.
     // -----------------------------------------------------------------------
     inline std::string WriteAuditLog(const std::wstring& csvPath, const std::wstring& auditLogPath,
                               DWORD childPid)
     {
-        // Convert wchar path to narrow for ifstream
-        char csvPathA[MAX_PATH];
-        WideCharToMultiByte(CP_ACP, 0, csvPath.c_str(), -1, csvPathA, MAX_PATH, nullptr, nullptr);
-        std::ifstream csv(csvPathA);
-        if (!csv.is_open()) return "";
+        CsvReader csv;
+        if (!csv.Open(csvPath)) return "";
+        if (csv.cPid < 0 || csv.cOp < 0 || csv.cRes < 0) return "";
 
-        // Find column indices from header
-        std::string hdr;
-        std::getline(csv, hdr);
-        // Strip BOM if present
-        if (hdr.size() >= 3 && (unsigned char)hdr[0] == 0xEF) hdr = hdr.substr(3);
-        auto cols = ParseCsvLine(hdr);
-
-        int cTime = -1, cProc = -1, cPid = -1, cOp = -1, cPath = -1, cRes = -1, cDet = -1, cTid = -1;
-        for (int i = 0; i < (int)cols.size(); i++) {
-            if (cols[i] == "Time of Day") cTime = i;
-            else if (cols[i] == "Process Name") cProc = i;
-            else if (cols[i] == "PID") cPid = i;
-            else if (cols[i] == "Operation") cOp = i;
-            else if (cols[i] == "Path") cPath = i;
-            else if (cols[i] == "Result") cRes = i;
-            else if (cols[i] == "Detail") cDet = i;
-            else if (cols[i] == "TID") cTid = i;
-        }
-        if (cPid < 0 || cOp < 0 || cRes < 0) return "";
+        const int cTime = csv.cTime, cProc = csv.cProc, cPid = csv.cPid;
+        const int cOp = csv.cOp, cPath = csv.cPath, cRes = csv.cRes;
+        const int cDet = csv.cDet, cTid = csv.cTid;
         // --- Single pass: build PID tree and write events simultaneously ---
         std::set<DWORD> pidTree;
         pidTree.insert(childPid);
@@ -217,7 +233,7 @@ namespace Sandbox {
         std::set<std::string> seen;  // dedup keys
 
         std::string line;
-        while (std::getline(csv, line)) {
+        while (std::getline(csv.stream, line)) {
             auto f = ParseCsvLine(line);
             int minCols = cPid; if (cOp > minCols) minCols = cOp; if (cRes > minCols) minCols = cRes;
             if ((int)f.size() <= minCols) continue;
@@ -376,52 +392,12 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Start Procmon for profile mode with include filter for target process
+    // Launch Procmon for capture — shared by audit and profile modes.
+    // Terminates any existing instance, starts a new one with the given
+    // backing file, and waits for the PML file to appear.
     // -----------------------------------------------------------------------
-    inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName)
-    {
-        std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
-        DeleteFileW(pmlPath.c_str());
-
-        // Write FilterRules to registry: include only the target process name.
-        // Procmon reads this at startup, so it must be set before launch.
-        if (!WriteProcmonIncludeFilter(exeName)) {
-            fprintf(stderr, "[Profile] Failed to set Procmon filter.\n");
-            return false;
-        }
-
-        // Kill any existing Procmon instance
-        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 5000);
-        WaitForProcmonExit(10000);
-
-        // Start capture — Procmon reads FilterRules from registry at startup
-        std::wstring cmd = L"\"" + procmonPath + L"\" /Quiet /Minimized /AcceptEula "
-                           L"/BackingFile \"" + pmlPath + L"\"";
-
-        STARTUPINFOW si = { sizeof(si) };
-        PROCESS_INFORMATION pi = {};
-        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
-                           0, nullptr, nullptr, &si, &pi)) {
-            fprintf(stderr, "[Profile] Failed to start Procmon (error %lu).\n", GetLastError());
-            return false;
-        }
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-
-        if (!WaitForFile(pmlPath, 10000)) {
-            fprintf(stderr, "[Profile] Procmon did not start capturing.\n");
-            return false;
-        }
-        // Let the kernel driver fully initialize
-        Sleep(3000);
-        return true;
-    }
-
-
-    // -----------------------------------------------------------------------
-    // Start Procmon audit (call BEFORE launching child process)
-    // -----------------------------------------------------------------------
-    inline bool StartProcmonAudit(const std::wstring& procmonPath)
+    inline bool LaunchProcmon(const std::wstring& procmonPath,
+                              const wchar_t* tag, DWORD startupSleepMs = 0)
     {
         std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
         DeleteFileW(pmlPath.c_str());
@@ -430,8 +406,7 @@ namespace Sandbox {
         RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 5000);
         WaitForProcmonExit(10000);
 
-        // Launch Procmon headless (no /LoadConfig — PMC XML causes Procmon
-        // to apply settings and exit; all filtering is done in post-processing)
+        // Start Procmon headless with backing file
         std::wstring cmd = L"\"" + procmonPath + L"\" /Quiet /Minimized /AcceptEula "
                            L"/BackingFile \"" + pmlPath + L"\"";
 
@@ -439,16 +414,75 @@ namespace Sandbox {
         PROCESS_INFORMATION pi = {};
         if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
                            0, nullptr, nullptr, &si, &pi)) {
-            fprintf(stderr, "[Audit] Failed to start Procmon (error %lu).\n", GetLastError());
+            fprintf(stderr, "[%ls] Failed to start Procmon (error %lu).\n", tag, GetLastError());
             return false;
         }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
 
-        // Wait for PML file to appear (confirms driver loaded and capture started)
         if (!WaitForFile(pmlPath, 10000)) {
-            fprintf(stderr, "[Audit] Procmon did not start capturing.\n");
+            fprintf(stderr, "[%ls] Procmon did not start capturing.\n", tag);
             return false;
+        }
+        if (startupSleepMs > 0) Sleep(startupSleepMs);
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Start Procmon for profile mode with include filter for target process
+    // -----------------------------------------------------------------------
+    inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName)
+    {
+        // Write FilterRules to registry: include only the target process name.
+        // Procmon reads this at startup, so it must be set before launch.
+        if (!WriteProcmonIncludeFilter(exeName)) {
+            fprintf(stderr, "[Profile] Failed to set Procmon filter.\n");
+            return false;
+        }
+        // 3s sleep lets the kernel driver fully initialize before profiling
+        return LaunchProcmon(procmonPath, L"Profile", 3000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Start Procmon audit (call BEFORE launching child process)
+    // -----------------------------------------------------------------------
+    inline bool StartProcmonAudit(const std::wstring& procmonPath)
+    {
+        return LaunchProcmon(procmonPath, L"Audit");
+    }
+
+    // -----------------------------------------------------------------------
+    // Terminate Procmon and convert PML → CSV.  Shared by audit/profile.
+    // Returns true if csvPath was created successfully.
+    // -----------------------------------------------------------------------
+    inline bool StopAndConvertProcmon(const std::wstring& procmonPath,
+                                     const std::wstring& pmlPath,
+                                     const std::wstring& csvPath,
+                                     const wchar_t* tag)
+    {
+        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000);
+        if (!WaitForProcmonExit(15000))
+            fprintf(stderr, "[%ls] Warning: Procmon did not exit cleanly.\n", tag);
+
+        if (GetFileAttributesW(pmlPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "[%ls] PML log file not found — Procmon may not have captured.\n", tag);
+            return false;
+        }
+
+        // Delete stale CSV from a previous run before conversion
+        DeleteFileW(csvPath.c_str());
+
+        std::wstring cvt = L"\"" + procmonPath + L"\" /Quiet /AcceptEula "
+                           L"/OpenLog \"" + pmlPath + L"\" /SaveAs \"" + csvPath + L"\"";
+        RunProcAndWait(cvt, 60000);
+
+        if (!WaitForFile(csvPath, 60000)) {
+            WaitForProcmonExit(30000);
+            if (GetFileAttributesW(csvPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                fprintf(stderr, "[%ls] CSV export failed — Procmon did not produce output.\n", tag);
+                DeleteFileW(pmlPath.c_str());
+                return false;
+            }
         }
         return true;
     }
@@ -463,41 +497,13 @@ namespace Sandbox {
         std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
         std::wstring csvPath = AuditTempPath(L"sandy_audit.csv");
 
-        // Terminate Procmon — send the command, then poll until all
-        // Procmon processes are gone (handles single-instance delegation)
-        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000);
-        if (!WaitForProcmonExit(15000))
-            fprintf(stderr, "[Audit] Warning: Procmon did not exit cleanly.\n");
-
-        // Verify PML exists before attempting conversion
-        if (GetFileAttributesW(pmlPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            fprintf(stderr, "[Audit] PML log file not found — Procmon may not have captured.\n");
+        if (!StopAndConvertProcmon(procmonPath, pmlPath, csvPath, L"Audit"))
             return "";
-        }
 
-        // Convert PML → CSV
-        std::wstring cvt = L"\"" + procmonPath + L"\" /Quiet /AcceptEula "
-                           L"/OpenLog \"" + pmlPath + L"\" /SaveAs \"" + csvPath + L"\"";
-        RunProcAndWait(cvt, 60000);
-
-        // Poll until CSV appears and stabilizes (Procmon writes async)
-        if (!WaitForFile(csvPath, 60000)) {
-            // Procmon may still be running from the conversion
-            WaitForProcmonExit(30000);
-            // One more check after Procmon exits
-            if (GetFileAttributesW(csvPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                fprintf(stderr, "[Audit] CSV export failed — Procmon did not produce output.\n");
-                DeleteFileW(pmlPath.c_str());
-                return "";
-            }
-        }
-
-        // Parse CSV and write audit log
         std::string treeText = WriteAuditLog(csvPath, auditLogPath, childPid);
         if (treeText.empty())
             fprintf(stderr, "[Audit] Failed to parse audit data.\n");
 
-        // Cleanup temps
         DeleteFileW(pmlPath.c_str());
         DeleteFileW(csvPath.c_str());
         return treeText;
@@ -821,25 +827,12 @@ namespace Sandbox {
     {
         ProfileResult r;
 
-        char csvPathA[MAX_PATH];
-        WideCharToMultiByte(CP_ACP, 0, csvPath.c_str(), -1, csvPathA, MAX_PATH, nullptr, nullptr);
-        std::ifstream csv(csvPathA);
-        if (!csv.is_open()) return r;
+        CsvReader csv;
+        if (!csv.Open(csvPath)) return r;
+        if (csv.cOp < 0) return r;
 
-        std::string hdr;
-        std::getline(csv, hdr);
-        if (hdr.size() >= 3 && (unsigned char)hdr[0] == 0xEF) hdr = hdr.substr(3);
-        auto cols = ParseCsvLine(hdr);
-
-        int cPid = -1, cOp = -1, cPath = -1, cDet = -1, cName = -1;
-        for (int i = 0; i < (int)cols.size(); i++) {
-            if (cols[i] == "PID") cPid = i;
-            else if (cols[i] == "Process Name") cName = i;
-            else if (cols[i] == "Operation") cOp = i;
-            else if (cols[i] == "Path") cPath = i;
-            else if (cols[i] == "Detail") cDet = i;
-        }
-        if (cOp < 0) return r;
+        const int cPid = csv.cPid, cOp = csv.cOp, cPath = csv.cPath;
+        const int cDet = csv.cDet, cName = csv.cProc;
 
         // Single pass: build PID tree and classify events simultaneously.
         // Works because Procmon orders events chronologically — Process Create
@@ -849,7 +842,7 @@ namespace Sandbox {
         bool pidTreeWorking = false; // set true once we see childPid in CSV
         std::string line;
 
-        while (std::getline(csv, line)) {
+        while (std::getline(csv.stream, line)) {
             auto f = ParseCsvLine(line);
             if ((int)f.size() <= cOp) continue;
             const auto& op = f[cOp];
@@ -1187,28 +1180,8 @@ namespace Sandbox {
         std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
         std::wstring csvPath = AuditTempPath(L"sandy_audit.csv");
 
-        RunProcAndWait(L"\"" + procmonExe + L"\" /Terminate", 10000);
-        WaitForProcmonExit(15000);
-
-        if (GetFileAttributesW(pmlPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            fprintf(stderr, "[Profile] PML not found — Procmon may not have captured.\n");
+        if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Profile"))
             return 1;
-        }
-
-        // Delete any stale CSV from a previous run
-        DeleteFileW(csvPath.c_str());
-
-        std::wstring cvt = L"\"" + procmonExe + L"\" /Quiet /AcceptEula "
-                           L"/OpenLog \"" + pmlPath + L"\" /SaveAs \"" + csvPath + L"\"";
-        RunProcAndWait(cvt, 60000);
-        if (!WaitForFile(csvPath, 60000)) {
-            WaitForProcmonExit(30000);
-            if (GetFileAttributesW(csvPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                fprintf(stderr, "[Profile] CSV export failed.\n");
-                DeleteFileW(pmlPath.c_str());
-                return 1;
-            }
-        }
 
         // Analyze events
         char exeNameA[MAX_PATH];
