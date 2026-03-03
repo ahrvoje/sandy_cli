@@ -583,10 +583,10 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
-| **ACL grants** | `[access]` folder/file grants | `HKCU\Software\Sandy\Grants\<PID>` (write-ahead SDDL) |
+| **ACL grants** | `[access]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (write-ahead SDDL) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
 | **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
-| **AppContainer profile** | Container creation | OS-managed (`SandySandbox`) |
+| **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
 | **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup`) |
 | **WER keys** | `-a` or `-d` crash dumps | `HKCU\Software\Sandy\WER` (PID as value name) |
 
@@ -602,11 +602,13 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 ### How it works
 
-1. **Write-ahead logging:** Before modifying any DACL, Sandy persists the original SDDL to `HKCU\Software\Sandy\Grants\<PID>`. WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
+1. **Write-ahead logging:** Before modifying any DACL, Sandy persists the original SDDL to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
 
 2. **Scheduled task safety net:** A `SandyCleanup` scheduled task is created to run `sandy.exe --cleanup` at next logon. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
 
-3. **Multi-instance safety:** Each instance writes to its own PID-scoped registry subkey. `DeleteCleanupTask` only removes the scheduled task when no other instances have pending grants — the PID subkeys serve as a natural reference counter.
+3. **Multi-instance safety:** Each instance generates a UUID at startup and creates its own AppContainer profile (`Sandy_<UUID>`) with a unique SID. This means concurrent instances have completely independent file grants that cannot interfere with each other. On exit, an instance only revokes its own ACEs; paths still granted by other live instances are preserved. Registry subkeys use the UUID as the key name, with stored PID for liveness checks during `--cleanup`.
+
+   > **For agents and automation:** Multiple Sandy instances can safely run concurrently with overlapping folder grants. Each instance's sandbox is fully isolated. Use `--status` to inspect active instances and `--cleanup` to clear any stale state.
 
 4. **Stale entry warning:** On startup, Sandy checks for leftover registry entries and warns:
    ```
@@ -616,7 +618,7 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
            If another sandy instance is running, its entries are expected.
    ```
 
-5. **Explicit cleanup only:** Stale state restoration (ACL reverts, WER key removal) is performed exclusively by `sandy.exe --cleanup` — never during normal startup. This prevents a new instance from reverting a concurrent instance's live grants.
+5. **Explicit cleanup only:** Stale state restoration (ACL reverts, WER key removal, AppContainer profile deletion) is performed exclusively by `sandy.exe --cleanup` — never during normal startup. Cleanup only processes entries from dead PIDs, preserving live instances' grants.
 
 > [!IMPORTANT]
 > If Sandy is killed via `taskkill /F` or power is lost, run `sandy.exe --cleanup` manually or wait for the next logon (the scheduled task handles it automatically).

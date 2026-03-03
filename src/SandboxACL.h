@@ -27,7 +27,7 @@ namespace Sandbox {
         switch (level) {
         case AccessLevel::Read:    return FILE_GENERIC_READ;
         case AccessLevel::Write:   return FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
-        case AccessLevel::Execute: return FILE_GENERIC_EXECUTE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        case AccessLevel::Execute: return FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
         case AccessLevel::Append:  return FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         case AccessLevel::Delete:  return DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         case AccessLevel::All:     return FILE_ALL_ACCESS;
@@ -189,9 +189,24 @@ namespace Sandbox {
         }
         LocalFree(pSD);
 
-        rc = SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()), objType,
-            DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        // Apply the new DACL.
+        // For directories, use TreeSetNamedSecurityInfo to synchronously
+        // propagate inheritable ACEs to all children.  SetNamedSecurityInfoW
+        // does NOT propagate to existing child files, causing AppContainer
+        // processes to fail with STATUS_ACCESS_DENIED (0xC0000022).
+        DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+        bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
+                     && (attr & FILE_ATTRIBUTE_DIRECTORY);
+        if (isDir) {
+            rc = TreeSetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
+                TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+        } else {
+            rc = SetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        }
         LocalFree(pNewDacl);
 
         // Log SDDL of the resulting DACL for forensic analysis
@@ -266,9 +281,20 @@ namespace Sandbox {
                 BOOL present = FALSE, defaulted = FALSE;
                 PACL pDacl = nullptr;
                 if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                    SetNamedSecurityInfoW(
-                        const_cast<LPWSTR>(path.c_str()), objType,
-                        DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
+                    // Use TreeSetNamedSecurityInfo for dirs to propagate removal
+                    DWORD a2 = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+                    bool dir2 = (objType == SE_FILE_OBJECT) && (a2 != INVALID_FILE_ATTRIBUTES)
+                                && (a2 & FILE_ATTRIBUTE_DIRECTORY);
+                    if (dir2) {
+                        TreeSetNamedSecurityInfoW(
+                            const_cast<LPWSTR>(path.c_str()), objType,
+                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
+                            TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+                    } else {
+                        SetNamedSecurityInfoW(
+                            const_cast<LPWSTR>(path.c_str()), objType,
+                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
+                    }
                     g_logger.Log((L"ACL_RESTORE: " + path).c_str());
                 }
                 LocalFree(pSD);
@@ -369,9 +395,19 @@ namespace Sandbox {
                 BOOL present = FALSE, defaulted = FALSE;
                 PACL pDacl = nullptr;
                 if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                    SetNamedSecurityInfoW(
-                        const_cast<LPWSTR>(it->path.c_str()), it->objType,
-                        DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
+                    DWORD a3 = (it->objType == SE_FILE_OBJECT) ? GetFileAttributesW(it->path.c_str()) : 0;
+                    bool dir3 = (it->objType == SE_FILE_OBJECT) && (a3 != INVALID_FILE_ATTRIBUTES)
+                                && (a3 & FILE_ATTRIBUTE_DIRECTORY);
+                    if (dir3) {
+                        TreeSetNamedSecurityInfoW(
+                            const_cast<LPWSTR>(it->path.c_str()), it->objType,
+                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
+                            TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+                    } else {
+                        SetNamedSecurityInfoW(
+                            const_cast<LPWSTR>(it->path.c_str()), it->objType,
+                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
+                    }
                     g_logger.Log((L"ACL_RESTORE: " + it->path).c_str());
                 }
                 LocalFree(pSD);

@@ -121,7 +121,14 @@ static void PrintUsage()
         "  A scheduled task (SandyCleanup) restores stale state at next logon.\n"
         "  Use --cleanup to manually restore stale state from crashed runs.\n"
         "  Ctrl+C/Break/close triggers cleanup before exit.\n"
-        "  SEH handler catches fatal errors in sandy itself.\n",
+        "  SEH handler catches fatal errors in sandy itself.\n"
+        "\n"
+        "Multi-instance:\n"
+        "  Each instance creates its own AppContainer profile (Sandy_<UUID>) with a\n"
+        "  unique SID, so concurrent instances do not interfere with each other's\n"
+        "  file grants. Registry state is keyed by UUID. On exit, an instance only\n"
+        "  revokes its own ACEs; paths still needed by other instances are preserved.\n"
+        "  Use --status to see active instances. Use --cleanup to clear stale state.\n",
         kVersion
     );
 }
@@ -284,17 +291,27 @@ static int RunMain(int argc, wchar_t* argv[])
                 RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr, &subKeyCount,
                                  nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
                 for (DWORD i = 0; i < subKeyCount; i++) {
-                    wchar_t name[64];
-                    DWORD nameLen = 64;
+                    wchar_t name[128];
+                    DWORD nameLen = 128;
                     if (RegEnumKeyExW(hGrants, i, name, &nameLen,
                             nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-                        DWORD pid = static_cast<DWORD>(_wtoi(name));
-                        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                        // Read _pid from subkey
+                        std::wstring fullKey = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + name;
+                        HKEY hSub = nullptr;
+                        DWORD pid = 0;
+                        if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                                          KEY_READ, &hSub) == ERROR_SUCCESS) {
+                            DWORD size = sizeof(DWORD);
+                            RegQueryValueExW(hSub, L"_pid", nullptr, nullptr,
+                                             reinterpret_cast<BYTE*>(&pid), &size);
+                            RegCloseKey(hSub);
+                        }
+                        HANDLE h = pid ? OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr;
                         if (h) {
                             CloseHandle(h);
-                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  grants registered\n", pid);
+                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
                         } else {
-                            fprintf(stderr, "  [STALE]   PID %-6lu  grants (dead process)\n", pid);
+                            fprintf(stderr, "  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
                         }
                         found = true;
                     }

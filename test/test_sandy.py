@@ -110,7 +110,10 @@ print("--- Working directory ---")
 cwd = os.getcwd()
 expect_blocked("Write file after chdir to C:\\Windows",
     lambda: (os.chdir("C:/Windows"), open("hack.txt", "w").write("x")))
-os.chdir(cwd)
+try:
+    os.chdir(cwd)
+except OSError:
+    pass  # workdir may be read-only (no traverse)
 print()
 
 # ---------------------------------------------------------------------------

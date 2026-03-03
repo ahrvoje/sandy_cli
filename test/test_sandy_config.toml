@@ -7,7 +7,6 @@ workdir = 'inherit'
 
 [access]
 read = [
-    'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\repos\sandy_cli\',
     'C:\Users\H\test_R',
     'C:\Users\H\test_file_R.txt',
@@ -16,7 +15,9 @@ write = [
     'C:\Users\H\test_W',
     'C:\Users\H\test_file_W.txt',
 ]
-execute = []
+execute = [
+    'C:\Users\H\AppData\Local\Programs\Python\Python314',
+]
 append = []
 delete = []
 all = [
