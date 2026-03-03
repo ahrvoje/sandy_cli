@@ -281,6 +281,40 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Restore a single object's DACL from its saved SDDL string.
+    // Uses TreeSetNamedSecurityInfo for directories to propagate to children.
+    // -----------------------------------------------------------------------
+    inline void RestoreDacl(const std::wstring& path, const std::wstring& sddl,
+                            SE_OBJECT_TYPE objType)
+    {
+        PSECURITY_DESCRIPTOR pSD = nullptr;
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.c_str(), SDDL_REVISION_1, &pSD, nullptr))
+            return;
+
+        BOOL present = FALSE, defaulted = FALSE;
+        PACL pDacl = nullptr;
+        if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
+            DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+            bool isDir = (objType == SE_FILE_OBJECT)
+                         && (attrs != INVALID_FILE_ATTRIBUTES)
+                         && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+            if (isDir) {
+                TreeSetNamedSecurityInfoW(
+                    const_cast<LPWSTR>(path.c_str()), objType,
+                    DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
+                    TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+            } else {
+                SetNamedSecurityInfoW(
+                    const_cast<LPWSTR>(path.c_str()), objType,
+                    DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
+            }
+            g_logger.Log((L"ACL_RESTORE: " + path).c_str());
+        }
+        LocalFree(pSD);
+    }
+
+    // -----------------------------------------------------------------------
     // Helper: restore grants from a single registry subkey.
     // Skips paths in protectedPaths (still needed by live instances).
     // -----------------------------------------------------------------------
@@ -326,30 +360,7 @@ namespace Sandbox {
             }
 
             SE_OBJECT_TYPE objType = (typeStr == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-
-            PSECURITY_DESCRIPTOR pSD = nullptr;
-            if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    sddl.c_str(), SDDL_REVISION_1, &pSD, nullptr)) {
-                BOOL present = FALSE, defaulted = FALSE;
-                PACL pDacl = nullptr;
-                if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                    DWORD a2 = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
-                    bool dir2 = (objType == SE_FILE_OBJECT) && (a2 != INVALID_FILE_ATTRIBUTES)
-                                && (a2 & FILE_ATTRIBUTE_DIRECTORY);
-                    if (dir2) {
-                        TreeSetNamedSecurityInfoW(
-                            const_cast<LPWSTR>(path.c_str()), objType,
-                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
-                            TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
-                    } else {
-                        SetNamedSecurityInfoW(
-                            const_cast<LPWSTR>(path.c_str()), objType,
-                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
-                    }
-                    g_logger.Log((L"ACL_RESTORE: " + path).c_str());
-                }
-                LocalFree(pSD);
-            }
+            RestoreDacl(path, sddl, objType);
         }
     }
 
@@ -462,29 +473,7 @@ namespace Sandbox {
                 g_logger.Log((L"ACL_SKIP: " + it->path + L" (other instance active)").c_str());
                 continue;
             }
-            PSECURITY_DESCRIPTOR pSD = nullptr;
-            if (ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    it->originalSDDL.c_str(), SDDL_REVISION_1, &pSD, nullptr)) {
-                BOOL present = FALSE, defaulted = FALSE;
-                PACL pDacl = nullptr;
-                if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                    DWORD a3 = (it->objType == SE_FILE_OBJECT) ? GetFileAttributesW(it->path.c_str()) : 0;
-                    bool dir3 = (it->objType == SE_FILE_OBJECT) && (a3 != INVALID_FILE_ATTRIBUTES)
-                                && (a3 & FILE_ATTRIBUTE_DIRECTORY);
-                    if (dir3) {
-                        TreeSetNamedSecurityInfoW(
-                            const_cast<LPWSTR>(it->path.c_str()), it->objType,
-                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
-                            TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
-                    } else {
-                        SetNamedSecurityInfoW(
-                            const_cast<LPWSTR>(it->path.c_str()), it->objType,
-                            DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
-                    }
-                    g_logger.Log((L"ACL_RESTORE: " + it->path).c_str());
-                }
-                LocalFree(pSD);
-            }
+            RestoreDacl(it->path, it->originalSDDL, it->objType);
         }
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -518,7 +507,7 @@ namespace Sandbox {
         }
         RegCloseKey(hParent);
 
-        // readPidCtime replaced by ReadPidAndCtime() helper above
+
 
         // Helper: read _container string from a subkey
         auto readContainer = [](HKEY hKey) -> std::wstring {
@@ -606,7 +595,7 @@ namespace Sandbox {
         }
 
         // Remove parent key if now empty
-        RegDeleteTreeW(HKEY_CURRENT_USER, kGrantsParentKey);
+        RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
     }
 
 } // namespace Sandbox

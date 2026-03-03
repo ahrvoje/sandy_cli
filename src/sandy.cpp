@@ -246,6 +246,179 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
 }
 
 // -----------------------------------------------------------------------
+// Show active instances and stale state (--status)
+// -----------------------------------------------------------------------
+static int HandleStatus()
+{
+    bool found = false;
+
+    // Check Grants registry
+    HKEY hGrants = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
+                      KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        for (DWORD i = 0; i < subKeyCount; i++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hGrants, i, name, &nameLen,
+                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                continue;
+            std::wstring fullKey = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + name;
+            HKEY hSub = nullptr;
+            DWORD pid = 0; ULONGLONG ctime = 0;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hSub) == ERROR_SUCCESS) {
+                Sandbox::ReadPidAndCtime(hSub, pid, ctime);
+                RegCloseKey(hSub);
+            }
+            if (Sandbox::IsProcessAlive(pid, ctime))
+                fprintf(stderr, "  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
+            else
+                fprintf(stderr, "  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
+            found = true;
+        }
+        RegCloseKey(hGrants);
+    }
+
+    // Check WER registry
+    HKEY hWER = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
+                      KEY_READ, &hWER) == ERROR_SUCCESS) {
+        DWORD valueCount = 0;
+        RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                         &valueCount, nullptr, nullptr, nullptr, nullptr);
+        for (DWORD i = 0; i < valueCount; i++) {
+            wchar_t name[64];
+            DWORD nameLen = 64;
+            DWORD dataSize = 0;
+            if (RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
+                              nullptr, &dataSize) != ERROR_SUCCESS)
+                continue;
+            DWORD pid = static_cast<DWORD>(_wtoi(name));
+            std::wstring exeName(dataSize / sizeof(wchar_t), L'\0');
+            nameLen = 64;
+            RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
+                          reinterpret_cast<BYTE*>(&exeName[0]), &dataSize);
+            while (!exeName.empty() && exeName.back() == L'\0') exeName.pop_back();
+
+            HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+            if (h) {
+                CloseHandle(h);
+                fprintf(stderr, "  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
+            } else {
+                fprintf(stderr, "  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
+            }
+            found = true;
+        }
+        RegCloseKey(hWER);
+    }
+
+    // Check scheduled task
+    bool taskExists = (Sandbox::RunHiddenProcess(
+        L"schtasks.exe /Query /TN \"SandyCleanup\"") == 0);
+    if (taskExists) {
+        fprintf(stderr, "  [TASK]    SandyCleanup scheduled task exists\n");
+        found = true;
+    }
+
+    // Check Windows AppContainer Mappings for Sandy_ profiles
+    {
+        HKEY hMap = nullptr;
+        const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
+            L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
+                KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
+            DWORD subCount = 0;
+            RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
+                nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+            for (DWORD i = 0; i < subCount; i++) {
+                wchar_t sid[256];
+                DWORD sidLen = 256;
+                if (RegEnumKeyExW(hMap, i, sid, &sidLen,
+                        nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                    continue;
+                HKEY hSub = nullptr;
+                if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                    continue;
+                wchar_t moniker[256] = {};
+                DWORD mSize = sizeof(moniker);
+                bool isSandy = false;
+                if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
+                        reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
+                    isSandy = (_wcsnicmp(moniker, L"Sandy_", 6) == 0);
+                }
+                RegCloseKey(hSub);
+                if (isSandy) {
+                    fprintf(stderr, "  [PROFILE] %ls  (%ls)\n", moniker, sid);
+                    found = true;
+                }
+            }
+            RegCloseKey(hMap);
+        }
+    }
+
+    if (!found)
+        fprintf(stderr, "Sandy - no active instances or stale state.\n");
+    return 0;
+}
+
+// -----------------------------------------------------------------------
+// Restore stale state from crashed runs (--cleanup)
+// -----------------------------------------------------------------------
+static int HandleCleanup()
+{
+    Sandbox::ForceDisableLoopback();
+    Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
+    Sandbox::RestoreStaleWER();
+    Sandbox::DeleteCleanupTask();
+
+    // Clean orphaned Sandy AppContainer profiles from Windows Mappings
+    {
+        HKEY hMap = nullptr;
+        const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
+            L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
+                KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
+            DWORD subCount = 0;
+            RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
+                nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+            std::vector<std::wstring> orphans;
+            for (DWORD i = 0; i < subCount; i++) {
+                wchar_t sid[256];
+                DWORD sidLen = 256;
+                if (RegEnumKeyExW(hMap, i, sid, &sidLen,
+                        nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                    continue;
+                HKEY hSub = nullptr;
+                if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                    continue;
+                wchar_t moniker[256] = {};
+                DWORD mSize = sizeof(moniker);
+                if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
+                        reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
+                    if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
+                        orphans.push_back(moniker);
+                }
+                RegCloseKey(hSub);
+            }
+            RegCloseKey(hMap);
+            if (!orphans.empty())
+                fprintf(stderr, "  Cleaning %zu orphaned AppContainer profile(s)...\n",
+                        orphans.size());
+            for (const auto& m : orphans) {
+                HRESULT hr = DeleteAppContainerProfile(m.c_str());
+                fprintf(stderr, "  [PROFILE] %ls -> %s\n", m.c_str(),
+                        SUCCEEDED(hr) ? "deleted" : "FAILED");
+            }
+        }
+    }
+    fprintf(stderr, "Sandy - cleanup complete.\n");
+    return 0;
+}
+
+// -----------------------------------------------------------------------
 // Sandboxed execution (separated for SEH wrapping)
 // -----------------------------------------------------------------------
 static int RunMain(int argc, wchar_t* argv[])
@@ -281,186 +454,10 @@ static int RunMain(int argc, wchar_t* argv[])
             return 0;
         }
         if (arg == L"--status") {
-            bool found = false;
-
-            // Check Grants registry
-            HKEY hGrants = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
-                              KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
-                DWORD subKeyCount = 0;
-                RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr, &subKeyCount,
-                                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-                for (DWORD i = 0; i < subKeyCount; i++) {
-                    wchar_t name[128];
-                    DWORD nameLen = 128;
-                    if (RegEnumKeyExW(hGrants, i, name, &nameLen,
-                            nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
-                        // Read _pid from subkey
-                        std::wstring fullKey = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + name;
-                        HKEY hSub = nullptr;
-                        DWORD pid = 0; ULONGLONG ctime = 0;
-                        if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                                          KEY_READ, &hSub) == ERROR_SUCCESS) {
-                            Sandbox::ReadPidAndCtime(hSub, pid, ctime);
-                            RegCloseKey(hSub);
-                        }
-                        if (Sandbox::IsProcessAlive(pid, ctime)) {
-                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
-                        } else {
-                            fprintf(stderr, "  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
-                        }
-                        found = true;
-                    }
-                }
-                RegCloseKey(hGrants);
-            }
-
-            // Check WER registry
-            HKEY hWER = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
-                              KEY_READ, &hWER) == ERROR_SUCCESS) {
-                DWORD valueCount = 0;
-                RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                 &valueCount, nullptr, nullptr, nullptr, nullptr);
-                for (DWORD i = 0; i < valueCount; i++) {
-                    wchar_t name[64];
-                    DWORD nameLen = 64;
-                    DWORD dataSize = 0;
-                    if (RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
-                                      nullptr, &dataSize) == ERROR_SUCCESS) {
-                        DWORD pid = static_cast<DWORD>(_wtoi(name));
-                        // Read the exe name
-                        std::wstring exeName(dataSize / sizeof(wchar_t), L'\0');
-                        nameLen = 64;
-                        RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
-                                      reinterpret_cast<BYTE*>(&exeName[0]), &dataSize);
-                        while (!exeName.empty() && exeName.back() == L'\0') exeName.pop_back();
-
-                        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                        if (h) {
-                            CloseHandle(h);
-                            fprintf(stderr, "  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
-                        } else {
-                            fprintf(stderr, "  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
-                        }
-                        found = true;
-                    }
-                }
-                RegCloseKey(hWER);
-            }
-
-            // Check scheduled task
-            bool taskExists = false;
-            {
-                STARTUPINFOW si = { sizeof(si) };
-                PROCESS_INFORMATION pi = {};
-                si.dwFlags = STARTF_USESHOWWINDOW;
-                si.wShowWindow = SW_HIDE;
-                wchar_t cmd[] = L"schtasks.exe /Query /TN \"SandyCleanup\"";
-                if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                    WaitForSingleObject(pi.hProcess, 5000);
-                    DWORD exitCode = 1;
-                    GetExitCodeProcess(pi.hProcess, &exitCode);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
-                    taskExists = (exitCode == 0);
-                }
-            }
-            if (taskExists) {
-                fprintf(stderr, "  [TASK]    SandyCleanup scheduled task exists\n");
-                found = true;
-            }
-
-            // Check Windows AppContainer Mappings for Sandy_ profiles
-            {
-                HKEY hMap = nullptr;
-                const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
-                    L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
-                if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
-                        KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
-                    DWORD subCount = 0;
-                    RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
-                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-                    for (DWORD i = 0; i < subCount; i++) {
-                        wchar_t sid[256];
-                        DWORD sidLen = 256;
-                        if (RegEnumKeyExW(hMap, i, sid, &sidLen,
-                                nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                            continue;
-                        HKEY hSub = nullptr;
-                        if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
-                            continue;
-                        wchar_t moniker[256] = {};
-                        DWORD mSize = sizeof(moniker);
-                        bool isSandy = false;
-                        if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
-                                reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
-                            isSandy = (_wcsnicmp(moniker, L"Sandy_", 6) == 0);
-                        }
-                        RegCloseKey(hSub);
-                        if (isSandy) {
-                            fprintf(stderr, "  [PROFILE] %ls  (%ls)\n", moniker, sid);
-                            found = true;
-                        }
-                    }
-                    RegCloseKey(hMap);
-                }
-            }
-
-            if (!found) {
-                fprintf(stderr, "Sandy - no active instances or stale state.\n");
-            }
-            return 0;
+            return HandleStatus();
         }
         if (arg == L"--cleanup") {
-            Sandbox::ForceDisableLoopback();
-            Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
-            Sandbox::RestoreStaleWER();
-            Sandbox::DeleteCleanupTask();
-
-            // Clean orphaned Sandy AppContainer profiles from Windows Mappings
-            {
-                HKEY hMap = nullptr;
-                const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
-                    L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
-                if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
-                        KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) == ERROR_SUCCESS) {
-                    DWORD subCount = 0;
-                    RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
-                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-                    std::vector<std::wstring> orphans;
-                    for (DWORD i = 0; i < subCount; i++) {
-                        wchar_t sid[256];
-                        DWORD sidLen = 256;
-                        if (RegEnumKeyExW(hMap, i, sid, &sidLen,
-                                nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                            continue;
-                        HKEY hSub = nullptr;
-                        if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
-                            continue;
-                        wchar_t moniker[256] = {};
-                        DWORD mSize = sizeof(moniker);
-                        if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
-                                reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
-                            if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
-                                orphans.push_back(moniker);
-                        }
-                        RegCloseKey(hSub);
-                    }
-                    RegCloseKey(hMap);
-                    if (!orphans.empty())
-                        fprintf(stderr, "  Cleaning %zu orphaned AppContainer profile(s)...\n",
-                                orphans.size());
-                    for (auto& m : orphans) {
-                        HRESULT hr = DeleteAppContainerProfile(m.c_str());
-                        fprintf(stderr, "  [PROFILE] %ls -> %s\n", m.c_str(),
-                                SUCCEEDED(hr) ? "deleted" : "FAILED");
-                    }
-                }
-            }
-            fprintf(stderr, "Sandy - cleanup complete.\n");
-            return 0;
+            return HandleCleanup();
         }
         if (arg == L"-q" || arg == L"--quiet") {
             quiet = true;

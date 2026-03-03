@@ -22,21 +22,32 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     constexpr const wchar_t* kCleanupTaskName = L"SandyCleanup";
 
-    // Run schtasks silently — returns exit code (0 = success)
-    inline DWORD RunSchtasks(const std::wstring& args)
+    // -----------------------------------------------------------------------
+    // Helper: run a process hidden (no window) and wait for completion.
+    // Returns the process exit code, or (DWORD)-1 on failure.
+    // -----------------------------------------------------------------------
+    inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000)
     {
-        std::wstring cmd = L"schtasks " + args;
         STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
+        std::wstring cmd = cmdLine;  // CreateProcessW needs mutable buffer
         if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             return (DWORD)-1;
         DWORD exitCode = (DWORD)-1;
-        if (WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0)
+        if (WaitForSingleObject(pi.hProcess, timeoutMs) == WAIT_OBJECT_0)
             GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         return exitCode;
+    }
+
+    // Run schtasks silently — returns exit code (0 = success)
+    inline DWORD RunSchtasks(const std::wstring& args)
+    {
+        return RunHiddenProcess(L"schtasks " + args);
     }
 
     inline void CreateCleanupTask()
@@ -89,24 +100,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline bool EnableLoopback()
     {
-        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -a -n=SandySandbox";
-
-        STARTUPINFOW si = { sizeof(si) };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-
-        PROCESS_INFORMATION pi = {};
-        if (!CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
-            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            return false;
-
-        DWORD waitResult = WaitForSingleObject(pi.hProcess, 5000);
-        DWORD exitCode = 1;
-        if (waitResult == WAIT_OBJECT_0)
-            GetExitCodeProcess(pi.hProcess, &exitCode);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-
+        DWORD exitCode = RunHiddenProcess(
+            L"CheckNetIsolation.exe LoopbackExempt -a -n=SandySandbox");
         g_loopbackGranted = (exitCode == 0);
         return g_loopbackGranted;
     }
@@ -114,21 +109,7 @@ namespace Sandbox {
     inline void DisableLoopback() {
         if (!g_loopbackGranted) return;
         g_logger.Log(L"LOOPBACK: disabling");
-
-        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox";
-
-        STARTUPINFOW si = { sizeof(si) };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-
-        PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
-            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-        {
-            WaitForSingleObject(pi.hProcess, 5000);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
+        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
         g_loopbackGranted = false;
     }
 
@@ -136,18 +117,7 @@ namespace Sandbox {
     // is always false in a fresh process, so DisableLoopback would be a no-op).
     inline void ForceDisableLoopback()
     {
-        wchar_t cmd[] = L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox";
-        STARTUPINFOW si = { sizeof(si) };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE,
-            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-        {
-            WaitForSingleObject(pi.hProcess, 5000);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
+        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
         g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
     }
 
@@ -348,7 +318,7 @@ namespace Sandbox {
                         const wchar_t* ilName = il >= SECURITY_MANDATORY_HIGH_RID ? L"High (elevated)" :
                                                 il >= SECURITY_MANDATORY_MEDIUM_RID ? L"Medium" : L"Low";
                         swprintf(msg, 512, L"SANDY: integrity=%s (0x%04X)", ilName, il);
-                        g_logger.Log(msg);
+                    g_logger.Log(msg);
                     }
                 }
                 CloseHandle(hToken);
@@ -446,7 +416,7 @@ namespace Sandbox {
                 }
 
                 swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
-                    g_logger.Log(msg);
+                g_logger.Log(msg);
             }
         }
 
