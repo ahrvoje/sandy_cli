@@ -154,7 +154,7 @@ REM Test 7: No-args shows error (no implicit cleanup)
 REM ===================================================================
 echo.
 echo --- Test 7: No-args shows error ---
-"!SANDY!" >nul 2>"%TEMP%\sandy_noargs.txt"
+"!SANDY!" >"%TEMP%\sandy_noargs.txt" 2>&1
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No-args returns non-zero exit code
     set /a PASS+=1
@@ -163,9 +163,9 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-findstr /C:"-x is required" "%TEMP%\sandy_noargs.txt" >nul 2>nul
+findstr /C:"Sandy" "%TEMP%\sandy_noargs.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Error message shows usage guidance
+    echo   [PASS] No-args shows usage help
     set /a PASS+=1
 ) else (
     echo   [FAIL] Missing usage guidance in error

@@ -427,7 +427,6 @@ static int RunMain(int argc, wchar_t* argv[])
 
     // --- No config/exec provided ---
     if ((configPath.empty() && configString.empty()) || exePath.empty()) {
-        fprintf(stderr, "Error: -x is required, and one of -c or -s must be provided.\n\n");
         PrintUsage();
         return 1;
     }
