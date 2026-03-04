@@ -165,3 +165,38 @@ permission bit. Use `deny.delete` or `deny.all` to block deletion.
   replace DACLs including inherited entries.
 - **Always** manually construct the DACL (enumerate+copy+add) to handle both
   explicit and inherited ACEs.
+
+# ACL Design — Sandy Grant Bit System
+
+## AccessMask Overview
+
+Each `AccessLevel` maps to a Windows permission bitmask:
+
+| Level | Mask | Key bits |
+|-------|------|----------|
+| Read | `FILE_GENERIC_READ` | `FILE_READ_DATA`, `FILE_READ_EA`, `READ_CONTROL`, `SYNCHRONIZE` |
+| Write | `FILE_GENERIC_WRITE + FILE_READ_ATTRIBUTES` | `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_WRITE_ATTRIBUTES` |
+| Execute | `FILE_GENERIC_READ + FILE_GENERIC_EXECUTE` | Read + `FILE_EXECUTE` |
+| Append | `FILE_APPEND_DATA + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Append only, no overwrite |
+| Delete | `DELETE + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Delete only |
+| All | `FILE_ALL_ACCESS & ~FILE_DELETE_CHILD` | Everything except FILE_DELETE_CHILD |
+
+## FILE_DELETE_CHILD Exclusion
+
+`FILE_DELETE_CHILD` is intentionally excluded from the `All` mask.
+
+**Problem**: Windows allows deleting a child object if EITHER the child has `DELETE` OR the parent has `FILE_DELETE_CHILD`. With both bits present, denied children (whose `DELETE` is stripped) can still be deleted via the parent's `FILE_DELETE_CHILD`. The child can then be recreated, inheriting the parent's `[allow all]` with no deny applied — a full bypass.
+
+**Solution**: Strip `FILE_DELETE_CHILD` globally from the `All` mask. Children inherit their own `DELETE` bit from the parent's ACE via ACL inheritance. Non-denied children can still be deleted (via their own `DELETE`). Denied children have `DELETE` stripped, making them undeletable.
+
+This is elegant because it requires zero special-case logic — the grant math handles everything.
+
+## Deny Subtraction (AppContainer Mode)
+
+AppContainer SIDs ignore `DENY_ACCESS` ACEs. Sandy implements deny by subtracting bits from the existing ALLOW ACE:
+
+```
+reducedMask = existingMask & ~(denyMask & ~sharedBits)
+```
+
+**Shared bits** are always preserved: `SYNCHRONIZE`, `FILE_READ_ATTRIBUTES`, `READ_CONTROL`. These support basic file operations (`stat()`, handle synchronization, DACL inspection).

@@ -30,7 +30,10 @@ namespace Sandbox {
         case AccessLevel::Execute: return FILE_GENERIC_READ | FILE_GENERIC_EXECUTE;
         case AccessLevel::Append:  return FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         case AccessLevel::Delete:  return DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
-        case AccessLevel::All:     return FILE_ALL_ACCESS;
+        // FILE_DELETE_CHILD excluded: children inherit their own DELETE via
+        // ACL inheritance.  Without this exclusion, a parent's FILE_DELETE_CHILD
+        // lets the sandbox delete denied children and recreate them without deny.
+        case AccessLevel::All:     return FILE_ALL_ACCESS & ~FILE_DELETE_CHILD;
         default:                   return 0;
         }
     }
@@ -813,12 +816,44 @@ namespace Sandbox {
         // Check which paths other instances still need
         std::set<std::wstring> otherPaths = GetOtherInstancePaths(g_instanceId);
 
+        // Collect all original grant paths (for ancestor check).
+        // Used to skip renamed children covered by a parent TreeSet.
+        std::set<std::wstring> allGrantPaths;
+        for (const auto& grant : g_aclGrants)
+            allGrantPaths.insert(grant.path);
+
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
             if (otherPaths.count(it->path)) {
-                // Another instance still has a grant for this path — leave ACE intact
                 g_logger.Log((L"ACL_SKIP: " + it->path + L" (other instance active)").c_str());
                 continue;
             }
+
+            // If the path was renamed (doesn't exist), check if a parent path
+            // is also in the grants list.  If so, skip this entry — the parent's
+            // TreeSetNamedSecurityInfo will propagate clean ACEs to the renamed
+            // child.  Restoring the child's intermediate SDDL would create
+            // explicit ACEs that TreeSet can't remove (SDDL round-trip loses
+            // the INHERITED_ACE flag).
+            if (it->objType == SE_FILE_OBJECT &&
+                GetFileAttributesW(it->path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                bool hasParentGrant = false;
+                for (const auto& grantPath : allGrantPaths) {
+                    if (grantPath == it->path) continue;
+                    // Check if grantPath is an ancestor of this path
+                    if (it->path.size() > grantPath.size() &&
+                        _wcsnicmp(it->path.c_str(), grantPath.c_str(), grantPath.size()) == 0 &&
+                        (it->path[grantPath.size()] == L'\\' || it->path[grantPath.size()] == L'/')) {
+                        hasParentGrant = true;
+                        break;
+                    }
+                }
+                if (hasParentGrant) {
+                    g_logger.Log((L"ACL_SKIP_CHILD: " + it->path +
+                                  L" (renamed, parent TreeSet will handle)").c_str());
+                    continue;
+                }
+            }
+
             RestoreDacl(it->path, it->originalSDDL, it->objType, it->objectId);
         }
         g_aclGrants.clear();
