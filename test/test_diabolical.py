@@ -366,7 +366,77 @@ test("readonly_zone: append to file", False,
 
 
 # ===========================================================================
-# SUMMARY
+# ATTACK 8: DACL Escalation — re-add FILE_DELETE_CHILD via WRITE_DAC
+#
+# The precise exploit path that stripping WRITE_DAC prevents:
+#   1. Open arena/ with WRITE_DAC (we have ALL on it)
+#   2. Read current DACL with READ_CONTROL
+#   3. Add FILE_DELETE_CHILD to our ACE
+#   4. Delete denied children (killzone/)
+#   5. Recreate without deny — full bypass
+#
+# If WRITE_DAC is properly stripped, step 1 fails.
+# ===========================================================================
+print("\n=== ATTACK 8: DACL escalation (WRITE_DAC re-add FILE_DELETE_CHILD) ===")
+
+WRITE_DAC = 0x00040000
+WRITE_OWNER = 0x00080000
+
+# Step 1: Try WRITE_DAC on arena/ (the [allow all] parent)
+hArena = ctypes.windll.kernel32.CreateFileW(
+    ARENA, WRITE_DAC,
+    0x7, None, 3, 0x02000000, None
+)
+if hArena != ctypes.wintypes.HANDLE(-1).value and hArena != -1:
+    print("  [FAIL] WRITE_DAC on arena/ SUCCEEDED — can modify parent DACL!")
+    results.append(('FAIL', 'dacl-escalation: WRITE_DAC on arena'))
+    ctypes.windll.kernel32.CloseHandle(hArena)
+
+    # If we got here, try the full exploit chain
+    try:
+        os.rmdir(p('killzone'))
+        os.mkdir(p('killzone'))
+        with open(os.path.join(p('killzone'), 'escalated.txt'), 'w') as f:
+            f.write('DACL ESCALATION')
+        print("  [FAIL] FULL DACL ESCALATION: wrote to formerly denied folder!")
+        results.append(('FAIL', 'dacl-escalation: FULL BYPASS'))
+    except PermissionError:
+        print("  [INFO] WRITE_DAC obtained but exploit chain blocked")
+        results.append(('INFO', 'dacl-escalation: partial'))
+else:
+    err = ctypes.windll.kernel32.GetLastError()
+    print(f"  [PASS] WRITE_DAC blocked on arena/ (err={err})")
+    results.append(('PASS', 'dacl-escalation: WRITE_DAC blocked'))
+
+# Also verify WRITE_OWNER is blocked
+hArena2 = ctypes.windll.kernel32.CreateFileW(
+    ARENA, WRITE_OWNER,
+    0x7, None, 3, 0x02000000, None
+)
+if hArena2 != ctypes.wintypes.HANDLE(-1).value and hArena2 != -1:
+    print("  [FAIL] WRITE_OWNER on arena/ SUCCEEDED!")
+    results.append(('FAIL', 'dacl-escalation: WRITE_OWNER on arena'))
+    ctypes.windll.kernel32.CloseHandle(hArena2)
+else:
+    err = ctypes.windll.kernel32.GetLastError()
+    print(f"  [PASS] WRITE_OWNER blocked on arena/ (err={err})")
+    results.append(('PASS', 'dacl-escalation: WRITE_OWNER blocked'))
+
+# Verify WRITE_DAC blocked on playground/ (inherits from arena)
+hPlay = ctypes.windll.kernel32.CreateFileW(
+    p('playground'), WRITE_DAC,
+    0x7, None, 3, 0x02000000, None
+)
+if hPlay != ctypes.wintypes.HANDLE(-1).value and hPlay != -1:
+    print("  [FAIL] WRITE_DAC on playground/ (child) SUCCEEDED!")
+    results.append(('FAIL', 'dacl-escalation: WRITE_DAC inherited'))
+    ctypes.windll.kernel32.CloseHandle(hPlay)
+else:
+    err = ctypes.windll.kernel32.GetLastError()
+    print(f"  [PASS] WRITE_DAC blocked on playground/ (child, err={err})")
+    results.append(('PASS', 'dacl-escalation: WRITE_DAC inheritance blocked'))
+
+
 # ===========================================================================
 passed = sum(1 for r in results if r[0] == 'PASS')
 failed = sum(1 for r in results if r[0] == 'FAIL')

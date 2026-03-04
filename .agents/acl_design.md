@@ -66,7 +66,7 @@ escalates every read grant into execute permission, breaking the security model.
 | Execute | `execute` | `FILE_GENERIC_READ \| FILE_GENERIC_EXECUTE` | All Read flags + `FILE_EXECUTE` |
 | Append | `append` | `FILE_APPEND_DATA \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Append-only, no read/overwrite |
 | Delete | `delete` | `DELETE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Delete only, no read/write |
-| All | `all` | `FILE_ALL_ACCESS` | Full control |
+| All | `all` | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | Full data control, no ACL modification |
 
 Key points:
 - **Read** cannot load DLLs/EXEs (no `FILE_EXECUTE`)
@@ -179,17 +179,21 @@ Each `AccessLevel` maps to a Windows permission bitmask:
 | Execute | `FILE_GENERIC_READ + FILE_GENERIC_EXECUTE` | Read + `FILE_EXECUTE` |
 | Append | `FILE_APPEND_DATA + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Append only, no overwrite |
 | Delete | `DELETE + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Delete only |
-| All | `FILE_ALL_ACCESS & ~FILE_DELETE_CHILD` | Everything except FILE_DELETE_CHILD |
+| All | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | All data ops, no ACL modification |
 
-## FILE_DELETE_CHILD Exclusion
+## Stripped Bits in `All` Mask
 
-`FILE_DELETE_CHILD` is intentionally excluded from the `All` mask.
+Three bits are intentionally excluded from `AccessLevel::All`:
 
-**Problem**: Windows allows deleting a child object if EITHER the child has `DELETE` OR the parent has `FILE_DELETE_CHILD`. With both bits present, denied children (whose `DELETE` is stripped) can still be deleted via the parent's `FILE_DELETE_CHILD`. The child can then be recreated, inheriting the parent's `[allow all]` with no deny applied — a full bypass.
-
-**Solution**: Strip `FILE_DELETE_CHILD` globally from the `All` mask. Children inherit their own `DELETE` bit from the parent's ACE via ACL inheritance. Non-denied children can still be deleted (via their own `DELETE`). Denied children have `DELETE` stripped, making them undeletable.
+| Bit | Why stripped |
+|-----|-------------|
+| `FILE_DELETE_CHILD` | Parent's delete-child lets sandbox delete denied children and recreate them without deny. Children inherit their own `DELETE` via ACL inheritance, so non-denied children can still be deleted. |
+| `WRITE_DAC` | Sandbox could re-add `FILE_DELETE_CHILD` to its own ACE, undoing the protection above. No legitimate sandbox use for DACL modification. |
+| `WRITE_OWNER` | No legitimate sandbox use. `SE_RESTORE_PRIVILEGE` (required for ownership changes) is stripped from AppContainers, but defense-in-depth. |
 
 This is elegant because it requires zero special-case logic — the grant math handles everything.
+
+**Never** add `FILE_DELETE_CHILD`, `WRITE_DAC`, or `WRITE_OWNER` back to the `All` mask.
 
 ## Deny Subtraction (AppContainer Mode)
 

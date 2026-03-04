@@ -33,7 +33,10 @@ namespace Sandbox {
         // FILE_DELETE_CHILD excluded: children inherit their own DELETE via
         // ACL inheritance.  Without this exclusion, a parent's FILE_DELETE_CHILD
         // lets the sandbox delete denied children and recreate them without deny.
-        case AccessLevel::All:     return FILE_ALL_ACCESS & ~FILE_DELETE_CHILD;
+        // WRITE_DAC excluded: prevents sandbox from modifying ACLs (e.g.
+        // re-adding FILE_DELETE_CHILD to escalate back to full control).
+        // WRITE_OWNER excluded: no legitimate sandbox use for ownership changes.
+        case AccessLevel::All:     return FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER);
         default:                   return 0;
         }
     }
