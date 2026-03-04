@@ -84,13 +84,20 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // Check if a PID is alive AND belongs to the sandy process that stored it.
-    // Compares process creation time to guard against PID reuse.
+    // Guards against PID reuse via creation time, and detects terminated
+    // zombie processes (killed but not yet reaped) via WaitForSingleObject.
     // -----------------------------------------------------------------------
     inline bool IsProcessAlive(DWORD pid, ULONGLONG storedCreationTime)
     {
         if (!pid) return false;
-        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
         if (!h) return false;
+
+        // Check if process has actually exited (signaled = terminated)
+        if (WaitForSingleObject(h, 0) != WAIT_TIMEOUT) {
+            CloseHandle(h);
+            return false;  // Process terminated (zombie awaiting handle cleanup)
+        }
 
         bool alive = true;
         if (storedCreationTime != 0) {
@@ -569,7 +576,18 @@ namespace Sandbox {
                 RegCloseKey(hKey);
             }
             // Use RegDeleteTreeW — robust even if subkeys exist (Bug 4 fix)
-            RegDeleteTreeW(HKEY_CURRENT_USER, fullKey.c_str());
+            LSTATUS delResult = RegDeleteTreeW(HKEY_CURRENT_USER, fullKey.c_str());
+            if (delResult != ERROR_SUCCESS) {
+                wchar_t msg[256];
+                swprintf(msg, 256, L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
+                g_logger.Log(msg);
+                // Fallback: try RegDeleteKeyW in case RegDeleteTreeW has issues
+                delResult = RegDeleteKeyW(HKEY_CURRENT_USER, fullKey.c_str());
+                if (delResult != ERROR_SUCCESS) {
+                    swprintf(msg, 256, L"REG_DELETE_FALLBACK_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
+                    g_logger.Log(msg);
+                }
+            }
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
         }
 
