@@ -49,7 +49,7 @@ Any directory containing executables or DLLs that need to be **loaded** (Python,
 Node, compilers) must use `execute`, not `read`, in the config:
 
 ```toml
-[access]
+[allow]
 execute = ['C:\path\to\python']   # correct — OS loader needs FILE_EXECUTE
 read    = ['C:\path\to\data']     # correct — data-only, no code loading
 ```
@@ -74,3 +74,18 @@ Key points:
 - **Execute** is the standard `(RX)` — minimum for running programs
 - **Append** cannot overwrite existing data (no `FILE_WRITE_DATA`)
 - **Delete** cannot read or write file contents
+
+# DENY ACEs — AppContainer Limitation
+
+**DENY ACEs (`DENY_ACCESS`) are silently ignored by the kernel for AppContainer SIDs.**
+The DENY ACE is correctly placed in the DACL before the ALLOW ACE, but
+AppContainer access checks bypass standard deny-before-allow evaluation.
+Restricted Token mode honors DENY ACEs normally.
+
+Sandy implements `[deny]` via `REVOKE_ACCESS` instead: after `[allow]` grants
+propagate to all children via `TreeSetNamedSecurityInfoW`, each `[deny]` entry
+strips the SID's ALLOW ACE from the target path. This works for both modes.
+
+**Semantic:** `REVOKE_ACCESS` removes the entire ACE — regardless of which deny
+key is used, the denied path loses **all** sandbox access (not just the specific
+permission). This is the correct behavior: exclude means fully exclude.

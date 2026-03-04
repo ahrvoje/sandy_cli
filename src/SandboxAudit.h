@@ -1093,7 +1093,7 @@ namespace Sandbox {
         fprintf(out, "delete = []\n");
         fprintf(out, "all = []\n");
 
-        // Allow section — all mandatory keys for selected mode
+        // Privileges section — all mandatory keys for selected mode
         fprintf(out, "\n[privileges]\n");
         if (appcontainerOK) {
             fprintf(out, "system_dirs = %s\n", r.needsSystemDirs ? "true" : "false");

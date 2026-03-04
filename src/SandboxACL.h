@@ -308,6 +308,93 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Revoke access from a file/folder that inherited an ALLOW ACE from a
+    // parent folder grant.  After [allow] grants propagate via TreeSet,
+    // each [deny] entry strips the SID's ACE from the target path.
+    //
+    // Works for both AppContainer and Restricted modes (DENY ACEs are
+    // ignored by the kernel for AppContainer SIDs, so we revoke instead).
+    // -----------------------------------------------------------------------
+    inline bool DenyObjectAccess(PSID pSid, const std::wstring& path,
+                                  AccessLevel /*level*/, SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
+    {
+        // REVOKE_ACCESS removes all existing ACEs for this trustee
+        EXPLICIT_ACCESSW ea{};
+        ea.grfAccessPermissions = 0;
+        ea.grfAccessMode = REVOKE_ACCESS;
+        ea.grfInheritance = 0;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
+
+        PACL pOldDacl = nullptr;
+        PSECURITY_DESCRIPTOR pSD = nullptr;
+        DWORD rc = GetNamedSecurityInfoW(
+            path.c_str(), objType, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &pOldDacl, nullptr, &pSD);
+        if (rc != ERROR_SUCCESS)
+            return false;
+
+        PACL pNewDacl = nullptr;
+        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
+        if (rc != ERROR_SUCCESS) {
+            LocalFree(pSD);
+            return false;
+        }
+
+        // Save original DACL (write-ahead for crash recovery)
+        {
+            LPWSTR origSddl = nullptr;
+            if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &origSddl, nullptr)) {
+                AcquireSRWLockExclusive(&g_aclGrantsLock);
+                PersistGrant(path, objType, origSddl);
+                g_aclGrants.push_back({ path, objType, origSddl });
+                ReleaseSRWLockExclusive(&g_aclGrantsLock);
+                LocalFree(origSddl);
+            }
+        }
+        LocalFree(pSD);
+
+        // Apply the DACL with revoked ACE
+        DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+        bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
+                     && (attr & FILE_ATTRIBUTE_DIRECTORY);
+        if (isDir) {
+            rc = TreeSetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
+                TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+        } else {
+            rc = SetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        }
+        LocalFree(pNewDacl);
+
+        // Log resulting DACL
+        if (rc == ERROR_SUCCESS) {
+            PACL pResultDacl = nullptr;
+            PSECURITY_DESCRIPTOR pResultSD = nullptr;
+            if (GetNamedSecurityInfoW(path.c_str(), objType,
+                    DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                    &pResultDacl, nullptr, &pResultSD) == ERROR_SUCCESS) {
+                LPWSTR sddl = nullptr;
+                if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
+                        &sddl, nullptr)) {
+                    std::wstring logMsg = L"DENY_SDDL: " + path + L" -> " + sddl;
+                    g_logger.Log(logMsg.c_str());
+                    LocalFree(sddl);
+                }
+                LocalFree(pResultSD);
+            }
+        }
+
+        return rc == ERROR_SUCCESS;
+    }
+
+    // -----------------------------------------------------------------------
     // Restore a single object's DACL from its saved SDDL string.
     // Uses TreeSetNamedSecurityInfo for directories to propagate to children.
     // -----------------------------------------------------------------------

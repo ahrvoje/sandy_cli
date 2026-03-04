@@ -1,5 +1,5 @@
 """
-test_allow_limits.py - Tests for [allow] and [limit] settings.
+test_allow_limits.py - Tests for [privileges] and [limit] settings.
 
 Run inside the sandbox:
     sandy.exe -c test_allow_limits_config.toml -x <python.exe> test_allow_limits.py

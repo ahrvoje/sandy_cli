@@ -130,7 +130,7 @@ print()
 
 # ---------------------------------------------------------------------------
 # 7. PERMISSION-SPECIFIC FOLDER TESTS
-#    These folders must be configured in the TOML [access] section:
+#    These folders must be configured in the TOML [allow] section:
 #      read  = ['%USERPROFILE%\test_R']
 #      write = ['%USERPROFILE%\test_W']
 #      all   = ['%USERPROFILE%\test_RW']

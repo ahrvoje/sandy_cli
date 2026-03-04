@@ -1,6 +1,6 @@
 @echo off
 REM ---------------------------------------------------------------
-REM test_allow_limits.bat — Test [allow] and [limit] settings
+REM test_allow_limits.bat — Test [privileges] and [limit] settings
 REM Tests: network, memory, process limits, timeout, and strict mode.
 REM ---------------------------------------------------------------
 

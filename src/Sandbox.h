@@ -433,6 +433,21 @@ namespace Sandbox {
             g_logger.Log(msg);
         }
 
+        // --- Apply configured deny rules (after allows, DENY ACEs take priority) ---
+        for (const auto& entry : config.denyFolders) {
+            if (entry.path.empty()) continue;  // skip empty deny entries
+            bool ok = DenyObjectAccess(pGrantSid, entry.path, entry.access);
+            if (!ok) {
+                fprintf(stderr, "[Warning] Could not deny access to: %ls\n", entry.path.c_str());
+                grantFailed = true;
+            }
+            wchar_t msg[1024];
+            swprintf(msg, 1024, L"DENY: [%s] %s -> %s (mask=0x%08X)",
+                     AccessTag(entry.access), entry.path.c_str(),
+                     ok ? L"OK" : L"FAILED", AccessMask(entry.access));
+            g_logger.Log(msg);
+        }
+
         // --- Grant registry access (restricted mode only) ---
         if (isRestricted) {
             for (const auto& key : config.registryRead) {

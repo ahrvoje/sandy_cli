@@ -1,0 +1,40 @@
+# Test deny: grant ALL to test_RW, deny WRITE to test_RW
+# Expected: can read, cannot write
+[sandbox]
+token = 'appcontainer'
+workdir = 'inherit'
+
+[allow]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read = ['C:\repos\sandy_cli\']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_RW']
+
+[deny]
+read    = []
+write   = ['C:\Users\H\test_RW']
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
+system_dirs = true
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 30
+memory = 0
+processes = 0
