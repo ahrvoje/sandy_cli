@@ -1,0 +1,52 @@
+# Complex ACL grants test: overlapping allow/deny on multi-level folder tree
+#
+# FOLDER TREE:
+#   test_acl/
+#     workspace/          [allow] all
+#       src/              (inherits all)
+#       build/            [deny] write → read OK, write blocked
+#       secrets/          [deny] all → everything blocked
+#     data/               [allow] read
+#       public/           (inherits read)
+#       private/          [deny] read → fully blocked (deny > allow)
+#     logs/               [allow] append
+#     tools/              [allow] execute → read+exec, no write
+
+[sandbox]
+token = 'appcontainer'
+workdir = 'inherit'
+
+[allow]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\tools']
+read = ['C:\repos\sandy_cli\', 'C:\Users\H\test_acl\data']
+write = []
+append = ['C:\Users\H\test_acl\logs']
+delete = []
+all = ['C:\Users\H\test_acl\workspace']
+
+[deny]
+read    = ['C:\Users\H\test_acl\data\private']
+write   = ['C:\Users\H\test_acl\workspace\build']
+execute = []
+append  = []
+delete  = []
+all     = ['C:\Users\H\test_acl\workspace\secrets']
+
+[privileges]
+system_dirs = true
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 30
+memory = 0
+processes = 0

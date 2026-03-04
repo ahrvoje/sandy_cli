@@ -168,18 +168,36 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Desktop ACL tracking — save original DACLs for restoration on cleanup
+    // -----------------------------------------------------------------------
+    struct DesktopGrant {
+        std::wstring originalSddl;
+        bool isDesktop;  // true = Desktop, false = WinSta
+    };
+    inline std::vector<DesktopGrant> g_desktopGrants;
+
+    // -----------------------------------------------------------------------
     // Grant a SID access to the current window station and desktop.
     // Required for CreateProcessAsUser — without this, processes using a
     // restricted token get STATUS_ACCESS_DENIED when attaching to the desktop.
+    // Saves original DACLs for restoration via RevokeDesktopAccess().
     // -----------------------------------------------------------------------
     inline bool GrantDesktopAccess(PSID pSid) {
-        auto grantObj = [&](HANDLE hObj) -> bool {
+        auto grantObj = [&](HANDLE hObj, bool isDesktop) -> bool {
             SECURITY_INFORMATION si = DACL_SECURITY_INFORMATION;
             PSECURITY_DESCRIPTOR pSD = nullptr;
             PACL pOldDacl = nullptr;
             if (GetSecurityInfo(hObj, SE_WINDOW_OBJECT, si,
                     nullptr, nullptr, &pOldDacl, nullptr, &pSD) != ERROR_SUCCESS)
                 return false;
+
+            // Save original DACL as SDDL before modifying
+            LPWSTR origSddl = nullptr;
+            if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &origSddl, nullptr)) {
+                g_desktopGrants.push_back({ origSddl, isDesktop });
+                LocalFree(origSddl);
+            }
 
             EXPLICIT_ACCESS_W ea{};
             ea.grfAccessPermissions = GENERIC_ALL;
@@ -208,12 +226,45 @@ namespace Sandbox {
             DESKTOP_CREATEWINDOW | DESKTOP_CREATEMENU | DESKTOP_SWITCHDESKTOP);
 
         bool ok = true;
-        if (hWinSta) ok &= grantObj(hWinSta);
+        if (hWinSta) ok &= grantObj(hWinSta, false);
         if (hDesktop) {
-            ok &= grantObj(hDesktop);
+            ok &= grantObj(hDesktop, true);
             CloseDesktop(hDesktop);
         }
         return ok;
+    }
+
+    // -----------------------------------------------------------------------
+    // Restore original DACLs on window station and desktop (reverses grants).
+    // -----------------------------------------------------------------------
+    inline void RevokeDesktopAccess()
+    {
+        for (auto it = g_desktopGrants.rbegin(); it != g_desktopGrants.rend(); ++it) {
+            PSECURITY_DESCRIPTOR pSD = nullptr;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    it->originalSddl.c_str(), SDDL_REVISION_1, &pSD, nullptr))
+                continue;
+
+            BOOL present = FALSE, defaulted = FALSE;
+            PACL pDacl = nullptr;
+            if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
+                if (it->isDesktop) {
+                    HDESK hDesk = OpenDesktopW(L"Default", 0, FALSE, READ_CONTROL | WRITE_DAC);
+                    if (hDesk) {
+                        SetSecurityInfo(hDesk, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                                        nullptr, nullptr, pDacl, nullptr);
+                        CloseDesktop(hDesk);
+                    }
+                } else {
+                    HWINSTA hWinSta = GetProcessWindowStation();
+                    if (hWinSta)
+                        SetSecurityInfo(hWinSta, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                                        nullptr, nullptr, pDacl, nullptr);
+                }
+            }
+            LocalFree(pSD);
+        }
+        g_desktopGrants.clear();
     }
 
 } // namespace Sandbox

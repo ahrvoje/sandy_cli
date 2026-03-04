@@ -186,23 +186,30 @@ namespace Sandbox {
             }
         }
 
-        // Count existing values to generate next index
-        DWORD valueCount = 0;
-        RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                         &valueCount, nullptr, nullptr, nullptr, nullptr);
+        // Use dedicated counter (_nextIdx) to avoid index collisions with
+        // metadata values (_pid, _ctime, _container). Atomically read+increment.
+        DWORD nextIdx = 0;
+        DWORD idxSize = sizeof(nextIdx);
+        RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
 
         // Format: TYPE|PATH|SDDL
         std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
         std::wstring data = typeStr + L"|" + path + L"|" + sddl;
 
         wchar_t valueName[32];
-        swprintf(valueName, 32, L"%lu", valueCount);
+        swprintf(valueName, 32, L"%lu", nextIdx);
         RegSetValueExW(hKey, valueName, 0, REG_SZ,
                        reinterpret_cast<const BYTE*>(data.c_str()),
                        static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
+
+        // Increment and store counter
+        nextIdx++;
+        RegSetValueExW(hKey, L"_nextIdx", 0, REG_DWORD,
+                       reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx));
         RegCloseKey(hKey);
 
-        g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(valueCount) + L"] " + data).c_str());
+        g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(nextIdx - 1) + L"] " + data).c_str());
     }
 
     // -----------------------------------------------------------------------
@@ -215,6 +222,22 @@ namespace Sandbox {
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
         // Try to remove parent key if empty (best-effort, fails if subkeys remain)
         RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tree security progress callback — logs per-object errors during
+    // TreeSetNamedSecurityInfoW so failures are not silently swallowed.
+    // -----------------------------------------------------------------------
+    inline void WINAPI TreeSecurityProgress(
+        LPWSTR pObjectName, DWORD Status,
+        PPROG_INVOKE_SETTING pInvokeSetting, PVOID Args, BOOL SecuritySet)
+    {
+        (void)pInvokeSetting; (void)Args; (void)SecuritySet;
+        if (Status != ERROR_SUCCESS && pObjectName) {
+            wchar_t msg[512];
+            swprintf(msg, 512, L"ACL_TREE_ERROR: %s (error %lu)", pObjectName, Status);
+            g_logger.Log(msg);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -277,7 +300,7 @@ namespace Sandbox {
             rc = TreeSetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
                 DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
-                TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+                TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
         } else {
             rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
@@ -308,25 +331,23 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Revoke access from a file/folder that inherited an ALLOW ACE from a
-    // parent folder grant.  After [allow] grants propagate via TreeSet,
-    // each [deny] entry strips the SID's ACE from the target path.
+    // Deny access to a file/folder.
     //
-    // Works for both AppContainer and Restricted modes (DENY ACEs are
-    // ignored by the kernel for AppContainer SIDs, so we revoke instead).
+    // Strategy depends on SID type:
+    // - Restricted mode: uses real DENY_ACCESS ACEs (kernel enforces them).
+    // - AppContainer mode: DENY ACEs are IGNORED by the Windows kernel for
+    //   AppContainer SIDs.  Instead, we revoke the existing ALLOW ACE and
+    //   re-add a narrower ALLOW with the denied bits subtracted.
+    //
+    // Respects the access level parameter for fine-grained denial.
     // -----------------------------------------------------------------------
     inline bool DenyObjectAccess(PSID pSid, const std::wstring& path,
-                                  AccessLevel /*level*/, SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
+                                  AccessLevel level, bool isAppContainer,
+                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
     {
-        // REVOKE_ACCESS removes all existing ACEs for this trustee
-        EXPLICIT_ACCESSW ea{};
-        ea.grfAccessPermissions = 0;
-        ea.grfAccessMode = REVOKE_ACCESS;
-        ea.grfInheritance = 0;
-        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
+        DWORD denyMask = AccessMask(level);
 
+        // --- Read current DACL ---
         PACL pOldDacl = nullptr;
         PSECURITY_DESCRIPTOR pSD = nullptr;
         DWORD rc = GetNamedSecurityInfoW(
@@ -334,13 +355,6 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS)
             return false;
-
-        PACL pNewDacl = nullptr;
-        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
-        if (rc != ERROR_SUCCESS) {
-            LocalFree(pSD);
-            return false;
-        }
 
         // Save original DACL (write-ahead for crash recovery)
         {
@@ -354,21 +368,139 @@ namespace Sandbox {
                 LocalFree(origSddl);
             }
         }
+
+        PACL pNewDacl = nullptr;
+
+        if (isAppContainer) {
+            // AppContainer: DENY ACEs don't work.  Instead, build a new DACL
+            // that replaces the SID's ALLOW ACE with a reduced-mask one.
+            // We must handle INHERITED ACEs (from parent grant's TreeSet)
+            // which REVOKE_ACCESS cannot remove.
+
+            // Find existing allowed permissions for this SID (any ACE type)
+            DWORD existingMask = 0;
+            ACL_SIZE_INFORMATION aclInfo = {};
+            if (GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
+                for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+                    PACE_HEADER pAceHdr = nullptr;
+                    if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
+                        continue;
+                    if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+                        auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
+                        PSID aceSid = &pAce->SidStart;
+                        if (EqualSid(aceSid, pSid))
+                            existingMask |= pAce->Mask;
+                    }
+                }
+            }
+
+            // Compute reduced mask — only strip bits unique to the denied op
+            DWORD sharedBits = SYNCHRONIZE | FILE_READ_ATTRIBUTES | READ_CONTROL
+                             | STANDARD_RIGHTS_READ | STANDARD_RIGHTS_WRITE
+                             | STANDARD_RIGHTS_EXECUTE;
+            DWORD denyOnlyBits = denyMask & ~sharedBits;
+            DWORD reducedMask = existingMask & ~denyOnlyBits;
+
+            // Build new ACL manually: copy all ACEs EXCEPT our SID's,
+            // then optionally add a single reduced-mask ACE for our SID.
+            // This handles both explicit and inherited ACEs.
+            DWORD sidLen = GetLengthSid(pSid);
+            DWORD newAclSize = sizeof(ACL);
+            // First pass: compute size for non-SID ACEs
+            for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+                PACE_HEADER pAceHdr = nullptr;
+                if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
+                    continue;
+                bool isSidAce = false;
+                if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+                    auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
+                    isSidAce = EqualSid(&pAce->SidStart, pSid);
+                }
+                if (!isSidAce)
+                    newAclSize += pAceHdr->AceSize;
+            }
+            // Add space for the reduced ACE (if non-zero)
+            if (reducedMask != 0) {
+                newAclSize += sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + sidLen;
+            }
+
+            pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+            if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
+                LocalFree(pSD);
+                return false;
+            }
+
+            // Second pass: copy non-SID ACEs
+            for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+                PACE_HEADER pAceHdr = nullptr;
+                if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
+                    continue;
+                bool isSidAce = false;
+                if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+                    auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
+                    isSidAce = EqualSid(&pAce->SidStart, pSid);
+                }
+                if (!isSidAce)
+                    AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
+            }
+
+            // Add reduced ACE (inheritable for dirs, applies to children)
+            if (reducedMask != 0) {
+                DWORD aceFlags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+                DWORD aceSize = sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + sidLen;
+                auto* pNewAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(LocalAlloc(LPTR, aceSize));
+                if (pNewAce) {
+                    pNewAce->Header.AceType = ACCESS_ALLOWED_ACE_TYPE;
+                    pNewAce->Header.AceFlags = static_cast<BYTE>(aceFlags);
+                    pNewAce->Header.AceSize = static_cast<WORD>(aceSize);
+                    pNewAce->Mask = reducedMask;
+                    CopySid(sidLen, &pNewAce->SidStart, pSid);
+                    AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pNewAce, aceSize);
+                    LocalFree(pNewAce);
+                }
+            }
+
+            wchar_t msg[256];
+            swprintf(msg, 256, L"DENY_AC: existing=0x%08X deny=0x%08X reduced=0x%08X",
+                     existingMask, denyMask, reducedMask);
+            g_logger.Log(msg);
+
+        } else {
+            // Restricted mode: real DENY ACEs work
+            EXPLICIT_ACCESSW ea{};
+            ea.grfAccessPermissions = denyMask;
+            ea.grfAccessMode = DENY_ACCESS;
+            ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+            ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+            ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
+            rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
+        }
+
         LocalFree(pSD);
 
-        // Apply the DACL with revoked ACE
+        if (rc != ERROR_SUCCESS || !pNewDacl)
+            return false;
+
+        // Apply the modified DACL.
+        // For directories, use TREE_SEC_INFO_RESET with PROTECTED_DACL to
+        // completely replace the DACL and break inheritance.  The parent
+        // grant's TreeSet propagated an inheritable (I)(F) ACE; without
+        // PROTECTED_DACL, Windows re-applies the inherited ACE even after
+        // we reset, making the deny ineffective.
+        DWORD siFlags = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
         DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
         bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
                      && (attr & FILE_ATTRIBUTE_DIRECTORY);
         if (isDir) {
             rc = TreeSetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
-                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
-                TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+                siFlags, nullptr, nullptr, pNewDacl, nullptr,
+                TREE_SEC_INFO_RESET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
         } else {
             rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
-                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+                siFlags, nullptr, nullptr, pNewDacl, nullptr);
         }
         LocalFree(pNewDacl);
 
@@ -417,7 +549,7 @@ namespace Sandbox {
                 TreeSetNamedSecurityInfoW(
                     const_cast<LPWSTR>(path.c_str()), objType,
                     DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
-                    TREE_SEC_INFO_SET, nullptr, ProgressInvokeNever, nullptr);
+                    TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
             } else {
                 SetNamedSecurityInfoW(
                     const_cast<LPWSTR>(path.c_str()), objType,

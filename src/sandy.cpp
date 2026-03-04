@@ -47,17 +47,20 @@ static void PrintUsage()
         "  workdir = 'inherit'                    # required: absolute path or 'inherit' (exe folder)\n"
         "\n"
         "  [allow]                                (required, both modes)\n"
-        "  read    = ['C:\\\\path']                 # read files, list dirs (no execute)\n"
+        "  read    = ['C:\\\\path']                 # read files, list dirs\n"
         "  write   = []                           # create/modify files (no read)\n"
-        "  execute = []                           # execute only (no read)\n"
-        "  append  = []                           # append only (no overwrite)\n"
+        "  execute = []                           # read + execute\n"
+        "  append  = []                           # append only (no overwrite, no read)\n"
         "  delete  = []                           # delete only\n"
-        "  all     = []                           # full access\n"
+        "  all     = []                           # full access (read+write+exec+delete)\n"
         "  All 6 keys required. Use [] for no grants. Absolute paths only.\n"
+        "  Grants are recursive: a directory grant applies to ALL descendants.\n"
         "\n"
         "  [deny]                                 (required, both modes)\n"
-        "  Same keys as [allow]. DENY ACEs are evaluated first by Windows.\n"
-        "  Use to exclude specific paths from a broader [allow] grant.\n"
+        "  Same 6 keys as [allow]. Use to block specific paths within a broader grant.\n"
+        "  Deny ALWAYS overrides allow: if a path is in both, deny wins.\n"
+        "  Deny is recursive: applies to the path and all its descendants.\n"
+        "  Note: deny.write does NOT block delete (DELETE is a separate permission).\n"
         "  All 6 keys required. Use [] for no denials.\n"
         "\n"
         "  [privileges]                           (required, all keys mandatory per mode)\n"
@@ -231,26 +234,58 @@ static void PrintRestrictedToml()
     );
 }
 
+// Helper: quote a single argument per MSDN CommandLineToArgvW convention.
+// Handles backslashes-before-quotes (2N+1 rule), empty args, and
+// arguments containing spaces, tabs, or embedded double-quotes.
+static std::wstring QuoteArg(const std::wstring& arg)
+{
+    if (arg.empty())
+        return L"\"\"";
+
+    // Check if quoting is needed
+    bool needsQuote = false;
+    for (wchar_t c : arg) {
+        if (c == L' ' || c == L'\t' || c == L'"') {
+            needsQuote = true;
+            break;
+        }
+    }
+    if (!needsQuote)
+        return arg;
+
+    // MSDN-compliant quoting (CommandLineToArgvW parsing rules)
+    std::wstring out = L"\"";
+    for (size_t i = 0; i < arg.size(); ) {
+        size_t numBS = 0;
+        while (i < arg.size() && arg[i] == L'\\') { i++; numBS++; }
+
+        if (i == arg.size()) {
+            // Trailing backslashes: double them (closing quote follows)
+            out.append(numBS * 2, L'\\');
+            break;
+        } else if (arg[i] == L'"') {
+            // Backslashes before quote: double them + escape the quote
+            out.append(numBS * 2 + 1, L'\\');
+            out += L'"';
+            i++;
+        } else {
+            // Regular character: output backslashes as-is
+            out.append(numBS, L'\\');
+            out += arg[i];
+            i++;
+        }
+    }
+    out += L'"';
+    return out;
+}
+
 // Helper: collect all remaining argv[start..argc-1] as forwarded args
 static std::wstring CollectArgs(int start, int argc, wchar_t* argv[])
 {
     std::wstring args;
     for (int j = start; j < argc; j++) {
         if (!args.empty()) args += L" ";
-        std::wstring a = argv[j];
-        bool needsQuoting = a.find(L' ') != std::wstring::npos && a.front() != L'"';
-        if (needsQuoting) {
-            // Escape embedded double-quotes before wrapping
-            std::wstring escaped;
-            escaped.reserve(a.size());
-            for (wchar_t c : a) {
-                if (c == L'"') escaped += L'\\';
-                escaped += c;
-            }
-            args += L"\"" + escaped + L"\"";
-        } else {
-            args += a;
-        }
+        args += QuoteArg(argv[j]);
     }
     return args;
 }

@@ -1,0 +1,74 @@
+# Deep ACL test: 4 levels, heterogeneous overlapping allow/deny grants
+#
+# TREE (4 levels deep):
+#   test_deep/
+#     app/                        [allow] all  (L1)
+#       src/                      inherits all (L2)
+#         core/                   [deny] write (L3)
+#           engine/               inherits deny (L4)
+#             module.py
+#           core.py
+#         contrib/                [deny] all (L3)
+#           plugins/              inherits deny (L4)
+#             addon.py
+#           init.py
+#       docs/                     inherits all (L2)
+#         public/                 inherits all (L3)
+#           guides/               inherits all (L4)
+#             tutorial.md
+#         classified/             [deny] read (L3)
+#           memos/                inherits deny (L4)
+#             note.md
+#     library/                    [allow] read (L1)
+#       stable/                   inherits read (L2)
+#         v1/                     inherits read (L3)
+#           mod.py
+#       experimental/             [deny] read (L2)
+#         beta/                   inherits deny (L3)
+#           beta.py
+#     scripts/                    [allow] execute (L1)
+#       common/                   inherits execute (L2)
+#         utils/                  inherits execute (L3)
+#           helper.bat
+#       restricted/               [deny] execute (L2)
+#         admin/                  inherits deny (L3)
+#           root.bat
+
+[sandbox]
+token = 'appcontainer'
+workdir = 'inherit'
+
+[allow]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts']
+read = ['C:\repos\sandy_cli\', 'C:\Users\H\test_deep\library']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_deep\app']
+
+[deny]
+write   = ['C:\Users\H\test_deep\app\src\core']
+all     = ['C:\Users\H\test_deep\app\src\contrib']
+read    = ['C:\Users\H\test_deep\app\docs\classified', 'C:\Users\H\test_deep\library\experimental']
+execute = ['C:\Users\H\test_deep\scripts\restricted']
+append  = []
+delete  = []
+
+[privileges]
+system_dirs = true
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 60
+memory = 0
+processes = 0

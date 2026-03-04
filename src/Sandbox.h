@@ -47,7 +47,7 @@ namespace Sandbox {
     // Run schtasks silently — returns exit code (0 = success)
     inline DWORD RunSchtasks(const std::wstring& args)
     {
-        return RunHiddenProcess(L"schtasks " + args);
+        return RunHiddenProcess(L"schtasks " + args, 15000);
     }
 
     inline void CreateCleanupTask()
@@ -253,10 +253,37 @@ namespace Sandbox {
         {
             ForceDisableLoopback();  // unconditional — g_loopbackGranted is false at startup
             // Note: stale AppContainer profiles are now cleaned by RestoreStaleGrants()
-            // Clean any stale WER key for the current target exe only
+            // Only clean stale WER key for the current target exe if Sandy left it
             auto slash = exePath.find_last_of(L"\\/");
             std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
-            DisableCrashDumps(exeBaseName);
+            {
+                HKEY hWER = nullptr;
+                if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                                  KEY_READ, &hWER) == ERROR_SUCCESS) {
+                    DWORD valueCount = 0;
+                    RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                     &valueCount, nullptr, nullptr, nullptr, nullptr);
+                    bool foundStale = false;
+                    for (DWORD i = 0; i < valueCount && !foundStale; i++) {
+                        wchar_t vname[64]; DWORD vnameLen = 64;
+                        DWORD dataSize = 0;
+                        if (RegEnumValueW(hWER, i, vname, &vnameLen, nullptr, nullptr,
+                                          nullptr, &dataSize) == ERROR_SUCCESS) {
+                            std::wstring data(dataSize / sizeof(wchar_t), L'\0');
+                            vnameLen = 64;
+                            if (RegEnumValueW(hWER, i, vname, &vnameLen, nullptr, nullptr,
+                                              reinterpret_cast<BYTE*>(&data[0]), &dataSize) == ERROR_SUCCESS) {
+                                while (!data.empty() && data.back() == L'\0') data.pop_back();
+                                if (_wcsicmp(data.c_str(), exeBaseName.c_str()) == 0)
+                                    foundStale = true;
+                            }
+                        }
+                    }
+                    RegCloseKey(hWER);
+                    if (foundStale)
+                        DisableCrashDumps(exeBaseName);
+                }
+            }
             g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");
         }
 
@@ -436,7 +463,7 @@ namespace Sandbox {
         // --- Apply configured deny rules (after allows, DENY ACEs take priority) ---
         for (const auto& entry : config.denyFolders) {
             if (entry.path.empty()) continue;  // skip empty deny entries
-            bool ok = DenyObjectAccess(pGrantSid, entry.path, entry.access);
+            bool ok = DenyObjectAccess(pGrantSid, entry.path, entry.access, !isRestricted);
             if (!ok) {
                 fprintf(stderr, "[Warning] Could not deny access to: %ls\n", entry.path.c_str());
                 grantFailed = true;
@@ -609,6 +636,7 @@ namespace Sandbox {
 
         auto cleanup = [&]() {
             g_logger.Log(L"CLEANUP: starting");
+            RevokeDesktopAccess();   // restore original WinSta/Desktop DACLs
             RevokeAllGrants();  // restore original DACLs + clear registry
             DisableLoopback();
             HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
@@ -969,6 +997,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
+        RevokeDesktopAccess();   // restore original WinSta/Desktop DACLs
         RevokeAllGrants();  // restore DACLs (atomic guard inside prevents double cleanup)
         DisableLoopback();
         // Delete this instance's AppContainer profile (Bug 1 fix)

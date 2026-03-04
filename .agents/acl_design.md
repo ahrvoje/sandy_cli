@@ -75,17 +75,93 @@ Key points:
 - **Append** cannot overwrite existing data (no `FILE_WRITE_DATA`)
 - **Delete** cannot read or write file contents
 
-# DENY ACEs — AppContainer Limitation
+# DENY ACEs — Hybrid Approach (AppContainer vs Restricted)
 
-**DENY ACEs (`DENY_ACCESS`) are silently ignored by the kernel for AppContainer SIDs.**
-The DENY ACE is correctly placed in the DACL before the ALLOW ACE, but
-AppContainer access checks bypass standard deny-before-allow evaluation.
+**DENY ACEs (`DENY_ACCESS`) are silently ignored by the Windows kernel for
+AppContainer SIDs.** A DENY ACE placed before an ALLOW ACE in the DACL has
+no effect — AppContainer access checks bypass deny-before-allow evaluation.
 Restricted Token mode honors DENY ACEs normally.
 
-Sandy implements `[deny]` via `REVOKE_ACCESS` instead: after `[allow]` grants
-propagate to all children via `TreeSetNamedSecurityInfoW`, each `[deny]` entry
-strips the SID's ALLOW ACE from the target path. This works for both modes.
+Sandy uses a **mode-aware hybrid** in `DenyObjectAccess()`:
 
-**Semantic:** `REVOKE_ACCESS` removes the entire ACE — regardless of which deny
-key is used, the denied path loses **all** sandbox access (not just the specific
-permission). This is the correct behavior: exclude means fully exclude.
+### Restricted Token Mode
+Uses real `DENY_ACCESS` ACEs with the denied permission mask. The kernel
+evaluates DENY before ALLOW, so these work as expected.
+
+### AppContainer Mode
+DENY ACEs are useless. Instead, Sandy manually constructs a new DACL:
+1. Reads the existing DACL from the deny target path
+2. Enumerates all ACEs — copies non-SID ACEs to a new ACL
+3. Skips ALL ACEs for the AppContainer SID (both explicit and inherited)
+4. Adds a single new ALLOW ACE with `(existingMask & ~denyOnlyBits)`
+5. Applies with `PROTECTED_DACL_SECURITY_INFORMATION` to break inheritance
+
+Step 5 is critical: the parent grant's `TreeSetNamedSecurityInfoW` propagates
+an inheritable `(I)(OI)(CI)(F)` ACE to all children. Without breaking
+inheritance, Windows re-applies this inherited full-access ACE even after
+we replace the DACL, making the deny ineffective.
+
+For directories, `TreeSetNamedSecurityInfoW` with `TREE_SEC_INFO_RESET`
+propagates the protected DACL to all descendant files and folders.
+
+### Mask Math — denyOnlyBits
+
+```
+sharedBits = SYNCHRONIZE | FILE_READ_ATTRIBUTES | READ_CONTROL
+           | STANDARD_RIGHTS_READ | STANDARD_RIGHTS_WRITE
+           | STANDARD_RIGHTS_EXECUTE
+denyOnlyBits = denyMask & ~sharedBits
+reducedMask  = existingMask & ~denyOnlyBits
+```
+
+This is critical because deny masks (e.g. `FILE_GENERIC_WRITE`) share bits
+with read/execute (`SYNCHRONIZE`, `READ_CONTROL`, `FILE_READ_ATTRIBUTES`).
+Raw subtraction (`existing & ~denyMask`) destroys read access.
+
+### Tested Behavior (7 zones, 31 test cases, `test_acl_grants.bat`)
+
+| Zone | Grant | Deny | list | read | write | create | delete |
+|------|-------|------|------|------|-------|--------|--------|
+| workspace/src | all | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| workspace/build | all | write | ✅ | ✅ | ❌ | ❌ | ✅ |
+| workspace/secrets | all | all | ❌ | ❌ | ❌ | ❌ | ❌ |
+| data/public | read | — | ✅ | ✅ | ❌ | ❌ | ❌ |
+| data/private | read | read | ❌ | ❌ | ❌ | — | — |
+| logs | append | — | ❌ | ❌ | ❌ | — | — |
+| tools | execute | — | ✅ | ✅ | ❌ | ❌ | ❌ |
+
+### Deep Test (4 levels, 12 zones, 46+4 checks, `test_deep_acl.bat`)
+
+Tests deny inheritance from L3→L4, heterogeneous grant overlap, and post-exit cleanup.
+
+| Zone | Depth | Grant | Deny | list | read | write | create | delete |
+|------|-------|-------|------|------|------|-------|--------|--------|
+| app/src | L2 | all | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| app/src/core | L3 | all | write | ✅ | ✅ | ❌ | ❌ | ✅ |
+| app/src/core/engine | L4 | all | write *(inh)* | ✅ | ✅ | ❌ | ❌ | ✅ |
+| app/src/contrib | L3 | all | all | ❌ | ❌ | ❌ | — | ❌ |
+| app/src/contrib/plugins | L4 | all | all *(inh)* | ❌ | ❌ | ❌ | — | ❌ |
+| app/docs/public/guides | L4 | all | — | ✅ | ✅ | ✅ | — | ✅ |
+| app/docs/classified | L3 | all | read | ❌ | ❌ | ✅ | ✅ | ✅ |
+| app/docs/classified/memos | L4 | all | read *(inh)* | ❌ | ❌ | ✅ | — | ✅ |
+| library/stable/v1 | L3 | read | — | ✅ | ✅ | ❌ | — | — |
+| library/experimental/beta | L3 | read | read | ❌ | ❌ | — | — | — |
+| scripts/common/utils | L3 | exec | — | ✅ | ✅ | ❌ | — | — |
+| scripts/restricted/admin | L3 | exec | execute | ❌ | ❌ | — | — | — |
+
+Post-exit cleanup: ✅ No AppContainer SIDs on any tree, ✅ No registry grants.
+
+**Important:** `deny.write` does NOT block deletes. `DELETE` is a separate
+permission bit. Use `deny.delete` or `deny.all` to block deletion.
+
+### Regression Guards
+
+- **Never** use raw `DENY_ACCESS` for AppContainer — the kernel ignores it.
+- **Never** use `REVOKE_ACCESS` for deny — it can't remove inherited ACEs.
+- **Never** do `existingMask & ~denyMask` — destroys shared bits needed by reads.
+- **Always** use `PROTECTED_DACL_SECURITY_INFORMATION` on denied paths to break 
+  inheritance from parent grants.
+- **Always** use `TREE_SEC_INFO_RESET` (not `SET`) for deny's `TreeSet` to fully
+  replace DACLs including inherited entries.
+- **Always** manually construct the DACL (enumerate+copy+add) to handle both
+  explicit and inherited ACEs.

@@ -83,7 +83,7 @@ workdir = 'C:\projects'   # child working directory (default: sandy.exe folder)
 
 ### `[allow]` — File and folder grants
 
-Grant the sandboxed process access to specific files or folders. Paths are recursive for directories. Sandy modifies folder ACLs at launch and restores them on exit. Requires `WRITE_DAC` on each path (user-owned folders work without admin).
+Grant the sandboxed process access to specific files or folders. Sandy modifies folder ACLs at launch and restores them on exit. Requires `WRITE_DAC` on each path (user-owned folders work without admin).
 
 ```toml
 [allow]
@@ -99,13 +99,41 @@ all     = ['C:\workspace']
 |-----|--------------------|
 | `read` | Read files, list directories |
 | `write` | Create and modify files (no read) |
-| `execute` | Execute (no read) |
+| `execute` | Read + execute files, list directories |
 | `append` | Append only (no overwrite, no read) |
 | `delete` | Delete only |
 | `all` | Full access (read + write + execute + delete) |
 
 > [!IMPORTANT]
+> **Recursive propagation:** Directory grants apply to the path **and all its descendants** — every subdirectory and file underneath inherits the same access level.
+
+> [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
+
+### `[deny]` — Deny access to specific paths
+
+Block specific permissions on paths that would otherwise be granted by a broader `[allow]`. Uses the same 6 access keys as `[allow]`. All 6 keys are required (use `[]` for none).
+
+```toml
+[deny]
+read    = []
+write   = ['C:\workspace\src\core']         # block writes in core/ even though workspace has all
+execute = []
+append  = []
+delete  = []
+all     = ['C:\workspace\secrets']           # fully block secrets/ even though workspace has all
+```
+
+**Key behaviors:**
+
+- **Deny always wins.** If a path appears in both `[allow]` and `[deny]`, the deny takes priority. This is enforced regardless of the order they appear in the config.
+- **Deny is recursive.** A deny on a directory blocks the denied permissions on that directory **and all descendants** — subdirectories and files at every depth.
+- **Deny is surgical.** Only the specific permission type is blocked. For example, `deny.write` blocks writing and creating files, but `read`, `execute`, and `delete` remain allowed.
+- **`deny.write` does NOT block delete.** `DELETE` is a separate Windows permission from `WRITE`. To block deletion, use `deny.delete` or `deny.all`.
+- **`deny.read` blocks listing.** Denying read also blocks `os.listdir()` / `dir` because directory listing requires read-data permission.
+
+> [!TIP]
+> **Common pattern:** Grant `all` to a workspace root, then deny `write` on specific subdirectories to create read-only zones, or deny `all` on sensitive directories to fully block access.
 
 ### `[privileges]` — Permissions *(all keys mandatory)*
 

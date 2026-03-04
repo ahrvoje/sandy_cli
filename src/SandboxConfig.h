@@ -440,6 +440,51 @@ namespace Sandbox {
             }
         }
 
+        // --- Path validation (absolute paths, existence, deduplication) ---
+        if (!config.parseError) {
+            auto validatePaths = [&](const std::vector<FolderEntry>& entries, const wchar_t* section) {
+                std::set<std::wstring> seen;
+                for (const auto& e : entries) {
+                    if (e.path.empty()) continue;
+                    // Check absolute path (drive letter or UNC)
+                    bool isAbsolute = (e.path.size() >= 3 && e.path[1] == L':' && (e.path[2] == L'\\' || e.path[2] == L'/'));
+                    bool isUNC = (e.path.size() >= 2 && e.path[0] == L'\\' && e.path[1] == L'\\');
+                    if (!isAbsolute && !isUNC) {
+                        fprintf(stderr, "Error: '%ls' in [%ls] is not an absolute path. Use 'C:\\...' format.\n",
+                                e.path.c_str(), section);
+                        config.parseError = true;
+                    }
+                    // Warn on non-existent path
+                    if (GetFileAttributesW(e.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        fprintf(stderr, "Warning: Path does not exist: %ls (in [%ls])\n",
+                                e.path.c_str(), section);
+                    }
+                    // Detect duplicates within same section
+                    if (!seen.insert(e.path).second) {
+                        fprintf(stderr, "Warning: Duplicate path in [%ls]: %ls\n", section, e.path.c_str());
+                    }
+                }
+            };
+            validatePaths(config.folders, L"allow");
+            validatePaths(config.denyFolders, L"deny");
+
+            // Validate registry paths have proper prefix
+            for (const auto& key : config.registryRead) {
+                if (_wcsnicmp(key.c_str(), L"HKCU\\", 5) != 0 &&
+                    _wcsnicmp(key.c_str(), L"HKLM\\", 5) != 0) {
+                    fprintf(stderr, "Error: Registry path must start with 'HKCU\\' or 'HKLM\\': %ls\n", key.c_str());
+                    config.parseError = true;
+                }
+            }
+            for (const auto& key : config.registryWrite) {
+                if (_wcsnicmp(key.c_str(), L"HKCU\\", 5) != 0 &&
+                    _wcsnicmp(key.c_str(), L"HKLM\\", 5) != 0) {
+                    fprintf(stderr, "Error: Registry path must start with 'HKCU\\' or 'HKLM\\': %ls\n", key.c_str());
+                    config.parseError = true;
+                }
+            }
+        }
+
         return config;
     }
 

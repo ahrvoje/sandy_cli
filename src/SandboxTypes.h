@@ -122,6 +122,7 @@ namespace Sandbox {
     struct SandyLogger {
         std::wstring logFilePath;
         bool active = false;
+        SRWLOCK lock = SRWLOCK_INIT;
 
         // ISO 8601 timestamp with millisecond precision (UTC)
         static std::wstring Timestamp() {
@@ -134,10 +135,22 @@ namespace Sandbox {
             return buf;
         }
 
-        bool Start(const std::wstring& logPath) {
+        // Open file with retry (3 attempts, 50ms between retries)
+        FILE* OpenRetry(const wchar_t* path, const wchar_t* mode) {
             FILE* f = nullptr;
-            _wfopen_s(&f, logPath.c_str(), L"w");
+            for (int attempt = 0; attempt < 3; attempt++) {
+                _wfopen_s(&f, path, mode);
+                if (f) return f;
+                if (attempt < 2) Sleep(50);
+            }
+            return nullptr;
+        }
+
+        bool Start(const std::wstring& logPath) {
+            AcquireSRWLockExclusive(&lock);
+            FILE* f = OpenRetry(logPath.c_str(), L"w");
             if (!f) {
+                ReleaseSRWLockExclusive(&lock);
                 fprintf(stderr, "[Warning] Could not create log file: %ls\n", logPath.c_str());
                 return false;
             }
@@ -145,15 +158,16 @@ namespace Sandbox {
             fclose(f);
             logFilePath = logPath;
             active = true;
+            ReleaseSRWLockExclusive(&lock);
             return true;
         }
 
         void LogConfig(const SandboxConfig& config, const std::wstring& exe,
                        const std::wstring& args) {
             if (!active) return;
-            FILE* f = nullptr;
-            _wfopen_s(&f, logFilePath.c_str(), L"a");
-            if (!f) return;
+            AcquireSRWLockExclusive(&lock);
+            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
+            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
             fwprintf(f, L"[%s] --- Configuration ---\n", ts.c_str());
             fwprintf(f, L"[%s] Executable: %s\n", ts.c_str(), exe.c_str());
@@ -184,31 +198,34 @@ namespace Sandbox {
 
             fwprintf(f, L"[%s] --- Process Output ---\n", ts.c_str());
             fclose(f);
+            ReleaseSRWLockExclusive(&lock);
         }
 
         void LogOutput(const char* data, DWORD len) {
             if (!active || !data || len == 0) return;
-            FILE* f = nullptr;
-            _wfopen_s(&f, logFilePath.c_str(), L"ab");
-            if (!f) return;
+            AcquireSRWLockExclusive(&lock);
+            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
+            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             fwrite(data, 1, len, f);
             fclose(f);
+            ReleaseSRWLockExclusive(&lock);
         }
 
         void Log(const wchar_t* msg) {
             if (!active) return;
-            FILE* f = nullptr;
-            _wfopen_s(&f, logFilePath.c_str(), L"a");
-            if (!f) return;
+            AcquireSRWLockExclusive(&lock);
+            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
+            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             fwprintf(f, L"[%s] %s\n", Timestamp().c_str(), msg);
             fclose(f);
+            ReleaseSRWLockExclusive(&lock);
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
             if (!active) return;
-            FILE* f = nullptr;
-            _wfopen_s(&f, logFilePath.c_str(), L"a");
-            if (!f) return;
+            AcquireSRWLockExclusive(&lock);
+            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
+            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
             fwprintf(f, L"[%s] --- Process Exit ---\n", ts.c_str());
             if (timedOut)
@@ -216,6 +233,7 @@ namespace Sandbox {
             fwprintf(f, L"[%s] Exit code: %ld (0x%08X)\n", ts.c_str(), (long)exitCode, exitCode);
             fwprintf(f, L"[%s] === Log end ===\n", ts.c_str());
             fclose(f);
+            ReleaseSRWLockExclusive(&lock);
         }
 
         bool IsActive() const { return active; }
