@@ -20,7 +20,7 @@ REM ===================================================================
 REM Test 1: --cleanup exits cleanly with no stale state
 REM ===================================================================
 echo --- Test 1: --cleanup with no stale state ---
-"!SANDY!" --cleanup 2>nul
+"!SANDY!" --cleanup >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] --cleanup returns exit code 0
     set /a PASS+=1

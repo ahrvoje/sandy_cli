@@ -313,9 +313,9 @@ static int HandleStatus()
                 RegCloseKey(hSub);
             }
             if (Sandbox::IsProcessAlive(pid, ctime))
-                fprintf(stderr, "  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
+                printf("  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
             else
-                fprintf(stderr, "  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
+                printf("  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
             found = true;
         }
         RegCloseKey(hGrants);
@@ -345,9 +345,9 @@ static int HandleStatus()
             HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
             if (h) {
                 CloseHandle(h);
-                fprintf(stderr, "  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
+                printf("  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
             } else {
-                fprintf(stderr, "  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
+                printf("  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
             }
             found = true;
         }
@@ -358,18 +358,18 @@ static int HandleStatus()
     bool taskExists = (Sandbox::RunHiddenProcess(
         L"schtasks.exe /Query /TN \"SandyCleanup\"") == 0);
     if (taskExists) {
-        fprintf(stderr, "  [TASK]    SandyCleanup scheduled task exists\n");
+        printf("  [TASK]    SandyCleanup scheduled task exists\n");
         found = true;
     }
 
     // Check Windows AppContainer Mappings for Sandy_ profiles
     for (const auto& m : EnumSandyProfiles()) {
-        fprintf(stderr, "  [PROFILE] %ls\n", m.c_str());
+        printf("  [PROFILE] %ls\n", m.c_str());
         found = true;
     }
 
     if (!found)
-        fprintf(stderr, "Sandy - no active instances or stale state.\n");
+        printf("Sandy - no active instances or stale state.\n");
     return 0;
 }
 
@@ -386,14 +386,16 @@ static int HandleCleanup()
     // Clean orphaned Sandy AppContainer profiles from Windows Mappings
     auto orphans = EnumSandyProfiles();
     if (!orphans.empty())
-        fprintf(stderr, "  Cleaning %zu orphaned AppContainer profile(s)...\n",
+        printf("  Cleaning %zu orphaned AppContainer profile(s)...\n",
                 orphans.size());
     for (const auto& m : orphans) {
         HRESULT hr = DeleteAppContainerProfile(m.c_str());
-        fprintf(stderr, "  [PROFILE] %ls -> %s\n", m.c_str(),
-                SUCCEEDED(hr) ? "deleted" : "FAILED");
+        if (SUCCEEDED(hr))
+            printf("  [PROFILE] %ls -> deleted\n", m.c_str());
+        else
+            fprintf(stderr, "  [PROFILE] %ls -> FAILED\n", m.c_str());
     }
-    fprintf(stderr, "Sandy - cleanup complete.\n");
+    printf("Sandy - cleanup complete.\n");
     return 0;
 }
 
@@ -412,32 +414,51 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring exeArgs;
     bool quiet = false;
 
+    // --- Pre-scan for isolated flags ---
+    // These flags must appear alone (with no other options).
+    // They write informational output to stdout/stderr and exit immediately.
+    for (int i = 1; i < argc; i++) {
+        std::wstring arg = argv[i];
+        bool isIsolated = (arg == L"-v" || arg == L"--version" ||
+                           arg == L"-h" || arg == L"--help" ||
+                           arg == L"--status" || arg == L"--cleanup" ||
+                           arg == L"--print-container-toml" ||
+                           arg == L"--print-restricted-toml");
+        if (isIsolated) {
+            if (argc > 2) {
+                fprintf(stderr, "Error: %ls must be used alone, without other options.\n",
+                        arg.c_str());
+                return 1;
+            }
+            if (arg == L"-v" || arg == L"--version") {
+                printf("sandy v%s\n", kVersion);
+                return 0;
+            }
+            if (arg == L"-h" || arg == L"--help") {
+                PrintUsage();
+                return 0;
+            }
+            if (arg == L"--print-container-toml") {
+                PrintContainerToml();
+                return 0;
+            }
+            if (arg == L"--print-restricted-toml") {
+                PrintRestrictedToml();
+                return 0;
+            }
+            if (arg == L"--status") {
+                return HandleStatus();
+            }
+            if (arg == L"--cleanup") {
+                return HandleCleanup();
+            }
+        }
+    }
+
     // --- Parse command-line arguments ---
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
 
-        if (arg == L"-v" || arg == L"--version") {
-            printf("sandy v%s\n", kVersion);
-            return 0;
-        }
-        if (arg == L"-h" || arg == L"--help") {
-            PrintUsage();
-            return 0;
-        }
-        if (arg == L"--print-container-toml") {
-            PrintContainerToml();
-            return 0;
-        }
-        if (arg == L"--print-restricted-toml") {
-            PrintRestrictedToml();
-            return 0;
-        }
-        if (arg == L"--status") {
-            return HandleStatus();
-        }
-        if (arg == L"--cleanup") {
-            return HandleCleanup();
-        }
         if (arg == L"-q" || arg == L"--quiet") {
             quiet = true;
         }

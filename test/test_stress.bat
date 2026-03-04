@@ -144,7 +144,7 @@ echo === Phase 3: Mid-flight checks ===
 ping -n 2 127.0.0.1 >nul
 
 echo [3.1] Status check (should show active instances):
-"!SANDY!" --status 2>"%TEMP%\sandy_stress_status.txt"
+"!SANDY!" --status >"%TEMP%\sandy_stress_status.txt"
 type "%TEMP%\sandy_stress_status.txt"
 echo.
 
@@ -210,7 +210,7 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM 5.3: No Sandy AppContainer profiles should remain
-"!SANDY!" --status 2>"%TEMP%\sandy_stress_final.txt"
+"!SANDY!" --status >"%TEMP%\sandy_stress_final.txt"
 
 findstr /c:"ACTIVE" "%TEMP%\sandy_stress_final.txt" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (

@@ -463,7 +463,7 @@ if !REMAIN! EQU 0 (
 )
 
 REM 5d: No orphaned profiles
-"!SANDY!" --status 2>"%TEMP%\sandy_kill_s5.txt"
+"!SANDY!" --status >"%TEMP%\sandy_kill_s5.txt"
 findstr /c:"PROFILE" "%TEMP%\sandy_kill_s5.txt" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] S5: No orphaned AppContainer profiles
@@ -566,7 +566,7 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM F2: No orphaned profiles
-"!SANDY!" --status 2>"%TEMP%\sandy_kill_final.txt"
+"!SANDY!" --status >"%TEMP%\sandy_kill_final.txt"
 findstr /c:"PROFILE" "%TEMP%\sandy_kill_final.txt" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No orphaned AppContainer profiles
