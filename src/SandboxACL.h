@@ -42,6 +42,7 @@ namespace Sandbox {
         std::wstring path;
         SE_OBJECT_TYPE objType;
         std::wstring originalSDDL;
+        BYTE objectId[16] = {};  // NTFS Object ID for rename-resilient cleanup
     };
     inline std::vector<ACLGrant> g_aclGrants;
     inline SRWLOCK g_aclGrantsLock = SRWLOCK_INIT;
@@ -207,6 +208,31 @@ namespace Sandbox {
         nextIdx++;
         RegSetValueExW(hKey, L"_nextIdx", 0, REG_DWORD,
                        reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx));
+
+        // Stamp NTFS Object ID for rename-resilient cleanup.
+        // If the sandboxed process renames a granted path, the Object ID
+        // follows the inode and lets us find it during cleanup.
+        if (objType == SE_FILE_OBJECT) {
+            HANDLE hFile = CreateFileW(path.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                FILE_OBJECTID_BUFFER oidBuf = {};
+                DWORD bytes = 0;
+                if (DeviceIoControl(hFile, FSCTL_CREATE_OR_GET_OBJECT_ID,
+                        nullptr, 0, &oidBuf, sizeof(oidBuf), &bytes, nullptr)) {
+                    wchar_t oidName[32];
+                    swprintf(oidName, 32, L"_oid_%lu", nextIdx - 1);
+                    RegSetValueExW(hKey, oidName, 0, REG_BINARY,
+                                   oidBuf.ObjectId, 16);
+                    g_logger.Log((L"OID_STAMP: " + path).c_str());
+                }
+                CloseHandle(hFile);
+            }
+        }
+
         RegCloseKey(hKey);
 
         g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(nextIdx - 1) + L"] " + data).c_str());
@@ -282,6 +308,20 @@ namespace Sandbox {
                 AcquireSRWLockExclusive(&g_aclGrantsLock);
                 PersistGrant(path, objType, origSddl);
                 g_aclGrants.push_back({ path, objType, origSddl });
+                // Stamp NTFS Object ID into in-memory entry for rename-resilient cleanup
+                if (objType == SE_FILE_OBJECT) {
+                    HANDLE hOid = CreateFileW(path.c_str(), GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                    if (hOid != INVALID_HANDLE_VALUE) {
+                        FILE_OBJECTID_BUFFER ob = {};
+                        DWORD b = 0;
+                        if (DeviceIoControl(hOid, FSCTL_CREATE_OR_GET_OBJECT_ID,
+                                nullptr, 0, &ob, sizeof(ob), &b, nullptr))
+                            memcpy(g_aclGrants.back().objectId, ob.ObjectId, 16);
+                        CloseHandle(hOid);
+                    }
+                }
                 ReleaseSRWLockExclusive(&g_aclGrantsLock);
                 LocalFree(origSddl);
             }
@@ -364,6 +404,20 @@ namespace Sandbox {
                 AcquireSRWLockExclusive(&g_aclGrantsLock);
                 PersistGrant(path, objType, origSddl);
                 g_aclGrants.push_back({ path, objType, origSddl });
+                // Stamp NTFS Object ID for rename-resilient cleanup
+                if (objType == SE_FILE_OBJECT) {
+                    HANDLE hOid = CreateFileW(path.c_str(), GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+                    if (hOid != INVALID_HANDLE_VALUE) {
+                        FILE_OBJECTID_BUFFER ob = {};
+                        DWORD b = 0;
+                        if (DeviceIoControl(hOid, FSCTL_CREATE_OR_GET_OBJECT_ID,
+                                nullptr, 0, &ob, sizeof(ob), &b, nullptr))
+                            memcpy(g_aclGrants.back().objectId, ob.ObjectId, 16);
+                        CloseHandle(hOid);
+                    }
+                }
                 ReleaseSRWLockExclusive(&g_aclGrantsLock);
                 LocalFree(origSddl);
             }
@@ -527,12 +581,80 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Resolve a path via NTFS Object ID if the original path is gone.
+    // Returns the new path if found, or empty string if not resolvable.
+    // -----------------------------------------------------------------------
+    inline std::wstring ResolveByObjectId(const std::wstring& originalPath,
+                                          const BYTE objectId[16])
+    {
+        // Check if OID is all zeros (not stamped)
+        bool hasOid = false;
+        for (int i = 0; i < 16; i++) {
+            if (objectId[i] != 0) { hasOid = true; break; }
+        }
+        if (!hasOid) return {};
+
+        // Extract volume root from original path (e.g. "C:" from "C:\Users\...")
+        if (originalPath.size() < 2 || originalPath[1] != L':') return {};
+        std::wstring volPath = L"\\\\.\\" + originalPath.substr(0, 2);
+
+        HANDLE hVol = CreateFileW(volPath.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hVol == INVALID_HANDLE_VALUE) return {};
+
+        FILE_ID_DESCRIPTOR fid = {};
+        fid.dwSize = sizeof(fid);
+        fid.Type = ObjectIdType;
+        memcpy(&fid.ObjectId, objectId, 16);
+
+        HANDLE hFile = OpenFileById(hVol, &fid,
+            GENERIC_READ | WRITE_DAC,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, FILE_FLAG_BACKUP_SEMANTICS);
+        CloseHandle(hVol);
+
+        if (hFile == INVALID_HANDLE_VALUE) return {};
+
+        wchar_t newPath[1024] = {};
+        DWORD len = GetFinalPathNameByHandleW(hFile, newPath, 1024, 0);
+        CloseHandle(hFile);
+
+        if (len == 0 || len >= 1024) return {};
+
+        // GetFinalPathNameByHandle returns \\?\C:\... — strip the \\?\ prefix
+        std::wstring result = newPath;
+        if (result.substr(0, 4) == L"\\\\?\\")
+            result = result.substr(4);
+
+        g_logger.Log((L"OID_RESOLVE: " + originalPath + L" -> " + result).c_str());
+        return result;
+    }
+
+    // -----------------------------------------------------------------------
     // Restore a single object's DACL from its saved SDDL string.
     // Uses TreeSetNamedSecurityInfo for directories to propagate to children.
+    // Falls back to NTFS Object ID lookup if path has been renamed.
     // -----------------------------------------------------------------------
     inline void RestoreDacl(const std::wstring& path, const std::wstring& sddl,
-                            SE_OBJECT_TYPE objType)
+                            SE_OBJECT_TYPE objType,
+                            const BYTE objectId[16] = nullptr)
     {
+        std::wstring resolvedPath = path;
+
+        // If the original path no longer exists, try to find it by Object ID
+        if (objType == SE_FILE_OBJECT &&
+            GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            objectId != nullptr) {
+            std::wstring newPath = ResolveByObjectId(path, objectId);
+            if (!newPath.empty()) {
+                resolvedPath = newPath;
+            } else {
+                g_logger.Log((L"ACL_RESTORE_SKIP: path gone, OID not found: " + path).c_str());
+                return;
+            }
+        }
+
         PSECURITY_DESCRIPTOR pSD = nullptr;
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 sddl.c_str(), SDDL_REVISION_1, &pSD, nullptr))
@@ -541,21 +663,21 @@ namespace Sandbox {
         BOOL present = FALSE, defaulted = FALSE;
         PACL pDacl = nullptr;
         if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-            DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+            DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(resolvedPath.c_str()) : 0;
             bool isDir = (objType == SE_FILE_OBJECT)
                          && (attrs != INVALID_FILE_ATTRIBUTES)
                          && (attrs & FILE_ATTRIBUTE_DIRECTORY);
             if (isDir) {
                 TreeSetNamedSecurityInfoW(
-                    const_cast<LPWSTR>(path.c_str()), objType,
+                    const_cast<LPWSTR>(resolvedPath.c_str()), objType,
                     DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
                     TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
             } else {
                 SetNamedSecurityInfoW(
-                    const_cast<LPWSTR>(path.c_str()), objType,
+                    const_cast<LPWSTR>(resolvedPath.c_str()), objType,
                     DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
             }
-            g_logger.Log((L"ACL_RESTORE: " + path).c_str());
+            g_logger.Log((L"ACL_RESTORE: " + resolvedPath).c_str());
         }
         LocalFree(pSD);
     }
@@ -593,8 +715,14 @@ namespace Sandbox {
                 continue;
             }
 
+            // Look up stored NTFS Object ID for rename-resilient restore
+            BYTE oid[16] = {};
+            std::wstring oidName = L"_oid_" + vname;
+            DWORD oidSize = 16;
+            RegQueryValueExW(hKey, oidName.c_str(), nullptr, nullptr, oid, &oidSize);
+
             SE_OBJECT_TYPE objType = (typeStr == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-            RestoreDacl(path, sddl, objType);
+            RestoreDacl(path, sddl, objType, oid);
         }
     }
 
@@ -691,7 +819,7 @@ namespace Sandbox {
                 g_logger.Log((L"ACL_SKIP: " + it->path + L" (other instance active)").c_str());
                 continue;
             }
-            RestoreDacl(it->path, it->originalSDDL, it->objType);
+            RestoreDacl(it->path, it->originalSDDL, it->objType, it->objectId);
         }
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);

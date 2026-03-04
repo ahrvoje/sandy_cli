@@ -23,5 +23,6 @@
 #include <userenv.h>
 #include <sddl.h>
 #include <aclapi.h>
+#include <winioctl.h>
 
 #pragma comment(lib, "userenv.lib")
