@@ -1043,11 +1043,11 @@ namespace Sandbox {
         // --- Required config ---
         fprintf(out, "--- Required Config ---\n");
         if (!r.readDirs.empty()) {
-            fprintf(out, "  [access] read:\n");
+            fprintf(out, "  [allow] read:\n");
             for (const auto& d : r.readDirs) fprintf(out, "    %s\n", d.c_str());
         }
         if (!r.writeDirs.empty()) {
-            fprintf(out, "  [access] write:\n");
+            fprintf(out, "  [allow] write:\n");
             for (const auto& d : r.writeDirs) fprintf(out, "    %s\n", d.c_str());
         }
         if (r.needsSystemDirs) fprintf(out, "  system_dirs = true\n");
@@ -1085,7 +1085,7 @@ namespace Sandbox {
                 fprintf(out, "]\n");
             }
         };
-        fprintf(out, "\n[access]\n");
+        fprintf(out, "\n[allow]\n");
         printPathList("read", r.readDirs);
         printPathList("write", r.writeDirs);
         fprintf(out, "execute = []\n");
@@ -1094,7 +1094,7 @@ namespace Sandbox {
         fprintf(out, "all = []\n");
 
         // Allow section — all mandatory keys for selected mode
-        fprintf(out, "\n[allow]\n");
+        fprintf(out, "\n[privileges]\n");
         if (appcontainerOK) {
             fprintf(out, "system_dirs = %s\n", r.needsSystemDirs ? "true" : "false");
             fprintf(out, "network = %s\n", r.usesNetwork ? "true" : "false");

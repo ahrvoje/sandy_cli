@@ -5,7 +5,7 @@
 #   sandy_config_restricted.toml    — Restricted Token mode
 #
 # All sandbox settings are defined here.
-# All [allow] keys are mandatory and must be set explicitly.
+# All [privileges] keys are mandatory and must be set explicitly.
 
 # ============================================================
 # SANDBOX MODE (required)
@@ -22,7 +22,7 @@ workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
-[access]
+[allow]
 read = []
 # read = [
 #     'C:\data\config.json',          # single file
@@ -40,7 +40,15 @@ all = []
 # AppContainer: system_dirs, network, localhost, lan, stdin, clipboard_read, clipboard_write, child_processes
 # Restricted:   named_pipes, stdin, clipboard_read, clipboard_write, child_processes
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
 network = false      # outbound internet access            (appcontainer only)
 localhost = false    # loopback connections (admin required) (appcontainer only)

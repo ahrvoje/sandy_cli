@@ -70,7 +70,8 @@ namespace Sandbox {
         // Reject unknown sections
         for (const auto& [name, section] : doc) {
             if (!name.empty() &&
-                name != L"sandbox" && name != L"access" && name != L"allow" &&
+                name != L"sandbox" && name != L"allow" && name != L"deny" &&
+                name != L"privileges" &&
                 name != L"registry" && name != L"environment" && name != L"limit")
             {
                 fprintf(stderr, "Error: Unknown config section: [%ls]\n", name.c_str());
@@ -112,29 +113,58 @@ namespace Sandbox {
             }
         }
 
-        // --- [access] ---
-        std::set<std::wstring> accessSeen;
+        // --- [allow] — file/folder ALLOW ACEs ---
+        std::set<std::wstring> allowSeen;
         {
-            auto sit = doc.find(L"access");
+            auto sit = doc.find(L"allow");
             if (sit != doc.end()) {
-                static const std::map<std::wstring, AccessLevel> accessKeys = {
+                static const std::map<std::wstring, AccessLevel> allowKeys = {
                     {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
                     {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
                     {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All}
                 };
                 for (const auto& [key, val] : sit->second) {
-                    auto it = accessKeys.find(key);
-                    if (it == accessKeys.end()) {
-                        fprintf(stderr, "Error: Unknown key in [access]: %ls\n", key.c_str());
+                    auto it = allowKeys.find(key);
+                    if (it == allowKeys.end()) {
+                        fprintf(stderr, "Error: Unknown key in [allow]: %ls\n", key.c_str());
                         config.parseError = true;
                         continue;
                     }
                     if (val.isArray) {
-                        accessSeen.insert(key);
+                        allowSeen.insert(key);
                         for (size_t i = 0; i < val.arr.size(); i++)
                             config.folders.push_back({ val.arr[i], it->second });
                     } else {
-                        fprintf(stderr, "Error: '%ls' in [access] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str());
+                        fprintf(stderr, "Error: '%ls' in [allow] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str());
+                        config.parseError = true;
+                    }
+                }
+            }
+        }
+
+        // --- [deny] — file/folder DENY ACEs (mandatory, all 6 keys) ---
+        std::set<std::wstring> denySeen;
+        {
+            auto sit = doc.find(L"deny");
+            if (sit != doc.end()) {
+                static const std::map<std::wstring, AccessLevel> denyKeys = {
+                    {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
+                    {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
+                    {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All}
+                };
+                for (const auto& [key, val] : sit->second) {
+                    auto it = denyKeys.find(key);
+                    if (it == denyKeys.end()) {
+                        fprintf(stderr, "Error: Unknown key in [deny]: %ls\n", key.c_str());
+                        config.parseError = true;
+                        continue;
+                    }
+                    if (val.isArray) {
+                        denySeen.insert(key);
+                        for (size_t i = 0; i < val.arr.size(); i++)
+                            config.denyFolders.push_back({ val.arr[i], it->second });
+                    } else {
+                        fprintf(stderr, "Error: '%ls' in [deny] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str());
                         config.parseError = true;
                     }
                 }
@@ -164,15 +194,15 @@ namespace Sandbox {
             }
         }
 
-        // --- [allow] ---
-        std::set<std::wstring> allowSeen;
+        // --- [privileges] — sandbox capabilities ---
+        std::set<std::wstring> privSeen;
         {
-            auto sit = doc.find(L"allow");
+            auto sit = doc.find(L"privileges");
             if (sit != doc.end()) {
                 // Helper: validate boolean value is exactly 'true' or 'false'
                 auto requireBool = [&](const std::wstring& key, const std::wstring& val) -> bool {
                     if (val != L"true" && val != L"false") {
-                        fprintf(stderr, "Error: '%ls' in [allow] must be 'true' or 'false', got '%ls'.\n", key.c_str(), val.c_str());
+                        fprintf(stderr, "Error: '%ls' in [privileges] must be 'true' or 'false', got '%ls'.\n", key.c_str(), val.c_str());
                         config.parseError = true;
                         return false;
                     }
@@ -180,7 +210,7 @@ namespace Sandbox {
                 };
                 for (const auto& [key, valObj] : sit->second) {
                     const std::wstring& valStr = valObj.str;
-                    allowSeen.insert(key);
+                    privSeen.insert(key);
                     if (key == L"stdin") {
                         // true = inherit, false = NUL, anything else = file path
                         if (valStr == L"true")
@@ -207,7 +237,7 @@ namespace Sandbox {
                         }
                     }
                     else {
-                        fprintf(stderr, "Error: Unknown key in [allow]: %ls\n", key.c_str());
+                        fprintf(stderr, "Error: Unknown key in [privileges]: %ls\n", key.c_str());
                         config.parseError = true;
                     }
                 }
@@ -284,44 +314,44 @@ namespace Sandbox {
 
             if (isRT) {
                 // Reject wrong-mode keys by presence, not value
-                if (allowSeen.count(L"network"))     { fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");   config.parseError = true; }
-                if (allowSeen.count(L"localhost"))   { fprintf(stderr, "Error: 'localhost' is not available in restricted mode (network is always unrestricted).\n"); config.parseError = true; }
-                if (allowSeen.count(L"lan"))         { fprintf(stderr, "Error: 'lan' is not available in restricted mode (network is always unrestricted).\n");       config.parseError = true; }
-                if (allowSeen.count(L"system_dirs")) { fprintf(stderr, "Error: 'system_dirs' is not available in restricted mode (system dirs are always readable).\n"); config.parseError = true; }
+                if (privSeen.count(L"network"))     { fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");   config.parseError = true; }
+                if (privSeen.count(L"localhost"))   { fprintf(stderr, "Error: 'localhost' is not available in restricted mode (network is always unrestricted).\n"); config.parseError = true; }
+                if (privSeen.count(L"lan"))         { fprintf(stderr, "Error: 'lan' is not available in restricted mode (network is always unrestricted).\n");       config.parseError = true; }
+                if (privSeen.count(L"system_dirs")) { fprintf(stderr, "Error: 'system_dirs' is not available in restricted mode (system dirs are always readable).\n"); config.parseError = true; }
                 if (!integritySeen)                  { fprintf(stderr, "Error: 'integrity' is required in [sandbox] for restricted mode ('low' or 'medium').\n"); config.parseError = true; }
             }
 
             if (isAC) {
                 // Reject wrong-mode keys by presence, not value
-                if (allowSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
+                if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
                 if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
                 if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
             }
 
             // --- Mandatory keys (no optional settings) ---
-            auto requireKey = [&](const wchar_t* key, const wchar_t* section) {
-                if (allowSeen.find(key) == allowSeen.end()) {
+            auto requireKey = [&](const wchar_t* key, const wchar_t* section, const std::set<std::wstring>& seen) {
+                if (seen.find(key) == seen.end()) {
                     fprintf(stderr, "Error: '%ls' is required in [%ls]. All settings must be explicit.\n", key, section);
                     config.parseError = true;
                 }
             };
 
-            // Mode-specific mandatory [allow] keys
+            // Mode-specific mandatory [privileges] keys
             if (isAC) {
-                requireKey(L"system_dirs", L"allow");
-                requireKey(L"network", L"allow");
-                requireKey(L"localhost", L"allow");
-                requireKey(L"lan", L"allow");
+                requireKey(L"system_dirs", L"privileges", privSeen);
+                requireKey(L"network", L"privileges", privSeen);
+                requireKey(L"localhost", L"privileges", privSeen);
+                requireKey(L"lan", L"privileges", privSeen);
             }
             if (isRT) {
-                requireKey(L"named_pipes", L"allow");
+                requireKey(L"named_pipes", L"privileges", privSeen);
             }
 
-            // Common mandatory [allow] keys
-            requireKey(L"stdin", L"allow");
-            requireKey(L"clipboard_read", L"allow");
-            requireKey(L"clipboard_write", L"allow");
-            requireKey(L"child_processes", L"allow");
+            // Common mandatory [privileges] keys
+            requireKey(L"stdin", L"privileges", privSeen);
+            requireKey(L"clipboard_read", L"privileges", privSeen);
+            requireKey(L"clipboard_write", L"privileges", privSeen);
+            requireKey(L"child_processes", L"privileges", privSeen);
 
             // [environment] inherit + pass are mandatory
             if (!inheritSeen) {
@@ -339,18 +369,38 @@ namespace Sandbox {
                 config.parseError = true;
             }
 
-            // [access] section + all 6 keys mandatory
-            if (doc.find(L"access") == doc.end()) {
-                fprintf(stderr, "Error: [access] section is required. Use empty arrays [] for no grants.\n");
+            // [allow] section + all 6 keys mandatory
+            if (doc.find(L"allow") == doc.end()) {
+                fprintf(stderr, "Error: [allow] section is required. Use empty arrays [] for no grants.\n");
                 config.parseError = true;
             } else {
-                static const wchar_t* accessKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
-                for (auto ak : accessKeys) {
-                    if (accessSeen.find(ak) == accessSeen.end()) {
-                        fprintf(stderr, "Error: '%ls' is required in [access]. Use %ls = [] for no grants.\n", ak, ak);
+                static const wchar_t* allowAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
+                for (auto ak : allowAclKeys) {
+                    if (allowSeen.find(ak) == allowSeen.end()) {
+                        fprintf(stderr, "Error: '%ls' is required in [allow]. Use %ls = [] for no grants.\n", ak, ak);
                         config.parseError = true;
                     }
                 }
+            }
+
+            // [deny] section + all 6 keys mandatory
+            if (doc.find(L"deny") == doc.end()) {
+                fprintf(stderr, "Error: [deny] section is required. Use empty arrays [] for no denials.\n");
+                config.parseError = true;
+            } else {
+                static const wchar_t* denyAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
+                for (auto dk : denyAclKeys) {
+                    if (denySeen.find(dk) == denySeen.end()) {
+                        fprintf(stderr, "Error: '%ls' is required in [deny]. Use %ls = [] for no denials.\n", dk, dk);
+                        config.parseError = true;
+                    }
+                }
+            }
+
+            // [privileges] section is mandatory
+            if (doc.find(L"privileges") == doc.end()) {
+                fprintf(stderr, "Error: [privileges] section is required. All capability settings must be explicit.\n");
+                config.parseError = true;
             }
 
             // [registry] section + both keys mandatory (restricted only)

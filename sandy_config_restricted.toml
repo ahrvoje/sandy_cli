@@ -22,7 +22,7 @@ workdir = 'inherit'      # required: absolute path or 'inherit' (= exe folder)
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
-[access]
+[allow]
 read = []
 write = []
 execute = []
@@ -35,7 +35,15 @@ all = []
 # ============================================================
 # Every key must be explicitly set. Omitting a key is a parse error.
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 named_pipes     = false   # allow named pipe creation (CreateNamedPipeW)
 stdin           = false   # true = inherit, false = disabled (NUL), or a file path
 clipboard_read  = false   # allow reading from clipboard

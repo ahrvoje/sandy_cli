@@ -3,7 +3,7 @@
 token = 'appcontainer'
 workdir = 'inherit'
 
-[access]
+[allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\repos\sandy_cli\']
 write = []
@@ -11,7 +11,15 @@ append = []
 delete = []
 all = ['C:\Users\H\test_kill_A', 'C:\Users\H\test_kill_B']
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs = true
 network = false
 localhost = false

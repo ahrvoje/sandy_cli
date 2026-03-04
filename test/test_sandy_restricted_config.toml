@@ -6,7 +6,7 @@ token = 'restricted'
 integrity = 'medium'
 workdir = 'inherit'
 
-[access]
+[allow]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\repos\sandy_cli\',
@@ -26,7 +26,15 @@ all = [
     'C:\Users\H\test_file_RW.txt',
 ]
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 named_pipes = false
 stdin = false
 clipboard_read = false

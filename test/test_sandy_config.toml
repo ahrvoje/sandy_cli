@@ -5,7 +5,7 @@
 token = 'appcontainer'
 workdir = 'inherit'
 
-[access]
+[allow]
 read = [
     'C:\repos\sandy_cli\',
     'C:\Users\H\test_R',
@@ -25,7 +25,15 @@ all = [
     'C:\Users\H\test_file_RW.txt',
 ]
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs = true
 network = false
 localhost = false

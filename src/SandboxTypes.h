@@ -76,8 +76,9 @@ namespace Sandbox {
         IntegrityLevel integrity = IntegrityLevel::Low;   // [sandbox] integrity (restricted only)
         std::wstring workdir;                              // [sandbox] workdir (optional)
         std::vector<FolderEntry> folders;
+        std::vector<FolderEntry> denyFolders;  // [deny] — DENY ACEs
 
-        // [allow] — permissions (all keys mandatory per mode)
+        // [privileges] — sandbox capabilities (all keys mandatory per mode)
         bool allowNetwork    = false;
         bool allowLocalhost  = false;
         bool allowLan        = false;

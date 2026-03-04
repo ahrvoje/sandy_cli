@@ -81,12 +81,12 @@ workdir = 'C:\projects'   # child working directory (default: sandy.exe folder)
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
 | `workdir` | path | both | Child process working directory (default: folder containing `sandy.exe`) |
 
-### `[access]` — File and folder grants
+### `[allow]` — File and folder grants
 
 Grant the sandboxed process access to specific files or folders. Paths are recursive for directories. Sandy modifies folder ACLs at launch and restores them on exit. Requires `WRITE_DAC` on each path (user-owned folders work without admin).
 
 ```toml
-[access]
+[allow]
 read    = ['C:\data\config.json', 'C:\Python314']
 write   = ['C:\logs\agent.log', 'C:\temp\output']
 execute = ['C:\tools\bin']
@@ -107,13 +107,13 @@ all     = ['C:\workspace']
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
 
-### `[allow]` — Permissions *(all keys mandatory)*
+### `[privileges]` — Permissions *(all keys mandatory)*
 
 All keys must be explicitly set for the active mode. Omitting a key is a parse error. Wrong-mode keys are rejected.
 
 ```toml
 # AppContainer mode — all 8 keys required:
-[allow]
+[privileges]
 system_dirs     = true
 network         = false
 localhost       = false
@@ -124,7 +124,7 @@ clipboard_write = false
 child_processes = true
 
 # Restricted mode — all 5 keys required:
-[allow]
+[privileges]
 named_pipes     = false
 stdin           = false
 clipboard_read  = false
@@ -156,7 +156,7 @@ Enables the `ALL_APPLICATION_PACKAGES` group, granting **read-only** access to:
 | User profile (Desktop, Documents, Downloads) | ❌ blocked |
 
 > [!TIP]
-> Python's Windows installer sets `ALL_APPLICATION_PACKAGES` on its install directory. With `system_dirs = true`, the Python folder is readable without an explicit `[access]` entry.
+> Python's Windows installer sets `ALL_APPLICATION_PACKAGES` on its install directory. With `system_dirs = true`, the Python folder is readable without an explicit `[allow]` entry.
 
 ### `[registry]` — Registry key grants *(restricted only)*
 
@@ -210,9 +210,11 @@ processes = 10      # max total active processes (including main)
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
 | &ensp; `workdir` | 🟢 required (`'inherit'` or path) | 🟢 required (`'inherit'` or path) |
-| **`[access]`** | 🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
+| **`[allow]`** | ­­🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
 | &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
-| **`[allow]`** | 🟢 required | 🟢 required |
+| **`[deny]`** | 🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
+| &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
+| **`[privileges]`** | 🟢 required | 🟢 required |
 | &ensp; `system_dirs` | 🟢 required | 🔴 n/a |
 | &ensp; `network` | 🟢 required | 🔴 n/a |
 | &ensp; `localhost` | 🟢 required | 🔴 n/a |
@@ -250,8 +252,8 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Network** | ⚙️ `network` `lan` `localhost` | ✅ Allowed | ✅ Allowed |
 | **System dir reads** | ⚙️ `system_dirs` | ✅ Allowed | ✅ Allowed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **User profile reads** | ⚙️ `[access]` | ✅ Allowed | ✅ Allowed |
-| **User profile writes** | ⚙️ `[access]` | ⚙️ `[access]` ¹ | ✅ Allowed |
+| **User profile reads** | ⚙️ `[allow]` | ✅ Allowed | ✅ Allowed |
+| **User profile writes** | ⚙️ `[allow]` | ⚙️ `[allow]` ¹ | ✅ Allowed |
 | **Registry reads** | ✅ Private hive | ✅ Allowed | ✅ Allowed |
 | **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
@@ -263,12 +265,12 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Child processes** | ⚙️ `child_processes` | ⚙️ `child_processes` | ⚙️ `child_processes` |
 | **Stdin** | ⚙️ `stdin` | ⚙️ `stdin` | ⚙️ `stdin` |
 | **Environment** | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` |
-| **File/folder grants** | ⚙️ `[access]` | ⚙️ `[access]` | ⚙️ `[access]` |
+| **File/folder grants** | ⚙️ `[allow]` | ⚙️ `[allow]` | ⚙️ `[allow]` |
 | **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
 
 🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning
 
-¹ Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[access]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
+¹ Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[allow]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 
@@ -282,11 +284,19 @@ AppContainer with network access:
 [sandbox]
 token = 'appcontainer'
 
-[access]
+[allow]
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs = true
 network = true
 localhost = false
@@ -316,11 +326,19 @@ Restricted Token with pipes and medium integrity:
 token = 'restricted'
 integrity = 'medium'
 
-[access]
+[allow]
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 named_pipes = true
 stdin = false
 clipboard_read = false
@@ -537,10 +555,10 @@ Restricted Low:  YES
 Restricted Med:  YES
 
 --- Required Config ---
-  [access] read:
+  [allow] read:
     C:\Users
     C:\repos\myproject
-  [access] write:
+  [allow] write:
     C:\Users\H\AppData\Local\Temp
   system_dirs = true
 
@@ -548,11 +566,11 @@ Restricted Med:  YES
 [sandbox]
 token = 'appcontainer'
 
-[access]
+[allow]
 read = ['C:\Users', 'C:\repos\myproject']
 write = ['C:\Users\H\AppData\Local\Temp']
 
-[allow]
+[privileges]
 system_dirs = true
 ```
 
@@ -564,7 +582,7 @@ system_dirs = true
 ## Notes
 
 > [!WARNING]
-> **AppContainer: strict isolation.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[allow]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
+> **AppContainer: strict isolation.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[privileges]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
 > **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
@@ -583,7 +601,7 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
-| **ACL grants** | `[access]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (write-ahead SDDL) |
+| **ACL grants** | `[allow]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (write-ahead SDDL) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
 | **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |

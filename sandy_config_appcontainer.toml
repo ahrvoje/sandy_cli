@@ -14,7 +14,7 @@ workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
-[access]
+[allow]
 read = []
 write = []
 execute = []
@@ -27,7 +27,15 @@ all = []
 # ============================================================
 # Every key must be explicitly set. Omitting a key is a parse error.
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs     = true    # read C:\Windows, Program Files (required for most executables)
 network         = false   # outbound internet access
 localhost       = false   # loopback/localhost connections (admin required)

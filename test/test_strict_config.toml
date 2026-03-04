@@ -5,7 +5,7 @@
 token = 'appcontainer'
 workdir = 'inherit'
 
-[access]
+[allow]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\repos\sandy_cli\',
@@ -16,7 +16,15 @@ append = []
 delete = []
 all = []
 
-[allow]
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
 system_dirs = false  # strict isolation — no system dir access
 network = false
 localhost = false
