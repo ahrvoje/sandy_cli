@@ -140,6 +140,10 @@
     <ClInclude Include="src\sandy.h" />
     <ClInclude Include="src\targetver.h" />
     <ClInclude Include="src\Sandbox.h" />
+    <ClInclude Include="src\SandboxProcess.h" />
+    <ClInclude Include="src\SandboxCleanup.h" />
+    <ClInclude Include="src\SandboxCapabilities.h" />
+    <ClInclude Include="src\SandboxEnvironment.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\sandy.cpp" />

@@ -5,7 +5,7 @@ workdir = 'inherit'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\repos\sandy_cli\']
+read = []
 write = []
 append = []
 delete = []

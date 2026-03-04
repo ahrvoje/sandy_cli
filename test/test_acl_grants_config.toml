@@ -18,7 +18,7 @@ workdir = 'inherit'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\tools']
-read = ['C:\repos\sandy_cli\', 'C:\Users\H\test_acl\data']
+read = ['C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data']
 write = []
 append = ['C:\Users\H\test_acl\logs']
 delete = []

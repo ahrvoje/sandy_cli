@@ -1,5 +1,5 @@
 # Sandy sandbox test configuration
-# Used by: sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
+# All test artifacts live under %USERPROFILE%\test_sandy
 
 [sandbox]
 token = 'appcontainer'
@@ -7,13 +7,13 @@ workdir = 'inherit'
 
 [allow]
 read = [
-    'C:\repos\sandy_cli\',
-    'C:\Users\H\test_R',
-    'C:\Users\H\test_file_R.txt',
+    'C:\Users\H\test_sandy\scripts',
+    'C:\Users\H\test_sandy\R',
+    'C:\Users\H\test_sandy\file_R.txt',
 ]
 write = [
-    'C:\Users\H\test_W',
-    'C:\Users\H\test_file_W.txt',
+    'C:\Users\H\test_sandy\W',
+    'C:\Users\H\test_sandy\file_W.txt',
 ]
 execute = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
@@ -21,8 +21,8 @@ execute = [
 append = []
 delete = []
 all = [
-    'C:\Users\H\test_RW',
-    'C:\Users\H\test_file_RW.txt',
+    'C:\Users\H\test_sandy\RW',
+    'C:\Users\H\test_sandy\file_RW.txt',
 ]
 
 [deny]

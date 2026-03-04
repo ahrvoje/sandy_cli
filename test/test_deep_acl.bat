@@ -10,7 +10,7 @@ REM   3 allow zones: all, read, execute
 REM   4 deny types:  write, all, read, execute
 REM   12 test zones, 46 grant assertions + 4 cleanup checks = 50 total
 REM
-REM Requires: admin privileges
+REM Self-contained: all artifacts under %USERPROFILE%\test_deep
 REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
@@ -32,6 +32,7 @@ taskkill /f /im sandy.exe >nul 2>nul
 
 REM === Create 4-level folder tree with seed files ===
 if exist "%ROOT%" rmdir /s /q "%ROOT%"
+mkdir "%ROOT%\scripts"
 
 REM L1-L4 directories
 mkdir "%ROOT%\app\src\core\engine"
@@ -56,11 +57,13 @@ echo beta>"%ROOT%\library\experimental\beta\beta.py"
 echo helper>"%ROOT%\scripts\common\utils\helper.bat"
 echo admin>"%ROOT%\scripts\restricted\admin\root.bat"
 
+REM --- Copy test script into the test tree ---
+copy /y "%~dp0test_deep_acl.py" "%ROOT%\scripts\test_deep_acl.py" >nul
 echo   [OK] 4-level folder tree created (11 seed files)
 echo.
 
 REM === Run test inside sandbox (synchronous — Sandy cleans up on exit) ===
-"%SANDY%" -c "%CONFIG%" -x "%PYTHON%" "%TEST%"
+"%SANDY%" -c "%CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_deep_acl.py"
 set SANDY_EXIT=!ERRORLEVEL!
 echo.
 

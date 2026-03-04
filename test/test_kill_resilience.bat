@@ -49,6 +49,8 @@ mkdir "!DIR_A!"
 mkdir "!DIR_B!"
 echo seed> "!DIR_A!\seed.txt"
 echo seed> "!DIR_B!\seed.txt"
+copy /y "%~dp0kill_probe.py" "!DIR_A!\kill_probe.py" >nul
+set PROBE=!DIR_A!\kill_probe.py
 
 REM =====================================================================
 REM Scenario 1: Kill during active run
@@ -588,8 +590,10 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-REM Cleanup temp files
+REM Cleanup temp files and test folders
 del "%TEMP%\sandy_kill_*.txt" 2>nul
+if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
+if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 
 REM =====================================================================
 REM Summary

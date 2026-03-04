@@ -1,5 +1,6 @@
 # Sandy test configuration — strict mode test
-# system_dirs is not set (strict), so no executable should be able to run.
+# system_dirs is false (strict), so no executable should be able to run.
+# Scripts folder is granted read but system dirs are blocked.
 
 [sandbox]
 token = 'appcontainer'
@@ -8,7 +9,7 @@ workdir = 'inherit'
 [allow]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
-    'C:\repos\sandy_cli\',
+    'C:\Users\H\test_limits\scripts',
 ]
 write = []
 execute = []

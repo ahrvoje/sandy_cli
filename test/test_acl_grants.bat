@@ -12,17 +12,15 @@ REM     build/            [deny] write → read OK, write blocked
 REM     secrets/          [deny] all → everything blocked
 REM   data/               [allow] read
 REM     public/           inherits read → read-only
-REM     private/          [deny] read → fully blocked (deny ^> allow)
+REM     private/          [deny] read → fully blocked (deny > allow)
 REM   logs/               [allow] append → append only
 REM   tools/              [allow] execute → read+exec, no write
-REM
-REM Requires: admin privileges
+REM   scripts/            [allow] read — holds the test script itself
 REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_acl_grants_config.toml
 set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
-set TEST=%~dp0test_acl_grants.py
 set ROOT=%USERPROFILE%\test_acl
 
 echo =====================================================================
@@ -44,6 +42,7 @@ mkdir "%ROOT%\data\public"
 mkdir "%ROOT%\data\private"
 mkdir "%ROOT%\logs"
 mkdir "%ROOT%\tools"
+mkdir "%ROOT%\scripts"
 
 echo source code>"%ROOT%\workspace\src\code.py"
 echo build artifact>"%ROOT%\workspace\build\artifact.bin"
@@ -52,11 +51,14 @@ echo public info>"%ROOT%\data\public\info.txt"
 echo hidden data>"%ROOT%\data\private\hidden.txt"
 echo log entry>"%ROOT%\logs\app.log"
 echo @echo helper>"%ROOT%\tools\script.bat"
+
+REM === Copy test script into the test tree ===
+copy /y "%~dp0test_acl_grants.py" "%ROOT%\scripts\test_acl_grants.py" >nul
 echo   [OK] Folder tree created with seed files
 echo.
 
 REM === Run test inside sandbox ===
-"%SANDY%" -c "%CONFIG%" -x "%PYTHON%" "%TEST%"
+"%SANDY%" -c "%CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_acl_grants.py"
 set EXIT_CODE=!ERRORLEVEL!
 echo.
 

@@ -1,11 +1,11 @@
-# Concurrent test: READ-only access to shared folder
+# Concurrent test: READ-only access to data folder
 [sandbox]
 token = 'appcontainer'
 workdir = 'inherit'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\repos\sandy_cli\', 'C:\Users\H\test_RW']
+read = ['C:\Users\H\test_concurrent\scripts', 'C:\Users\H\test_concurrent\data']
 write = []
 append = []
 delete = []

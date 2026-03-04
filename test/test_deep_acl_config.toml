@@ -40,7 +40,7 @@ workdir = 'inherit'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts']
-read = ['C:\repos\sandy_cli\', 'C:\Users\H\test_deep\library']
+read = ['C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
 write = []
 append = []
 delete = []

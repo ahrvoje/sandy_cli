@@ -1,28 +1,26 @@
 """
 test_sandy.py - Comprehensive sandbox permission tests for Sandy.
 
-Run inside the sandbox:
-    sandy.exe -c test_sandy_config.toml -x <python.exe> test_sandy.py
-
-Tests cover:
-  1. App folder (read-only by default)
-  2. System directory reads (allowed by AppContainer)
-  3. System directory writes (must be blocked)
-  4. User profile access (must be blocked)
-  5. Working directory changes
-  6. Network access (must be blocked)
-  7. Permission-specific folders:
-     - %USERPROFILE%\test_R   -> [read]      read ok, write blocked
-     - %USERPROFILE%\test_W   -> [write]     write ok, read blocked
-     - %USERPROFILE%\test_RW  -> [readwrite] both ok
+Run inside the sandbox via test_sandy.bat which creates:
+  %USERPROFILE%\test_sandy\
+    scripts/      [read]  — this script
+    R/            [read]  — read-only folder with seed.txt
+    W/            [write] — write-only folder
+    RW/           [all]   — read+write folder
+    file_R.txt    [read]  — read-only file
+    file_W.txt    [write] — write-only file
+    file_RW.txt   [all]   — read+write file
 """
 
 import os
 import sys
 
+ROOT = os.path.join(os.environ.get("USERPROFILE", r"C:\Users\unknown"), "test_sandy")
+
 print("=== Sandy Sandbox Tests ===")
 print(f"Working dir: {os.getcwd()}")
 print(f"Python:      {sys.executable}")
+print(f"Test root:   {ROOT}")
 print()
 
 passed = failed = 0
@@ -130,77 +128,59 @@ print()
 
 # ---------------------------------------------------------------------------
 # 7. PERMISSION-SPECIFIC FOLDER TESTS
-#    These folders must be configured in the TOML [allow] section:
-#      read  = ['%USERPROFILE%\test_R']
-#      write = ['%USERPROFILE%\test_W']
-#      all   = ['%USERPROFILE%\test_RW']
 # ---------------------------------------------------------------------------
 print("--- Permission folder tests ---")
 
-test_R  = os.path.join(user, "test_R")
-test_W  = os.path.join(user, "test_W")
-test_RW = os.path.join(user, "test_RW")
+test_R  = os.path.join(ROOT, "R")
+test_W  = os.path.join(ROOT, "W")
+test_RW = os.path.join(ROOT, "RW")
 
-# Verify readable test folders exist (can't check test_W — it's write-only)
-for folder in [test_R, test_RW]:
-    if not os.path.isdir(folder):
-        print(f"  [SKIP] Folder missing: {folder} (create it before testing)")
-        print()
-        break
-else:
-    # -- Read-only folder --
-    print("--- [Read-only] ---")
-    print(f"  test_R = {test_R}")
-    seed_file = os.path.join(test_R, "seed.txt")
-    expect_ok("test_R: list dir",
-        lambda: f"{len(os.listdir(test_R))} items")
-    if os.path.isfile(seed_file):
-        expect_ok("test_R: read seed.txt",
-            lambda: open(seed_file).read())
-    else:
-        print(f"  [SKIP] test_R: no seed.txt to read (create one before testing)")
-    expect_blocked("test_R: create file (should fail)",
-        lambda: open(os.path.join(test_R, "hack.txt"), "w").write("x"))
-    expect_blocked("test_R: delete seed.txt (should fail)",
-        lambda: os.remove(seed_file))
-    print()
+# -- Read-only folder --
+print("--- [Read-only] ---")
+print(f"  test_R = {test_R}")
+seed_file = os.path.join(test_R, "seed.txt")
+expect_ok("test_R: list dir",
+    lambda: f"{len(os.listdir(test_R))} items")
+expect_ok("test_R: read seed.txt",
+    lambda: open(seed_file).read().strip())
+expect_blocked("test_R: create file (should fail)",
+    lambda: open(os.path.join(test_R, "hack.txt"), "w").write("x"))
+expect_blocked("test_R: delete seed.txt (should fail)",
+    lambda: os.remove(seed_file))
+print()
 
-    # -- Write-only folder --
-    print("--- [Write-only] ---")
-    print(f"  test_W = {test_W}")
-    expect_ok("test_W: create file",
-        lambda: open(os.path.join(test_W, "written.txt"), "w").write("hello") or "written")
-    expect_blocked("test_W: list dir (should fail)",
-        lambda: os.listdir(test_W))
-    expect_blocked("test_W: read file (should fail)",
-        lambda: open(os.path.join(test_W, "written.txt")).read())
-    print()
+# -- Write-only folder --
+print("--- [Write-only] ---")
+print(f"  test_W = {test_W}")
+expect_ok("test_W: create file",
+    lambda: open(os.path.join(test_W, "written.txt"), "w").write("hello"))
+expect_blocked("test_W: list dir (should fail)",
+    lambda: os.listdir(test_W))
+expect_blocked("test_W: read file (should fail)",
+    lambda: open(os.path.join(test_W, "written.txt")).read())
+print()
 
-    # -- Read & Write folder --
-    print("--- [Read & Write] ---")
-    print(f"  test_RW = {test_RW}")
-    expect_ok("test_RW: create file",
-        lambda: open(os.path.join(test_RW, "rw_test.txt"), "w").write("hello") or "written")
-    expect_ok("test_RW: read file",
-        lambda: open(os.path.join(test_RW, "rw_test.txt")).read())
-    expect_ok("test_RW: list dir",
-        lambda: f"{len(os.listdir(test_RW))} items")
-    expect_ok("test_RW: delete file",
-        lambda: os.remove(os.path.join(test_RW, "rw_test.txt")) or "deleted")
-    print()
+# -- Read & Write folder --
+print("--- [Read & Write] ---")
+print(f"  test_RW = {test_RW}")
+expect_ok("test_RW: create file",
+    lambda: open(os.path.join(test_RW, "rw_test.txt"), "w").write("hello"))
+expect_ok("test_RW: read file",
+    lambda: open(os.path.join(test_RW, "rw_test.txt")).read())
+expect_ok("test_RW: list dir",
+    lambda: f"{len(os.listdir(test_RW))} items")
+expect_ok("test_RW: delete file",
+    lambda: os.remove(os.path.join(test_RW, "rw_test.txt")) or "deleted")
+print()
 
 # ---------------------------------------------------------------------------
 # 8. FILE-LEVEL ACCESS TESTS
-#    Individual files (not folders) can also be granted specific permissions.
-#    test_file_R.txt  -> read only
-#    test_file_W.txt  -> write only
-#    test_file_RW.txt -> read + write
 # ---------------------------------------------------------------------------
 print("--- File-level access tests ---")
 
-file_R = os.path.join(user, "test_file_R.txt")
-file_W = os.path.join(user, "test_file_W.txt")
-file_RW = os.path.join(user, "test_file_RW.txt")
+file_R = os.path.join(ROOT, "file_R.txt")
+file_W = os.path.join(ROOT, "file_W.txt")
+file_RW = os.path.join(ROOT, "file_RW.txt")
 file_none = os.path.join(user, "test_file_NONE.txt")
 
 # -- Read-only file --
@@ -213,14 +193,14 @@ expect_blocked("file_R: write (should fail)",
 # -- Write-only file --
 print(f"  file_W = {file_W}")
 expect_ok("file_W: write content",
-    lambda: open(file_W, "w").write("hello") or "written")
+    lambda: open(file_W, "w").write("hello"))
 expect_blocked("file_W: read (should fail)",
     lambda: open(file_W).read())
 
 # -- Read+Write file --
 print(f"  file_RW = {file_RW}")
 expect_ok("file_RW: write content",
-    lambda: open(file_RW, "w").write("hello") or "written")
+    lambda: open(file_RW, "w").write("hello"))
 expect_ok("file_RW: read content",
     lambda: open(file_RW).read())
 

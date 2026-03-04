@@ -1,10 +1,10 @@
 # Probe script for concurrent Sandy container test.
-# Receives a ROLE argument (read/write/all) and tests access to the shared folder.
+# Receives a ROLE argument (read/write/all) and tests access to the data folder.
 # Stays alive for a configurable duration so --status can observe all 3 running.
 import os, sys, time
 
 role = sys.argv[1] if len(sys.argv) > 1 else "unknown"
-folder = os.path.join(os.environ.get("USERPROFILE", "C:\\Users\\H"), "test_RW")
+folder = os.path.join(os.environ.get("USERPROFILE", "C:\\Users\\H"), "test_concurrent", "data")
 marker = os.path.join(folder, f"probe_{role}.txt")
 wait = int(sys.argv[2]) if len(sys.argv) > 2 else 15
 

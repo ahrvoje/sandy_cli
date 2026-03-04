@@ -47,6 +47,8 @@ mkdir "!DIR_C!"
 echo seed> "!DIR_A!\seed.txt"
 echo seed> "!DIR_B!\seed.txt"
 echo seed> "!DIR_C!\seed.txt"
+copy /y "%~dp0stress_probe.py" "!DIR_A!\stress_probe.py" >nul
+set PROBE=!DIR_A!\stress_probe.py
 
 REM --- Clean previous probe results ---
 del "!DIR_A!\sandy_stress_*.json" 2>nul
@@ -332,6 +334,12 @@ echo =====================================================================
 echo.
 if !FAIL! GTR 0 (
     echo  SOME TESTS FAILED!
-    exit /b 1
+    goto :STRESS_CLEANUP
 )
+:STRESS_CLEANUP
+if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
+if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
+if exist "!DIR_C!" rmdir /s /q "!DIR_C!"
+del "%TEMP%\sandy_stress_*.txt" 2>nul
+if !FAIL! GTR 0 exit /b 1
 exit /b 0

@@ -7,9 +7,15 @@ REM ---------------------------------------------------------------
 set SANDY_EXE=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_audit_config.toml
 set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
-set SCRIPT=%~dp0test_audit.py
-set AUDIT_LOG=%~dp0audit_crash.log
-set SESSION_LOG=%~dp0session_crash.log
+set ROOT=%USERPROFILE%\test_audit
+set AUDIT_LOG=%ROOT%\audit_crash.log
+set SESSION_LOG=%ROOT%\session_crash.log
+
+REM === Create test folder and copy script ===
+if exist "%ROOT%" rmdir /s /q "%ROOT%"
+mkdir "%ROOT%\scripts"
+copy /y "%~dp0test_audit.py" "%ROOT%\scripts\test_audit.py" >nul
+set SCRIPT=%ROOT%\scripts\test_audit.py
 
 echo === Sandy Audit Crash Test ===
 echo.
