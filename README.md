@@ -66,7 +66,7 @@ All sandbox behavior is controlled by a TOML config. Every config **must** inclu
 
 See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_config_appcontainer.toml`](sandy_config_appcontainer.toml) and [`sandy_config_restricted.toml`](sandy_config_restricted.toml) for mode-specific templates.
 
-### `[sandbox]` — Mode selection *(mandatory)*
+### `[sandbox]` — Mode selection
 
 ```toml
 [sandbox]
@@ -135,7 +135,7 @@ all     = ['C:\workspace\secrets']           # fully block secrets/ even though 
 > [!TIP]
 > **Common pattern:** Grant `all` to a workspace root, then deny `write` on specific subdirectories to create read-only zones, or deny `all` on sensitive directories to fully block access.
 
-### `[privileges]` — Permissions *(all keys mandatory)*
+### `[privileges]` — Permissions
 
 All keys must be explicitly set for the active mode. Omitting a key is a parse error. Wrong-mode keys are rejected.
 
@@ -199,7 +199,7 @@ write = ['HKCU\Software\MyApp\Settings']
 > [!NOTE]
 > `[registry]` is not available in AppContainer mode — AppContainer provides a fixed private registry hive automatically.
 
-### `[environment]` — Environment variables *(inherit is mandatory)*
+### `[environment]` — Environment variables
 
 `inherit` must be explicitly set. When `false`, the child gets a clean environment with only essential Windows variables. Use `pass` to add specific variables.
 
@@ -385,225 +385,49 @@ timeout = 300
 
 ---
 
-## Demo
-
-Full test run showing Sandy's isolation in action — 35 tests, all passing:
-
-```
-=== Sandy Sandbox Tests ===
-Working dir: c:\repos\sandy_cli\x64\Release
-Python:      C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
-
---- App folder (read-only) ---
-  [PASS] List app folder: 2 items
-  [PASS] Create file in app folder: blocked -> PermissionError
-  [PASS] Create subfolder in app folder: blocked -> PermissionError
-
---- System dir reads (allowed by AppContainer) ---
-  [PASS] Read C:\Windows: 115 items
-  [PASS] Read Program Files: 67 items
-  [PASS] Read C:\Windows\System32: 5028 items
-
---- System dir writes (must be blocked) ---
-  [PASS] Write to C:\Windows: blocked -> PermissionError
-  [PASS] Write to C:\: blocked -> PermissionError
-  [PASS] Write to System32: blocked -> PermissionError
-  [PASS] Write to Program Files: blocked -> PermissionError
-  [PASS] Create dir in C:\: blocked -> PermissionError
-
---- User profile (blocked) ---
-  [PASS] Read user Desktop: blocked -> PermissionError
-  [PASS] Read user Documents: blocked -> PermissionError
-  [PASS] Write to user home: blocked -> PermissionError
-
---- Working directory ---
-  [PASS] Write file after chdir to C:\Windows: blocked -> PermissionError
-
---- Network access (blocked) ---
-  [PASS] HTTP request: blocked -> URLError
-
---- Permission folder tests ---
---- [Read-only] ---
-  test_R = C:\Users\H\test_R
-  [PASS] test_R: list dir: 1 items
-  [PASS] test_R: read seed.txt: This is a seed file for read-only testing
-  [PASS] test_R: create file (should fail): blocked -> PermissionError
-  [PASS] test_R: delete seed.txt (should fail): blocked -> PermissionError
-
---- [Write-only] ---
-  test_W = C:\Users\H\test_W
-  [PASS] test_W: create file: 5
-  [PASS] test_W: list dir (should fail): blocked -> PermissionError
-  [PASS] test_W: read file (should fail): blocked -> PermissionError
-
---- [Read & Write] ---
-  test_RW = C:\Users\H\test_RW
-  [PASS] test_RW: create file: 5
-  [PASS] test_RW: read file: hello
-  [PASS] test_RW: list dir: 1 items
-  [PASS] test_RW: delete file: deleted
-
---- File-level access tests ---
-  file_R = C:\Users\H\test_file_R.txt
-  [PASS] file_R: read content: File-level read test content
-  [PASS] file_R: write (should fail): blocked -> PermissionError
-  file_W = C:\Users\H\test_file_W.txt
-  [PASS] file_W: write content: 5
-  [PASS] file_W: read (should fail): blocked -> PermissionError
-  file_RW = C:\Users\H\test_file_RW.txt
-  [PASS] file_RW: write content: 5
-  [PASS] file_RW: read content: hello
-  [PASS] file_NONE: read (should fail): blocked -> FileNotFoundError
-  [PASS] file_NONE: write (should fail): blocked -> PermissionError
-
-=== Results: 35 passed, 0 failed ===
-```
-
-### Allow & Limits Tests
-
-Separate test suite verifying network access, resource limits, timeout, and strict isolation:
-
-```
-=== Sandy Allow & Limits Tests ===
-
---- Network access (allowed) ---
-  [PASS] HTTP GET example.com: HTTP 200
-
---- Memory limit (128 MB) ---
-  [PASS] Allocate 50 MB: 50 MB OK
-  [PASS] Allocate 1 GB (exceeds 128 MB limit): blocked -> MemoryError
-
---- Process count limit (3 max) ---
-  [PASS] Spawn 1 child: child ok
-  [PASS] Spawn 10 children (expect limit enforcement): 2 alive, 8 blocked (limit enforced)
-
-=== Results: 5 passed, 0 failed ===
-```
-
-```
---- Timeout test (5 second limit) ---
-  [Sandy] Process killed after 5 second timeout.
-  [PASS] Timeout: process killed in ~9s
-
---- Strict mode (system_dirs disabled) ---
-  [PASS] Strict mode: execution blocked
-```
-
----
-
 ## Audit
 
-The `-a` flag enables Procmon-based resource denial auditing. When a sandboxed process crashes or misbehaves, the audit log shows exactly which resources were denied.
+The `-a` flag captures resource denial events via [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) (headless). Requires Procmon on PATH + admin. Sandy records all file, registry, network, DLL, and process denials during the child's lifetime, then outputs a deduplicated post-mortem log.
 
 ```
 sandy.exe -c config.toml -a audit.log -x myapp.exe
 ```
 
-**Requirements:** [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) on PATH + admin privileges.
-
-Sandy automatically launches Procmon in headless mode, captures all events during the child's lifetime, then parses the results into a filtered audit log containing only denials.
-
-**What's captured:**
-
-| Category | Events |
-|----------|--------|
-| FILE | File/folder open, read, write, delete denials |
-| REG | Registry key/value access denials |
-| NET | Network connection blocks |
-| IMAGE | DLL/image load failures |
-| PROCESS | Child process creation blocks |
-| FILE | Named object (mutex, event, section) denials |
-
-
-
-**Example audit log:**
-
 ```
 [13:07:38.12] T:4520   FILE    ACCESS DENIED       C:\Windows\System32\kernel32.dll
 [13:07:38.34] T:4520   REG     ACCESS DENIED       HKLM\Software\MyApp
-[13:07:38.51] T:4520   FILE    NAME NOT FOUND      api-ms-win-crt-runtime-l1-1-0.dll
-
-=== Process Tree ===
-python.exe  PID:4520  exit:0xC0000022  CRASHED
-  +- worker.exe  PID:6012  exit:0  OK
 
 === Summary: 47 unique events, 38 FILE, 3 REG, 4 NET, 2 IMAGE ===
-
 === Repeated (x count) ===
   x23  FILE    ACCESS DENIED       C:\Windows\System32
 ```
-
-> [!NOTE]
-> The audit log is generated after the child process exits (post-mortem). Events are deduplicated — repeated denials for the same path/result appear once with a repeat count.
 
 ---
 
 ## Profile
 
-The `-p` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage, and generates a feasibility report with a suggested TOML config.
+The `-p` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage (files, registry, network, DLLs, pipes, child processes), and generates a feasibility report with a suggested TOML config. Requires Procmon on PATH + admin.
 
 ```
 sandy.exe -p report.txt -x myapp.exe [args...]
 ```
 
-**Requirements:** [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) on PATH + admin privileges.
-
-Use profile mode **before** sandboxing an unfamiliar application. It answers:
-
-- **Can this process be sandboxed at all?** (detects HKLM writes, system dir writes)
-- **Which sandbox mode works?** (AppContainer, Restricted Low, Restricted Medium)
-- **What config is needed?** (read paths, write paths, network, system_dirs, etc.)
-
-**What's analyzed:**
-
-| Category | Detection |
-|----------|-----------|
-| File reads | Directories the process reads from (collapsed to parent paths) |
-| File writes | Directories the process writes to, temp dir usage |
-| System writes | Writes to `C:\Windows` or `C:\Program Files` (blocks all modes) |
-| User profile writes | Writes to `C:\Users\*` — blocks Restricted Low |
-| Registry | HKLM writes (blocks all modes), HKCU writes |
-| Network | TCP/UDP connections, localhost, DNS lookups |
-| Named pipes | Pipe creation (requires Restricted mode) |
-| DLL loading | System DLL dependencies (`system_dirs` detection) |
-| Child processes | Process tree tracking |
-
-**Example report:**
+Use profile mode **before** sandboxing an unfamiliar application. It tells you whether the process can be sandboxed, which mode works best, and what `[allow]` paths and `[privileges]` are needed.
 
 ```
-=== Sandy Profile Report ===
-Executable: C:\Python314\python.exe
-Exit code:  0 (0x00000000) OK
-Events:     3444 total, 2437 file, 1006 reg
-
 --- Verdict ---
 Sandboxable:     YES
 AppContainer:    YES (recommended)
-Restricted Low:  YES
-Restricted Med:  YES
-
---- Required Config ---
-  [allow] read:
-    C:\Users
-    C:\repos\myproject
-  [allow] write:
-    C:\Users\H\AppData\Local\Temp
-  system_dirs = true
 
 --- Suggested TOML Config ---
 [sandbox]
 token = 'appcontainer'
-
 [allow]
 read = ['C:\Users', 'C:\repos\myproject']
 write = ['C:\Users\H\AppData\Local\Temp']
-
 [privileges]
 system_dirs = true
 ```
-
-> [!NOTE]
-> Profile mode captures events using a Procmon include filter for the target process name. For accurate results, avoid running other instances of the same executable during profiling. Subdirectories are automatically collapsed to their common parent.
 
 ---
 
