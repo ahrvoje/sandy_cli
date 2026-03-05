@@ -96,7 +96,7 @@ namespace Sandbox {
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = TRUE;
 
-        if (!CreatePipe(&hRead, &hWrite, &sa, 0))
+        if (!CreatePipe(&hRead, &hWrite, &sa, 65536))  // 64KB pipe buffer for crash resilience
             return false;
         SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
@@ -260,7 +260,8 @@ namespace Sandbox {
             g_logger.Log(L"CLIPBOARD: restricted via job UI limits");
         }
 
-        AssignProcessToJobObject(hJob, hProcess);
+        if (!AssignProcessToJobObject(hJob, hProcess))
+        g_logger.Log(L"JOB_ASSIGN: FAILED (limits NOT enforced)");
 
         wchar_t msg[256];
         swprintf(msg, 256, L"JOB: memory=%zuMB, processes=%lu, ui_flags=0x%X",
@@ -293,6 +294,22 @@ namespace Sandbox {
             DWORD written = 0;
             WriteFile(hStdout, buffer, bytesRead, &written, nullptr);
             g_logger.LogOutput(buffer, bytesRead);
+        }
+
+        // Drain any remaining data in the kernel pipe buffer after child exit.
+        // When a child crashes, its C runtime may have flushed some data to the
+        // pipe that ReadFile didn't pick up before the broken-pipe error.
+        for (;;) {
+            DWORD avail = 0;
+            if (!PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) || avail == 0)
+                break;
+            if (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+                DWORD written = 0;
+                WriteFile(hStdout, buffer, bytesRead, &written, nullptr);
+                g_logger.LogOutput(buffer, bytesRead);
+            } else {
+                break;
+            }
         }
         CloseHandle(hReadPipe);
 

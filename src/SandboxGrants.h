@@ -377,9 +377,11 @@ namespace Sandbox {
             allGrantPaths.insert(grant.path);
 
         // Restore in reverse order
+        int restored = 0, skipped = 0;
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
             if (otherPaths.count(it->path)) {
                 g_logger.Log((L"ACL_SKIP: " + it->path + L" (other instance active)").c_str());
+                skipped++;
                 continue;
             }
 
@@ -399,12 +401,16 @@ namespace Sandbox {
                 if (hasParentGrant) {
                     g_logger.Log((L"ACL_SKIP_CHILD: " + it->path +
                                   L" (renamed, parent TreeSet will handle)").c_str());
+                    skipped++;
                     continue;
                 }
             }
 
             RestoreDacl(it->path, it->originalSDDL, it->objType, it->objectId);
+            restored++;
         }
+        { wchar_t msg[128]; swprintf(msg, 128, L"REVOKE_SUMMARY: %d restored, %d skipped", restored, skipped);
+          g_logger.Log(msg); }
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
         ClearPersistedGrants();

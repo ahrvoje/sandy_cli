@@ -17,8 +17,8 @@ static void PrintUsage()
         "Sandy - Windows Sandbox Runner  v%s\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]\n"
-        "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"
         "  sandy.exe -p <report>       -x <executable> [args...]\n"
         "  sandy.exe --print-container-toml          (print default appcontainer config)\n"
         "  sandy.exe --print-restricted-toml         (print default restricted config)\n"
@@ -31,6 +31,7 @@ static void PrintUsage()
         "  -l, --log <path>      Session log (config, output, exit code)\n"
         "  -a, --audit <path>    Audit log of denied resource access (requires Procmon + admin)\n"
         "  -d, --dump <path>     Crash dump output path (independent of -a)\n"
+        "  -L, --log-stamp       Prepend YYYYMMDD_HHMMSS_uid_ to log/audit/dump filenames\n"
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
         "  -p, --profile <path>  Profile unsandboxed run for sandbox feasibility (requires Procmon + admin)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
@@ -295,8 +296,14 @@ static std::wstring CollectArgs(int start, int argc, wchar_t* argv[])
 // -----------------------------------------------------------------------
 static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
 {
-    (void)ctrlType;
-    fprintf(stderr, "\n[Sandy] Signal received, cleaning up...\n");
+    const wchar_t* name = ctrlType == CTRL_C_EVENT ? L"CTRL_C" :
+                           ctrlType == CTRL_CLOSE_EVENT ? L"CTRL_CLOSE" :
+                           ctrlType == CTRL_BREAK_EVENT ? L"CTRL_BREAK" :
+                           ctrlType == CTRL_LOGOFF_EVENT ? L"CTRL_LOGOFF" :
+                           ctrlType == CTRL_SHUTDOWN_EVENT ? L"CTRL_SHUTDOWN" : L"UNKNOWN";
+    wchar_t msg[128]; swprintf(msg, 128, L"SIGNAL: %s (code=%lu)", name, ctrlType);
+    Sandbox::g_logger.Log(msg);
+    fprintf(stderr, "\n[Sandy] %ls, cleaning up...\n", name);
     Sandbox::CleanupSandbox();
     return FALSE;  // let default handler terminate the process
 }
@@ -469,6 +476,7 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring exePath;
     std::wstring exeArgs;
     bool quiet = false;
+    bool logStamp = false;
 
     // --- Pre-scan for isolated flags ---
     // These flags must appear alone (with no other options).
@@ -517,6 +525,9 @@ static int RunMain(int argc, wchar_t* argv[])
 
         if (arg == L"-q" || arg == L"--quiet") {
             quiet = true;
+        }
+        else if (arg == L"-L" || arg == L"--log-stamp") {
+            logStamp = true;
         }
         else if ((arg == L"-c" || arg == L"--config") && i + 1 < argc) {
             configPath = argv[++i];
@@ -595,8 +606,30 @@ static int RunMain(int argc, wchar_t* argv[])
         fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
         return 1;
     }
+    // --- Apply timestamp + UID prefix to log filenames if --log-stamp ---
+    if (logStamp) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        DWORD uid = (GetTickCount() ^ GetCurrentProcessId()) & 0xFFFF;
+        wchar_t prefix[32];
+        swprintf(prefix, 32, L"%04d%02d%02d_%02d%02d%02d_%04x_",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, uid);
+        auto stampPath = [&](const std::wstring& path) -> std::wstring {
+            if (path.empty()) return path;
+            auto slash = path.find_last_of(L"\\/");
+            if (slash != std::wstring::npos)
+                return path.substr(0, slash + 1) + prefix + path.substr(slash + 1);
+            return std::wstring(prefix) + path;
+        };
+        logPath = stampPath(logPath);
+        auditLogPath = stampPath(auditLogPath);
+        dumpPath = stampPath(dumpPath);
+    }
+
     config.logPath = logPath;
     config.quiet = quiet;
+    config.configSource = !configPath.empty() ? configPath : L"<inline>";
 
     // --- Run sandboxed ---
     // cleanup() inside RunSandboxed handles ACL restore, loopback, AppContainer.
@@ -618,6 +651,8 @@ int wmain(int argc, wchar_t* argv[])
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
+        wchar_t msg[128]; swprintf(msg, 128, L"FATAL_EXCEPTION: 0x%08X", code);
+        Sandbox::g_logger.Log(msg);
         fprintf(stderr, "[Sandy] Fatal exception 0x%08X, cleaning up...\n", code);
         Sandbox::CleanupSandbox();
         return 1;

@@ -197,10 +197,13 @@ namespace Sandbox {
                 Sleep(2000);
                 std::wstring reportTarget = !dumpPath.empty() ? dumpPath : auditLogPath;
                 std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget);
-                if (!foundDump.empty())
+                if (!foundDump.empty()) {
+                    g_logger.Log((L"DUMP: captured -> " + foundDump).c_str());
                     fprintf(stderr, "[Dump] Crash dump: %ls\n", foundDump.c_str());
-                else
+                } else {
+                    g_logger.Log(L"DUMP: process crashed but no dump generated");
                     fprintf(stderr, "[Dump] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
+                }
             }
             DisableCrashDumps(crashExeName);
             ClearWERExeName();
@@ -425,6 +428,7 @@ namespace Sandbox {
 
         // Step 4c: Resume child and start timeout watchdog
         ResumeThread(pi.hThread);
+        g_logger.Log(L"CHILD: resumed");
         CloseHandle(pi.hThread);
 
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
@@ -441,6 +445,16 @@ namespace Sandbox {
 
         // Step 5a: Log summary and finalize audit/dumps
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
+        if (timeoutCtx.timedOut)
+            g_logger.Log(L"EXIT_CLASS: TIMEOUT");
+        else if (IsCrashExitCode(exitCode)) {
+            wchar_t emsg[128]; swprintf(emsg, 128, L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
+            g_logger.Log(emsg);
+        } else if (exitCode != 0) {
+            wchar_t emsg[128]; swprintf(emsg, 128, L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
+            g_logger.Log(emsg);
+        } else
+            g_logger.Log(L"EXIT_CLASS: CLEAN");
         FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, dumpPath,
                               crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
 
@@ -450,6 +464,7 @@ namespace Sandbox {
 
         // Step 5c: Mode-specific cleanup
         g_logger.Log(L"CLEANUP: starting");
+        DWORD cleanupStart = GetTickCount();
         // Guard will run: RevokeAllGrants, RevokeDesktopAccess (if RT),
         //                 DisableLoopback (if AC+localhost), FreeCapabilities,
         //                 FreeAttributeList, FreeSid, CloseHandle(token)
@@ -462,7 +477,8 @@ namespace Sandbox {
         }
 
         DeleteCleanupTask();
-        g_logger.Log(L"CLEANUP: complete");
+        { wchar_t msg[128]; swprintf(msg, 128, L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
+          g_logger.Log(msg); }
         g_logger.Stop();
 
         // guard.~SandboxGuard() runs remaining cleanups (reverse order)
@@ -498,6 +514,9 @@ namespace Sandbox {
         WarnStaleRegistryEntries();
         CreateCleanupTask();
         LogSandyIdentity();
+        g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
+        if (!config.configSource.empty())
+            g_logger.Log((L"CONFIG_SOURCE: " + config.configSource).c_str());
 
         // --- Run the unified pipeline ---
         return RunPipeline(config, exePath, exeArgs, containerName,

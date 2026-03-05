@@ -251,15 +251,20 @@ namespace Sandbox {
                 if (it->isDesktop) {
                     HDESK hDesk = OpenDesktopW(L"Default", 0, FALSE, READ_CONTROL | WRITE_DAC);
                     if (hDesk) {
-                        SetSecurityInfo(hDesk, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                        DWORD r = SetSecurityInfo(hDesk, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
                                         nullptr, nullptr, pDacl, nullptr);
+                        g_logger.Log(r == ERROR_SUCCESS ? L"DESKTOP_REVOKE: Default -> OK"
+                                                        : L"DESKTOP_REVOKE: Default -> FAILED");
                         CloseDesktop(hDesk);
                     }
                 } else {
                     HWINSTA hWinSta = GetProcessWindowStation();
-                    if (hWinSta)
-                        SetSecurityInfo(hWinSta, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                    if (hWinSta) {
+                        DWORD r = SetSecurityInfo(hWinSta, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
                                         nullptr, nullptr, pDacl, nullptr);
+                        g_logger.Log(r == ERROR_SUCCESS ? L"DESKTOP_REVOKE: WinSta0 -> OK"
+                                                        : L"DESKTOP_REVOKE: WinSta0 -> FAILED");
+                    }
                 }
             }
             LocalFree(pSD);

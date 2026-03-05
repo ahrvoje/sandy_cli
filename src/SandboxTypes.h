@@ -7,6 +7,7 @@
 #pragma once
 
 #include "framework.h"
+#include <io.h>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -107,6 +108,9 @@ namespace Sandbox {
         // Logging (set via -l CLI flag, not TOML)
         std::wstring logPath;
 
+        // Config source (set by CLI for forensic logging)
+        std::wstring configSource;
+
         // Quiet mode (set via -q CLI flag, not TOML)
         bool quiet = false;
 
@@ -121,123 +125,148 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     struct SandyLogger {
         std::wstring logFilePath;
+        FILE* logFile = nullptr;
         bool active = false;
         SRWLOCK lock = SRWLOCK_INIT;
 
-        // ISO 8601 timestamp with millisecond precision (UTC)
+        // ISO 8601 timestamp with millisecond precision (local time + UTC offset)
         static std::wstring Timestamp() {
             SYSTEMTIME st;
-            GetSystemTime(&st);
-            wchar_t buf[32];
-            swprintf(buf, 32, L"%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                     st.wYear, st.wMonth, st.wDay,
-                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-            return buf;
-        }
+            GetLocalTime(&st);
 
-        // Open file with retry (3 attempts, 50ms between retries)
-        FILE* OpenRetry(const wchar_t* path, const wchar_t* mode) {
-            FILE* f = nullptr;
-            for (int attempt = 0; attempt < 3; attempt++) {
-                _wfopen_s(&f, path, mode);
-                if (f) return f;
-                if (attempt < 2) Sleep(50);
-            }
-            return nullptr;
+            // Compute UTC offset in minutes
+            TIME_ZONE_INFORMATION tzi;
+            DWORD tzResult = GetTimeZoneInformation(&tzi);
+            LONG biasMinutes = tzi.Bias;
+            if (tzResult == TIME_ZONE_ID_DAYLIGHT)
+                biasMinutes += tzi.DaylightBias;
+            else if (tzResult == TIME_ZONE_ID_STANDARD)
+                biasMinutes += tzi.StandardBias;
+            // biasMinutes is minutes WEST of UTC, so negate for ISO offset
+            LONG offsetMinutes = -biasMinutes;
+            wchar_t sign = (offsetMinutes >= 0) ? L'+' : L'-';
+            LONG absOffset = (offsetMinutes >= 0) ? offsetMinutes : -offsetMinutes;
+
+            wchar_t buf[40];
+            swprintf(buf, 40, L"%04d-%02d-%02dT%02d:%02d:%02d.%03d%c%02ld:%02ld",
+                     st.wYear, st.wMonth, st.wDay,
+                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                     sign, absOffset / 60, absOffset % 60);
+            return buf;
         }
 
         bool Start(const std::wstring& logPath) {
             AcquireSRWLockExclusive(&lock);
-            FILE* f = OpenRetry(logPath.c_str(), L"w");
+
+            // Numbered rotation (POSIX style): session.log -> session.log.1 -> session.log.2
+            std::wstring finalPath = logPath;
+            if (GetFileAttributesW(logPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                for (int n = 1; ; n++) {
+                    finalPath = logPath + L"." + std::to_wstring(n);
+                    if (GetFileAttributesW(finalPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+                        break;
+                }
+            }
+
+            // Open once with retry, set unbuffered for crash resilience
+            FILE* f = nullptr;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                _wfopen_s(&f, finalPath.c_str(), L"w");
+                if (f) break;
+                if (attempt < 2) Sleep(50);
+            }
             if (!f) {
                 ReleaseSRWLockExclusive(&lock);
-                fprintf(stderr, "[Warning] Could not create log file: %ls\n", logPath.c_str());
+                fprintf(stderr, "[Warning] Could not create log file: %ls\n", finalPath.c_str());
                 return false;
             }
+            setvbuf(f, nullptr, _IONBF, 0);  // unbuffered: every write hits OS immediately
             fwprintf(f, L"[%s] === Sandy Log ===\n", Timestamp().c_str());
-            fclose(f);
-            logFilePath = logPath;
+            _commit(_fileno(f));
+            logFile = f;
+            logFilePath = finalPath;
             active = true;
             ReleaseSRWLockExclusive(&lock);
             return true;
+        }
+
+        void Stop() {
+            AcquireSRWLockExclusive(&lock);
+            if (logFile) {
+                fclose(logFile);
+                logFile = nullptr;
+            }
+            active = false;
+            ReleaseSRWLockExclusive(&lock);
         }
 
         void LogConfig(const SandboxConfig& config, const std::wstring& exe,
                        const std::wstring& args) {
             if (!active) return;
             AcquireSRWLockExclusive(&lock);
-            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
-            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
-            fwprintf(f, L"[%s] --- Configuration ---\n", ts.c_str());
-            fwprintf(f, L"[%s] Executable: %s\n", ts.c_str(), exe.c_str());
+            fwprintf(logFile, L"[%s] --- Configuration ---\n", ts.c_str());
+            fwprintf(logFile, L"[%s] Executable: %s\n", ts.c_str(), exe.c_str());
             if (!args.empty())
-                fwprintf(f, L"[%s] Arguments:  %s\n", ts.c_str(), args.c_str());
+                fwprintf(logFile, L"[%s] Arguments:  %s\n", ts.c_str(), args.c_str());
 
-            fwprintf(f, L"[%s] Folders:    %zu configured\n", ts.c_str(), config.folders.size());
+            fwprintf(logFile, L"[%s] Folders:    %zu configured\n", ts.c_str(), config.folders.size());
             for (size_t i = 0; i < config.folders.size(); i++) {
-                fwprintf(f, L"[%s]   [%s]  %s\n", ts.c_str(),
+                fwprintf(logFile, L"[%s]   [%s]  %s\n", ts.c_str(),
                          AccessTag(config.folders[i].access), config.folders[i].path.c_str());
             }
 
-            if (config.allowSystemDirs) fwprintf(f, L"[%s] System dirs: allowed\n", ts.c_str());
-            if (config.allowNetwork)    fwprintf(f, L"[%s] Network:     allowed\n", ts.c_str());
-            if (config.allowLocalhost)  fwprintf(f, L"[%s] Localhost:   allowed\n", ts.c_str());
-            if (config.allowLan)        fwprintf(f, L"[%s] LAN:         allowed\n", ts.c_str());
+            if (config.allowSystemDirs) fwprintf(logFile, L"[%s] System dirs: allowed\n", ts.c_str());
+            if (config.allowNetwork)    fwprintf(logFile, L"[%s] Network:     allowed\n", ts.c_str());
+            if (config.allowLocalhost)  fwprintf(logFile, L"[%s] Localhost:   allowed\n", ts.c_str());
+            if (config.allowLan)        fwprintf(logFile, L"[%s] LAN:         allowed\n", ts.c_str());
 
             if (!config.stdinMode.empty()) {
                 if (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
-                    fwprintf(f, L"[%s] Stdin:       disabled (NUL)\n", ts.c_str());
+                    fwprintf(logFile, L"[%s] Stdin:       disabled (NUL)\n", ts.c_str());
                 else
-                    fwprintf(f, L"[%s] Stdin:       %s\n", ts.c_str(), config.stdinMode.c_str());
+                    fwprintf(logFile, L"[%s] Stdin:       %s\n", ts.c_str(), config.stdinMode.c_str());
             }
-            if (!config.envInherit)     fwprintf(f, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
-            if (config.timeoutSeconds)  fwprintf(f, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
-            if (config.memoryLimitMB)   fwprintf(f, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
-            if (config.maxProcesses)    fwprintf(f, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
+            if (!config.envInherit)     fwprintf(logFile, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
+            if (config.timeoutSeconds)  fwprintf(logFile, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
+            if (config.memoryLimitMB)   fwprintf(logFile, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
+            if (config.maxProcesses)    fwprintf(logFile, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
 
-            fwprintf(f, L"[%s] --- Process Output ---\n", ts.c_str());
-            fclose(f);
+            fwprintf(logFile, L"[%s] --- Process Output ---\n", ts.c_str());
+            _commit(_fileno(logFile));
             ReleaseSRWLockExclusive(&lock);
         }
 
         void LogOutput(const char* data, DWORD len) {
             if (!active || !data || len == 0) return;
             AcquireSRWLockExclusive(&lock);
-            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
-            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
-            fwrite(data, 1, len, f);
-            fclose(f);
+            fwrite(data, 1, len, logFile);
+            _commit(_fileno(logFile));  // fsync: flush OS cache to disk (power-loss safe)
             ReleaseSRWLockExclusive(&lock);
         }
 
         void Log(const wchar_t* msg) {
             if (!active) return;
             AcquireSRWLockExclusive(&lock);
-            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
-            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
-            fwprintf(f, L"[%s] %s\n", Timestamp().c_str(), msg);
-            fclose(f);
+            fwprintf(logFile, L"[%s] %s\n", Timestamp().c_str(), msg);
+            _commit(_fileno(logFile));
             ReleaseSRWLockExclusive(&lock);
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
             if (!active) return;
             AcquireSRWLockExclusive(&lock);
-            FILE* f = OpenRetry(logFilePath.c_str(), L"a");
-            if (!f) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
-            fwprintf(f, L"[%s] --- Process Exit ---\n", ts.c_str());
+            fwprintf(logFile, L"[%s] --- Process Exit ---\n", ts.c_str());
             if (timedOut)
-                fwprintf(f, L"[%s] TIMEOUT: killed after %lu seconds\n", ts.c_str(), timeoutSec);
-            fwprintf(f, L"[%s] Exit code: %ld (0x%08X)\n", ts.c_str(), (long)exitCode, exitCode);
-            fwprintf(f, L"[%s] === Log end ===\n", ts.c_str());
-            fclose(f);
+                fwprintf(logFile, L"[%s] TIMEOUT: killed after %lu seconds\n", ts.c_str(), timeoutSec);
+            fwprintf(logFile, L"[%s] Exit code: %ld (0x%08X)\n", ts.c_str(), (long)exitCode, exitCode);
+            fwprintf(logFile, L"[%s] === Log end ===\n", ts.c_str());
+            _commit(_fileno(logFile));  // ensure summary is on disk
             ReleaseSRWLockExclusive(&lock);
         }
 
         bool IsActive() const { return active; }
-        void Stop() { active = false; }
         ~SandyLogger() { Stop(); }
     };
 

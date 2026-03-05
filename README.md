@@ -30,8 +30,8 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ## Usage
 
 ```
-sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
-sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
+sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -p <report>       -x <executable> [args...]
 sandy.exe --print-container-toml          (print default appcontainer config)
 sandy.exe --print-restricted-toml         (print default restricted config)
@@ -46,6 +46,7 @@ sandy.exe --status                        (show active instances and stale state
 | `-l <path>`, `--log <path>` | Session log (config, output, exit code) |
 | `-a <path>`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
 | `-d <path>`, `--dump <path>` | Crash dump output path (independent of `-a`) |
+| `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log/audit/dump filenames |
 | `-p <path>`, `--profile <path>` | Profile unsandboxed run for sandbox feasibility (requires Procmon + admin) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
@@ -401,6 +402,28 @@ sandy.exe -c config.toml -a audit.log -x myapp.exe
 === Repeated (x count) ===
   x23  FILE    ACCESS DENIED       C:\Windows\System32
 ```
+
+---
+
+## Logging
+
+Session logs (`-l`), audit logs (`-a`), and crash dumps (`-d`) write to the path you specify — relative paths resolve against the current working directory (standard POSIX behavior).
+
+**Log rotation:** If the target file already exists and `--log-stamp` is *not* used, Sandy automatically rotates with POSIX-style numbered suffixes:
+
+```
+session.log → session.log.1 → session.log.2 → ...
+```
+
+**Timestamped logs:** Use `-L` / `--log-stamp` to prepend a unique `YYYYMMDD_HHMMSS_uid_` prefix to all log filenames. The 4-hex UID prevents collisions when multiple runs start in the same second:
+
+```
+sandy.exe -L -l session.log -a audit.log -x myapp.exe
+→ 20260305_105426_a3f1_session.log
+→ 20260305_105426_a3f1_audit.log
+```
+
+All log timestamps use **local time with ISO 8601 UTC offset** (e.g. `2026-03-05T10:54:26.123+01:00`).
 
 ---
 
