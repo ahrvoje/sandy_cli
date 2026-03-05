@@ -110,7 +110,8 @@ namespace Sandbox {
 
         LUID changeNotifyLuid{};
         if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid)) {
-            fprintf(stderr, "[Error] Could not look up SeChangeNotifyPrivilege (error %lu). Token creation aborted.\n", GetLastError());
+            { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SeChangeNotifyPrivilege lookup failed (error %lu)", GetLastError());
+              g_logger.Log(emsg); }
             if (pAuthUsersSid) FreeSid(pAuthUsersSid);
             FreeSid(pUsersSid);
             FreeSid(pEveryoneSid);

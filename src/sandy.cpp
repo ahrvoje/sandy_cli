@@ -315,7 +315,6 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
                            ctrlType == CTRL_SHUTDOWN_EVENT ? L"CTRL_SHUTDOWN" : L"UNKNOWN";
     wchar_t msg[128]; swprintf(msg, 128, L"SIGNAL: %s (code=%lu)", name, ctrlType);
     Sandbox::g_logger.Log(msg);
-    fprintf(stderr, "\n[Sandy] %ls, cleaning up...\n", name);
     Sandbox::CleanupSandbox();
     return FALSE;  // let default handler terminate the process
 }
@@ -665,7 +664,6 @@ int wmain(int argc, wchar_t* argv[])
         DWORD code = GetExceptionCode();
         wchar_t msg[128]; swprintf(msg, 128, L"FATAL_EXCEPTION: 0x%08X", code);
         Sandbox::g_logger.Log(msg);
-        fprintf(stderr, "[Sandy] Fatal exception 0x%08X, cleaning up...\n", code);
         Sandbox::CleanupSandbox();
         return 1;
     }

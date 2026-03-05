@@ -134,7 +134,7 @@ namespace Sandbox {
         hStdinFile = CreateFileW(stdinTarget, GENERIC_READ, FILE_SHARE_READ,
                                 &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hStdinFile == INVALID_HANDLE_VALUE) {
-            fprintf(stderr, "[Error] Could not open stdin source: %ls\n", stdinTarget);
+            g_logger.Log((L"ERROR: stdin open failed -> " + std::wstring(stdinTarget)).c_str());
             hStdinFile = nullptr;
             return false;
         }
@@ -199,7 +199,6 @@ namespace Sandbox {
 
         if (!created) {
             DWORD err = GetLastError();
-            fprintf(stderr, "[Error] Could not launch: %ls (error %lu)\n", exePath.c_str(), err);
             wchar_t msg[1024];
             swprintf(msg, 1024, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
             g_logger.Log(msg);
@@ -320,8 +319,10 @@ namespace Sandbox {
         if (hTimeoutThread) {
             WaitForSingleObject(hTimeoutThread, 5000);
             CloseHandle(hTimeoutThread);
-            if (timeoutCtx.timedOut)
-                fprintf(stderr, "[Sandy] Process killed after %lu second timeout.\n", timeoutSec);
+            if (timeoutCtx.timedOut) {
+                { wchar_t msg[128]; swprintf(msg, 128, L"TIMEOUT: killed after %lus", timeoutSec);
+                  g_logger.Log(msg); }
+            }
         }
 
         return exitCode;

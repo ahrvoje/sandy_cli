@@ -39,7 +39,6 @@ namespace Sandbox {
         for (const auto& entry : config.folders) {
             bool ok = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
             if (!ok) {
-                fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 allOk = false;
             }
             wchar_t msg[1024];
@@ -61,7 +60,6 @@ namespace Sandbox {
             if (entry.path.empty()) continue;
             bool ok = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
             if (!ok) {
-                fprintf(stderr, "[Warning] Could not deny access to: %ls\n", entry.path.c_str());
                 allOk = false;
             }
             wchar_t msg[1024];
@@ -86,7 +84,6 @@ namespace Sandbox {
             swprintf(msg, 512, L"GRANT_REG: [R] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
             g_logger.Log(msg);
             if (!ok) {
-                fprintf(stderr, "[Warning] Could not grant registry read: %ls\n", key.c_str());
                 allOk = false;
             }
         }
@@ -97,7 +94,6 @@ namespace Sandbox {
             swprintf(msg, 512, L"GRANT_REG: [W] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
             g_logger.Log(msg);
             if (!ok) {
-                fprintf(stderr, "[Warning] Could not grant registry write: %ls\n", key.c_str());
                 allOk = false;
             }
         }
@@ -140,12 +136,12 @@ namespace Sandbox {
 
         procmonExe = FindProcmon();
         if (procmonExe.empty()) {
-            fprintf(stderr, "[Audit] Procmon not found on PATH. Audit disabled.\n");
+            g_logger.Log(L"AUDIT: Procmon not found on PATH, audit disabled");
             return;
         }
         auditActive = StartProcmonAudit(procmonExe);
-        if (auditActive && !quiet)
-            fprintf(stderr, "Audit:      ACTIVE (Procmon)\n");
+        if (auditActive)
+            g_logger.Log(L"AUDIT: active (Procmon)");
     }
 
     // -----------------------------------------------------------------------
@@ -164,6 +160,7 @@ namespace Sandbox {
         auto slash = exePath.find_last_of(L"\\/");
         crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
         crashDumpsEnabled = EnableCrashDumps(crashExeName);
+        g_logger.Log(crashDumpsEnabled ? L"WER_DUMP: enabled" : L"WER_DUMP: failed to enable");
         if (crashDumpsEnabled)
             PersistWERExeName(crashExeName);
     }
@@ -199,10 +196,8 @@ namespace Sandbox {
                 std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget);
                 if (!foundDump.empty()) {
                     g_logger.Log((L"DUMP: captured -> " + foundDump).c_str());
-                    fprintf(stderr, "[Dump] Crash dump: %ls\n", foundDump.c_str());
                 } else {
                     g_logger.Log(L"DUMP: process crashed but no dump generated");
-                    fprintf(stderr, "[Dump] Process crashed (0x%08X) but no dump was generated.\n", exitCode);
                 }
             }
             DisableCrashDumps(crashExeName);
@@ -257,7 +252,8 @@ namespace Sandbox {
                 containerCreated = SUCCEEDED(hr);
             }
             if (FAILED(hr) || !pContainerSid) {
-                fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
+                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: AppContainer creation failed (0x%08X)", hr);
+                  g_logger.Log(emsg); }
                 return 1;
             }
             pSid = pContainerSid;
@@ -278,7 +274,9 @@ namespace Sandbox {
             // [RT] Create restricted token + allocate grant SID
             hRestrictedToken = CreateRestrictedSandboxToken(config.integrity);
             if (!hRestrictedToken) {
-                fprintf(stderr, "[Error] Could not create restricted token (error %lu).\n", GetLastError());
+                DWORD err = GetLastError();
+                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: restricted token creation failed (error %lu)", err);
+                  g_logger.Log(emsg); }
                 return 1;
             }
             guard.Add([&hRestrictedToken]() { if (hRestrictedToken) CloseHandle(hRestrictedToken); });
@@ -287,7 +285,9 @@ namespace Sandbox {
             SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
             if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
                 0, 0, 0, 0, 0, 0, 0, &pGrantSid)) {
-                fprintf(stderr, "[Error] Could not allocate restricted SID (error %lu).\n", GetLastError());
+                DWORD err = GetLastError();
+                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SID allocation failed (error %lu)", err);
+                  g_logger.Log(emsg); }
                 return 1;
             }
             pSid = pGrantSid;
@@ -333,15 +333,15 @@ namespace Sandbox {
         if (isAppContainer && config.allowLocalhost) {
             bool ok = EnableLoopback();
             if (!ok) {
-                fprintf(stderr, "[Warning] Could not enable localhost access.\n");
-                fprintf(stderr, "          Loopback exemption requires Administrator.\n");
+                g_logger.Log(L"LOOPBACK: FAILED (need Administrator)");
             }
             g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
             guard.Add([]() { DisableLoopback(); });
         }
 
-        if (grantFailed)
-            fprintf(stderr, "          Run as Administrator to modify ACLs.\n");
+        if (grantFailed) {
+            g_logger.Log(L"WARNING: some grants failed (need Administrator)");
+        }
 
         // Register grant revocation in guard (runs on any exit)
         guard.Add([]() { RevokeAllGrants(); });
@@ -385,7 +385,7 @@ namespace Sandbox {
         // Step 3e: Create output pipe and stdin handle
         HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
         if (!SetupOutputPipe(hReadPipe, hWritePipe)) {
-            fprintf(stderr, "[Error] Could not create output pipe.\n");
+            g_logger.Log(L"ERROR: pipe creation failed");
             return 1;
         }
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
@@ -411,6 +411,7 @@ namespace Sandbox {
         if (hStdinFile) CloseHandle(hStdinFile);
 
         if (!launched) {
+            g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
             g_logger.LogSummary(GetLastError(), false, 0);
             g_logger.Stop();
             CloseHandle(hReadPipe);

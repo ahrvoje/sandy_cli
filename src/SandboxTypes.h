@@ -8,6 +8,7 @@
 
 #include "framework.h"
 #include <io.h>
+#include <share.h>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -171,7 +172,7 @@ namespace Sandbox {
             // Open once with retry, set unbuffered for crash resilience
             FILE* f = nullptr;
             for (int attempt = 0; attempt < 3; attempt++) {
-                _wfopen_s(&f, finalPath.c_str(), L"w");
+                f = _wfsopen(finalPath.c_str(), L"w", _SH_DENYWR);
                 if (f) break;
                 if (attempt < 2) Sleep(50);
             }
@@ -228,6 +229,25 @@ namespace Sandbox {
                     fwprintf(logFile, L"[%s] Stdin:       %s\n", ts.c_str(), config.stdinMode.c_str());
             }
             if (!config.envInherit)     fwprintf(logFile, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
+            if (config.allowNamedPipes) fwprintf(logFile, L"[%s] Named Pipes: allowed\n", ts.c_str());
+            fwprintf(logFile, L"[%s] Clipboard:   read=%s write=%s\n", ts.c_str(),
+                     config.allowClipboardRead ? L"yes" : L"no",
+                     config.allowClipboardWrite ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s] Children:    %s\n", ts.c_str(),
+                     config.allowChildProcesses ? L"allowed" : L"blocked");
+            if (!config.denyFolders.empty()) {
+                fwprintf(logFile, L"[%s] Deny:        %zu configured\n", ts.c_str(), config.denyFolders.size());
+                for (const auto& d : config.denyFolders)
+                    fwprintf(logFile, L"[%s]   [%s]  %s\n", ts.c_str(), AccessTag(d.access), d.path.c_str());
+            }
+            if (!config.registryRead.empty() || !config.registryWrite.empty()) {
+                fwprintf(logFile, L"[%s] Registry:    %zu keys\n", ts.c_str(),
+                         config.registryRead.size() + config.registryWrite.size());
+                for (const auto& k : config.registryRead)
+                    fwprintf(logFile, L"[%s]   [R]  %s\n", ts.c_str(), k.c_str());
+                for (const auto& k : config.registryWrite)
+                    fwprintf(logFile, L"[%s]   [W]  %s\n", ts.c_str(), k.c_str());
+            }
             if (config.timeoutSeconds)  fwprintf(logFile, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
             if (config.memoryLimitMB)   fwprintf(logFile, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
             if (config.maxProcesses)    fwprintf(logFile, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
