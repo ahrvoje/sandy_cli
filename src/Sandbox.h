@@ -332,10 +332,7 @@ namespace Sandbox {
         // Step 2f: [AC] Enable loopback if requested
         if (isAppContainer && config.allowLocalhost) {
             bool ok = EnableLoopback();
-            if (!ok) {
-                g_logger.Log(L"LOOPBACK: FAILED (need Administrator)");
-            }
-            g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
+            g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
             guard.Add([]() { DisableLoopback(); });
         }
 
@@ -399,6 +396,9 @@ namespace Sandbox {
         // PHASE 4: LAUNCH & RUN
         // =================================================================
 
+        // Log config before launch so it's always in the log even for instant failures
+        g_logger.LogConfig(config, exePath, exeArgs);
+
         // Step 4a: Launch the child process (suspended)
         PROCESS_INFORMATION pi{};
         bool launched = LaunchChildProcess(
@@ -414,16 +414,16 @@ namespace Sandbox {
         if (!launched) {
             g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
             g_logger.LogSummary(GetLastError(), false, 0);
-            g_logger.Stop();
             CloseHandle(hReadPipe);
             // [AC] Delete profile on launch failure
             if (isAppContainer)
                 DeleteAppContainerProfile(containerName.c_str());
+            guard.RunAll();
             DeleteCleanupTask();
-            return 1;  // guard runs all cleanup
+            g_logger.Log(L"CLEANUP: complete (launch failure)");
+            g_logger.Stop();
+            return 1;
         }
-
-        g_logger.LogConfig(config, exePath, exeArgs);
 
         // Step 4b: Assign job object for resource limits
         HANDLE hJob = AssignJobObject(config, pi.hProcess);
@@ -467,9 +467,6 @@ namespace Sandbox {
         // Step 5c: Mode-specific cleanup
         g_logger.Log(L"CLEANUP: starting");
         DWORD cleanupStart = GetTickCount();
-        // Guard will run: RevokeAllGrants, RevokeDesktopAccess (if RT),
-        //                 DisableLoopback (if AC+localhost), FreeCapabilities,
-        //                 FreeAttributeList, FreeSid, CloseHandle(token)
 
         // [AC] Delete AppContainer profile
         if (isAppContainer) {
@@ -478,12 +475,16 @@ namespace Sandbox {
                 (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
         }
 
+        // Run all guard cleanups explicitly (RevokeAllGrants, RevokeDesktopAccess,
+        // DisableLoopback, FreeCapabilities, FreeAttributeList, FreeSid, CloseHandle)
+        // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
+        guard.RunAll();
+
         DeleteCleanupTask();
         { wchar_t msg[128]; swprintf(msg, 128, L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
           g_logger.Log(msg); }
         g_logger.Stop();
 
-        // guard.~SandboxGuard() runs remaining cleanups (reverse order)
         return static_cast<int>(exitCode);
     }
 
@@ -530,15 +531,21 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
+        g_logger.Log(L"EMERGENCY_CLEANUP: starting");
         RevokeDesktopAccess();
         RevokeAllGrants();
         DisableLoopback();
         std::wstring containerName = ContainerNameFromId(g_instanceId);
-        if (!containerName.empty())
-            DeleteAppContainerProfile(containerName.c_str());
+        if (!containerName.empty()) {
+            HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
+            g_logger.Log((L"PROFILE_DELETE: " + containerName +
+                (SUCCEEDED(hr) ? L" -> OK" : L" -> FAILED")).c_str());
+        }
         RestoreStaleGrants();
         RestoreStaleWER();
         DeleteCleanupTask();
+        g_logger.Log(L"EMERGENCY_CLEANUP: complete");
+        g_logger.Stop();
     }
 
 } // namespace Sandbox
