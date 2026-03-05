@@ -371,7 +371,8 @@ namespace Sandbox {
         LogStdinMode(config.stdinMode);
         std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
         LogEnvironmentState(config);
-        PrintConfigSummary(config, exePath, exeArgs, isRestricted);
+        if (!g_logger.IsActive())
+            PrintConfigSummary(config, exePath, exeArgs, isRestricted);
 
         // Step 3d: Setup audit and crash dumps
         std::wstring procmonExe;
