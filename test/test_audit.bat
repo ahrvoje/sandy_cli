@@ -161,4 +161,7 @@ if %FAIL% equ 0 (
 )
 echo =====================================================================
 
+REM === Clean up test folder ===
+if exist "%ROOT%" rmdir /s /q "%ROOT%"
+
 exit /b %FAIL%
