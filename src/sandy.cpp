@@ -6,7 +6,7 @@
 #include "framework.h"
 #include "Sandbox.h"
 
-constexpr const char* kVersion = "0.95";
+constexpr const char* kVersion = "0.96";
 
 // -----------------------------------------------------------------------
 // Print usage help (full reference including TOML config example)
@@ -118,6 +118,18 @@ static void PrintUsage()
         "\n"
         "Use appcontainer for network isolation. Use restricted for named pipes/COM.\n"
         "Wrong-mode flags are rejected (e.g. named_pipes in appcontainer, network in restricted).\n"
+        "\n"
+        "Logging (-l):\n"
+        "  Session log captures config, child output, exit code, and cleanup events.\n"
+        "  Log file uses unbuffered I/O with fsync — every write is on disk immediately.\n"
+        "  If file exists and --log-stamp is not used, POSIX rotation applies (.1, .2, ...).\n"
+        "  Use -L to prepend YYYYMMDD_HHMMSS_uid_ prefix for unique filenames.\n"
+        "  Timestamps are local time with ISO 8601 UTC offset.\n"
+        "\n"
+        "Audit (-a):\n"
+        "  Captures resource denial events via Procmon (headless). Requires Procmon + admin.\n"
+        "  Records file, registry, network, DLL, and process denials during child lifetime.\n"
+        "  Outputs deduplicated post-mortem log with summary counts.\n"
         "\n"
         "Profile mode (-p):\n"
         "  Runs the process UNSANDBOXED under Procmon, analyzes resource usage,\n"

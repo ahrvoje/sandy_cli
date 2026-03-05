@@ -386,25 +386,6 @@ timeout = 300
 
 ---
 
-## Audit
-
-The `-a` flag captures resource denial events via [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) (headless). Requires Procmon on PATH + admin. Sandy records all file, registry, network, DLL, and process denials during the child's lifetime, then outputs a deduplicated post-mortem log.
-
-```
-sandy.exe -c config.toml -a audit.log -x myapp.exe
-```
-
-```
-[13:07:38.12] T:4520   FILE    ACCESS DENIED       C:\Windows\System32\kernel32.dll
-[13:07:38.34] T:4520   REG     ACCESS DENIED       HKLM\Software\MyApp
-
-=== Summary: 47 unique events, 38 FILE, 3 REG, 4 NET, 2 IMAGE ===
-=== Repeated (x count) ===
-  x23  FILE    ACCESS DENIED       C:\Windows\System32
-```
-
----
-
 ## Logging
 
 Session logs (`-l`), audit logs (`-a`), and crash dumps (`-d`) write to the path you specify — relative paths resolve against the current working directory (standard POSIX behavior).
@@ -424,6 +405,25 @@ sandy.exe -L -l session.log -a audit.log -x myapp.exe
 ```
 
 All log timestamps use **local time with ISO 8601 UTC offset** (e.g. `2026-03-05T10:54:26.123+01:00`).
+
+---
+
+## Audit
+
+The `-a` flag captures resource denial events via [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) (headless). Requires Procmon on PATH + admin. Sandy records all file, registry, network, DLL, and process denials during the child's lifetime, then outputs a deduplicated post-mortem log.
+
+```
+sandy.exe -c config.toml -a audit.log -x myapp.exe
+```
+
+```
+[13:07:38.12] T:4520   FILE    ACCESS DENIED       C:\Windows\System32\kernel32.dll
+[13:07:38.34] T:4520   REG     ACCESS DENIED       HKLM\Software\MyApp
+
+=== Summary: 47 unique events, 38 FILE, 3 REG, 4 NET, 2 IMAGE ===
+=== Repeated (x count) ===
+  x23  FILE    ACCESS DENIED       C:\Windows\System32
+```
 
 ---
 
