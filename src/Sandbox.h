@@ -1,15 +1,16 @@
 #pragma once
 // =========================================================================
-// Sandbox.h — Sandbox orchestrator (pipeline architecture)
+// Sandbox.h — Sandbox orchestrator (single unified pipeline)
 //
-// Two clean pipelines: RunAppContainer() and RunRestricted().
-// Each pipeline is a sequence of self-contained, verifiable steps.
-// All utility logic lives in dedicated headers.
+// One linear pipeline: RunPipeline().  Mode-specific steps use simple
+// conditionals.  All cleanup is managed by SandboxGuard (RAII).
 // =========================================================================
 
 #include "framework.h"
 #include "SandboxConfig.h"
 #include "SandboxACL.h"
+#include "SandboxGrants.h"
+#include "SandboxGuard.h"
 #include "SandboxToken.h"
 #include "SandboxAudit.h"
 #include "SandboxCleanup.h"
@@ -20,18 +21,23 @@
 namespace Sandbox {
 
     // -----------------------------------------------------------------------
+    // RecordGrant callback — bridges SandboxACL.h → SandboxGrants.h
+    // -----------------------------------------------------------------------
+    inline void RecordGrantCallback(const std::wstring& path,
+                                     SE_OBJECT_TYPE objType,
+                                     PSECURITY_DESCRIPTOR pSD)
+    {
+        RecordGrant(path, objType, pSD);
+    }
+
+    // -----------------------------------------------------------------------
     // GrantConfiguredAccess — apply all configured folder grants.
-    //
-    // Inputs:  pSid    — SID to grant access to
-    //          config  — sandbox config with folders list
-    // Returns: true if all grants succeeded
-    // Verifiable: each folder's DACL contains the expected ACE
     // -----------------------------------------------------------------------
     inline bool GrantConfiguredAccess(PSID pSid, const SandboxConfig& config)
     {
         bool allOk = true;
         for (const auto& entry : config.folders) {
-            bool ok = GrantObjectAccess(pSid, entry.path, entry.access);
+            bool ok = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
             if (!ok) {
                 fprintf(stderr, "[Warning] Could not grant access to: %ls\n", entry.path.c_str());
                 allOk = false;
@@ -47,19 +53,13 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // ApplyDenyRules — apply all configured deny ACEs (after allows).
-    //
-    // Inputs:  pSid          — SID to deny access for
-    //          config        — sandbox config with denyFolders list
-    //          isAppContainer — true if running in AppContainer mode
-    // Returns: true if all deny rules succeeded
-    // Verifiable: each denied folder's DACL contains the expected DENY ACE
     // -----------------------------------------------------------------------
     inline bool ApplyDenyRules(PSID pSid, const SandboxConfig& config, bool isAppContainer)
     {
         bool allOk = true;
         for (const auto& entry : config.denyFolders) {
             if (entry.path.empty()) continue;
-            bool ok = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer);
+            bool ok = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
             if (!ok) {
                 fprintf(stderr, "[Warning] Could not deny access to: %ls\n", entry.path.c_str());
                 allOk = false;
@@ -75,18 +75,13 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // GrantRegistryAccess — apply configured registry key grants.
-    //
-    // Inputs:  pSid   — SID to grant access to
-    //          config — sandbox config with registryRead/registryWrite lists
-    // Returns: true if all grants succeeded
-    // Verifiable: each registry key's DACL contains the expected ACE
     // -----------------------------------------------------------------------
     inline bool GrantRegistryAccess(PSID pSid, const SandboxConfig& config)
     {
         bool allOk = true;
         for (const auto& key : config.registryRead) {
             std::wstring win32Path = RegistryToWin32Path(key);
-            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Read, SE_REGISTRY_KEY);
+            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Read, RecordGrantCallback, SE_REGISTRY_KEY);
             wchar_t msg[512];
             swprintf(msg, 512, L"GRANT_REG: [R] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
             g_logger.Log(msg);
@@ -97,7 +92,7 @@ namespace Sandbox {
         }
         for (const auto& key : config.registryWrite) {
             std::wstring win32Path = RegistryToWin32Path(key);
-            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Write, SE_REGISTRY_KEY);
+            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Write, RecordGrantCallback, SE_REGISTRY_KEY);
             wchar_t msg[512];
             swprintf(msg, 512, L"GRANT_REG: [W] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
             g_logger.Log(msg);
@@ -111,23 +106,13 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // AutoGrantExeFolderAccess — grant read access to exe and target folders.
-    //
-    // Grants read access to the sandy.exe folder and (if different) the
-    // target executable's folder so its DLLs are accessible.
-    //
-    // Inputs:  pSid     — SID to grant access to
-    //          exeFolder — sandy.exe working directory
-    //          exePath   — target executable path
-    // Effect:  DACL grants applied to both folders
-    // Verifiable: folders have read ACE for the given SID
     // -----------------------------------------------------------------------
     inline void AutoGrantExeFolderAccess(PSID pSid, const std::wstring& exeFolder,
                                           const std::wstring& exePath)
     {
-        GrantObjectAccess(pSid, exeFolder, AccessLevel::Read);
+        GrantObjectAccess(pSid, exeFolder, AccessLevel::Read, RecordGrantCallback);
         g_logger.Log((L"GRANT_AUTO: [R] " + exeFolder).c_str());
 
-        // Auto-grant read access to the target executable's folder
         wchar_t resolvedExe[MAX_PATH]{};
         DWORD found = SearchPathW(nullptr, exePath.c_str(), L".exe",
                                   MAX_PATH, resolvedExe, nullptr);
@@ -137,7 +122,7 @@ namespace Sandbox {
             if (slash != std::wstring::npos)
                 targetFolder.resize(slash);
             if (_wcsicmp(targetFolder.c_str(), exeFolder.c_str()) != 0) {
-                GrantObjectAccess(pSid, targetFolder, AccessLevel::Read);
+                GrantObjectAccess(pSid, targetFolder, AccessLevel::Read, RecordGrantCallback);
                 g_logger.Log((L"GRANT_AUTO: [R] " + targetFolder).c_str());
             }
         }
@@ -145,12 +130,6 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // SetupAudit — start Procmon audit capture if requested.
-    //
-    // Inputs:  auditLogPath — path for audit log (empty = no audit)
-    //          quiet        — suppress stderr output
-    // Outputs: procmonExe   — resolved Procmon path (for StopProcmonAudit)
-    //          auditActive  — true if audit is capturing
-    // Verifiable: Procmon process is running, PML file exists
     // -----------------------------------------------------------------------
     inline void SetupAudit(const std::wstring& auditLogPath, bool quiet,
                            std::wstring& procmonExe, bool& auditActive)
@@ -171,13 +150,6 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // SetupCrashDumps — enable WER crash dumps for the target process.
-    //
-    // Inputs:  auditLogPath — audit log path (triggers dumps if non-empty)
-    //          dumpPath     — explicit dump path (also triggers dumps)
-    //          exePath      — target executable (for WER key)
-    // Outputs: crashExeName    — exe basename (for later cleanup)
-    //          crashDumpsEnabled — true if WER was configured
-    // Verifiable: HKLM\...\LocalDumps\<exe> key exists with DumpType=1
     // -----------------------------------------------------------------------
     inline void SetupCrashDumps(const std::wstring& auditLogPath,
                                  const std::wstring& dumpPath,
@@ -197,18 +169,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // FinalizeAuditAndDumps — stop audit, report crash dumps, clean WER.
-    //
-    // Inputs:  auditActive      — whether audit was running
-    //          procmonExe       — Procmon path
-    //          auditLogPath     — audit log destination
-    //          dumpPath         — explicit dump path
-    //          crashDumpsEnabled — whether WER was configured
-    //          crashExeName     — exe basename for WER
-    //          childPid         — child process PID (for audit filtering)
-    //          exitCode         — child exit code (for crash detection)
-    // Effect:  stops Procmon, writes audit log, reports/copies crash dump
-    // Verifiable: audit log exists, crash dump copied to target path
+    // FinalizeAuditAndDumps — stop Procmon, report crash dumps, clean WER.
     // -----------------------------------------------------------------------
     inline void FinalizeAuditAndDumps(bool auditActive,
                                        const std::wstring& procmonExe,
@@ -247,39 +208,59 @@ namespace Sandbox {
     }
 
     // =====================================================================
-    // APPCONTAINER PIPELINE
+    // RunPipeline — single unified sandbox pipeline
     //
-    // Each line is a self-contained, independently verifiable step.
-    // The pipeline reads top-to-bottom as a specification of what happens.
+    // Phases:
+    //   1. SETUP    — create token/SID, log mode
+    //   2. GRANT    — apply ALLOW ACEs, DENY ACEs, registry, desktop
+    //   3. PREPARE  — capabilities, env, audit, pipes
+    //   4. LAUNCH   — create process, job, resume, relay output
+    //   5. CLEANUP  — revoke grants, delete profile, free resources
+    //
+    // Mode-specific steps are marked with [AC] or [RT] comments.
     // =====================================================================
-    inline int RunAppContainer(const SandboxConfig& config,
-                                const std::wstring& exePath,
-                                const std::wstring& exeArgs,
-                                const std::wstring& containerName,
-                                const std::wstring& exeFolder,
-                                const std::wstring& auditLogPath,
-                                const std::wstring& dumpPath)
+    inline int RunPipeline(const SandboxConfig& config,
+                            const std::wstring& exePath,
+                            const std::wstring& exeArgs,
+                            const std::wstring& containerName,
+                            const std::wstring& exeFolder,
+                            const std::wstring& auditLogPath,
+                            const std::wstring& dumpPath)
     {
-        // --- Step 1: Create AppContainer profile ---
-        PSID pContainerSid = nullptr;
-        bool containerCreated = false;
-        HRESULT hr = CreateAppContainerProfile(
-            containerName.c_str(), L"Sandy Sandbox",
-            L"Sandboxed environment for running executables",
-            nullptr, 0, &pContainerSid);
-        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
-            hr = DeriveAppContainerSidFromAppContainerName(containerName.c_str(), &pContainerSid);
-            containerCreated = false;
-        } else {
-            containerCreated = SUCCEEDED(hr);
-        }
-        if (FAILED(hr) || !pContainerSid) {
-            fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
-            return 1;
-        }
+        bool isRestricted = (config.tokenMode == TokenMode::Restricted);
+        bool isAppContainer = !isRestricted;
 
-        g_logger.Log(L"MODE: appcontainer");
-        {
+        SandboxGuard guard;  // RAII — all cleanup goes through guard
+
+        // =================================================================
+        // PHASE 1: SETUP — create token/SID, log mode
+        // =================================================================
+
+        PSID pSid = nullptr;           // The SID used for all ACL operations
+        HANDLE hRestrictedToken = nullptr;
+        bool containerCreated = false;
+
+        if (isAppContainer) {
+            // [AC] Create AppContainer profile → get container SID
+            PSID pContainerSid = nullptr;
+            HRESULT hr = CreateAppContainerProfile(
+                containerName.c_str(), L"Sandy Sandbox",
+                L"Sandboxed environment for running executables",
+                nullptr, 0, &pContainerSid);
+            if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
+                hr = DeriveAppContainerSidFromAppContainerName(containerName.c_str(), &pContainerSid);
+                containerCreated = false;
+            } else {
+                containerCreated = SUCCEEDED(hr);
+            }
+            if (FAILED(hr) || !pContainerSid) {
+                fprintf(stderr, "[Error] Could not create AppContainer (0x%08X).\n", hr);
+                return 1;
+            }
+            pSid = pContainerSid;
+            guard.Add([pContainerSid]() { FreeSid(pContainerSid); });
+
+            g_logger.Log(L"MODE: appcontainer");
             wchar_t msg[1024];
             swprintf(msg, 1024, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
             g_logger.Log(msg);
@@ -289,225 +270,107 @@ namespace Sandbox {
                 g_logger.Log(msg);
                 LocalFree(sidStr);
             }
-            swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
-            g_logger.Log(msg);
+
+        } else {
+            // [RT] Create restricted token + allocate grant SID
+            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity);
+            if (!hRestrictedToken) {
+                fprintf(stderr, "[Error] Could not create restricted token (error %lu).\n", GetLastError());
+                return 1;
+            }
+            guard.Add([&hRestrictedToken]() { if (hRestrictedToken) CloseHandle(hRestrictedToken); });
+
+            PSID pGrantSid = nullptr;
+            SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+            if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
+                0, 0, 0, 0, 0, 0, 0, &pGrantSid)) {
+                fprintf(stderr, "[Error] Could not allocate restricted SID (error %lu).\n", GetLastError());
+                return 1;
+            }
+            pSid = pGrantSid;
+            guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
+
+            g_logger.Log(config.integrity == IntegrityLevel::Low
+                         ? L"MODE: restricted token (Low integrity)"
+                         : L"MODE: restricted token (Medium integrity)");
+            g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
+                                           : L"Named Pipes: blocked (Everyone excluded)");
         }
 
-        // --- Step 2: Auto-grant read access to exe folders ---
-        AutoGrantExeFolderAccess(pContainerSid, exeFolder, exePath);
+        { wchar_t msg[1024]; swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str()); g_logger.Log(msg); }
 
-        // --- Step 3: Grant configured folder access ---
-        bool grantFailed = !GrantConfiguredAccess(pContainerSid, config);
+        // =================================================================
+        // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
+        // =================================================================
 
-        // --- Step 4: Apply deny rules ---
-        if (!ApplyDenyRules(pContainerSid, config, /*isAppContainer=*/true))
+        // Step 2a: Auto-grant read access to exe folders
+        AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
+
+        // Step 2b: [RT] Grant desktop access for the restricted token
+        if (isRestricted) {
+            GrantDesktopAccess(pSid);
+            g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
+            guard.Add([]() { RevokeDesktopAccess(); });
+        }
+
+        // Step 2c: Grant configured folder access
+        bool grantFailed = !GrantConfiguredAccess(pSid, config);
+
+        // Step 2d: Apply deny rules (always after allows — deny takes precedence)
+        if (!ApplyDenyRules(pSid, config, isAppContainer))
             grantFailed = true;
 
-        if (grantFailed)
-            fprintf(stderr, "          Run as Administrator to modify ACLs.\n");
+        // Step 2e: [RT] Grant registry access
+        if (isRestricted) {
+            if (!GrantRegistryAccess(pSid, config))
+                grantFailed = true;
+        }
 
-        // --- Step 4: Enable loopback if requested ---
-        if (config.allowLocalhost) {
+        // Step 2f: [AC] Enable loopback if requested
+        if (isAppContainer && config.allowLocalhost) {
             bool ok = EnableLoopback();
             if (!ok) {
                 fprintf(stderr, "[Warning] Could not enable localhost access.\n");
                 fprintf(stderr, "          Loopback exemption requires Administrator.\n");
             }
             g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
+            guard.Add([]() { DisableLoopback(); });
         }
-
-        // --- Step 5: Build capabilities (network SIDs) ---
-        CapabilityState caps = BuildCapabilities(config);
-
-        // --- Step 6: Build SECURITY_CAPABILITIES and attribute list ---
-        SECURITY_CAPABILITIES sc{};
-        sc.AppContainerSid = pContainerSid;
-        sc.Capabilities = caps.capCount > 0 ? caps.caps : nullptr;
-        sc.CapabilityCount = caps.capCount;
-
-        AttributeListState attrs = BuildAttributeList(config, &sc, /*isRestricted=*/false);
-        if (!attrs.valid) {
-            FreeCapabilities(caps);
-            FreeSid(pContainerSid);
-            return 1;
-        }
-
-        // --- Step 7: Log stdin, environment, and config summary ---
-        LogStdinMode(config.stdinMode);
-        std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
-        LogEnvironmentState(config);
-        PrintConfigSummary(config, exePath, exeArgs, /*isRestricted=*/false);
-
-        // --- Step 8: Setup audit and crash dumps ---
-        std::wstring procmonExe;
-        bool auditActive = false;
-        SetupAudit(auditLogPath, config.quiet, procmonExe, auditActive);
-
-        std::wstring crashExeName;
-        bool crashDumpsEnabled = false;
-        SetupCrashDumps(auditLogPath, dumpPath, exePath, crashExeName, crashDumpsEnabled);
-
-        // --- Step 9: Create output pipe and stdin handle ---
-        HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-        if (!SetupOutputPipe(hReadPipe, hWritePipe)) {
-            fprintf(stderr, "[Error] Could not create output pipe.\n");
-            FreeAttributeList(attrs);
-            FreeCapabilities(caps);
-            FreeSid(pContainerSid);
-            return 1;
-        }
-        HANDLE hStdin = nullptr, hStdinFile = nullptr;
-        if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
-            CloseHandle(hReadPipe); CloseHandle(hWritePipe);
-            FreeAttributeList(attrs);
-            FreeCapabilities(caps);
-            FreeSid(pContainerSid);
-            return 1;
-        }
-
-        // --- Step 10: Launch the child process ---
-        PROCESS_INFORMATION pi{};
-        bool launched = LaunchChildProcess(
-            /*isRestricted=*/false, nullptr, attrs.pAttrList,
-            envBlock, exeFolder, exePath, exeArgs, hStdin, hWritePipe, pi);
-
-        // Close write end and cleanup handles
-        CloseHandle(hWritePipe);
-        FreeAttributeList(attrs);
-        if (hStdinFile) CloseHandle(hStdinFile);
-
-        if (!launched) {
-            g_logger.LogSummary(GetLastError(), false, 0);
-            g_logger.Stop();
-            CloseHandle(hReadPipe);
-            // Cleanup
-            RevokeAllGrants();
-            DisableLoopback();
-            DeleteAppContainerProfile(containerName.c_str());
-            DeleteCleanupTask();
-            FreeCapabilities(caps);
-            FreeSid(pContainerSid);
-            return 1;
-        }
-
-        g_logger.LogConfig(config, exePath, exeArgs);
-
-        // --- Step 11: Assign job object for resource limits ---
-        HANDLE hJob = AssignJobObject(config, pi.hProcess);
-
-        // --- Step 12: Resume child and start timeout watchdog ---
-        ResumeThread(pi.hThread);
-        CloseHandle(pi.hThread);
-
-        TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
-        HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
-
-        // --- Step 13: Relay output and wait for exit ---
-        DWORD exitCode = RelayOutputAndWait(pi.hProcess, hReadPipe,
-                                             hTimeoutThread, timeoutCtx,
-                                             config.timeoutSeconds);
-
-        // --- Step 14: Log summary and finalize audit/dumps ---
-        g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
-        FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, dumpPath,
-                              crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
-
-        // --- Step 15: Cleanup all sandbox state ---
-        CloseHandle(pi.hProcess);
-        if (hJob) CloseHandle(hJob);
-
-        g_logger.Log(L"CLEANUP: starting");
-        RevokeAllGrants();
-        DisableLoopback();
-        HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
-        g_logger.Log((L"PROFILE_DELETE: " + containerName +
-            (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
-        DeleteCleanupTask();
-        g_logger.Log(L"CLEANUP: complete");
-        g_logger.Stop();
-        FreeCapabilities(caps);
-        FreeSid(pContainerSid);
-
-        return static_cast<int>(exitCode);
-    }
-
-    // =====================================================================
-    // RESTRICTED TOKEN PIPELINE
-    //
-    // Each line is a self-contained, independently verifiable step.
-    // The pipeline reads top-to-bottom as a specification of what happens.
-    // =====================================================================
-    inline int RunRestricted(const SandboxConfig& config,
-                              const std::wstring& exePath,
-                              const std::wstring& exeArgs,
-                              const std::wstring& exeFolder,
-                              const std::wstring& auditLogPath,
-                              const std::wstring& dumpPath)
-    {
-        // --- Step 1: Create restricted sandbox token ---
-        HANDLE hRestrictedToken = CreateRestrictedSandboxToken(config.integrity);
-        if (!hRestrictedToken) {
-            fprintf(stderr, "[Error] Could not create restricted token (error %lu).\n", GetLastError());
-            return 1;
-        }
-
-        // --- Step 2: Allocate restricted SID for DACL grants ---
-        PSID pGrantSid = nullptr;
-        SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
-        if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
-            0, 0, 0, 0, 0, 0, 0, &pGrantSid)) {
-            fprintf(stderr, "[Error] Could not allocate restricted SID (error %lu).\n", GetLastError());
-            CloseHandle(hRestrictedToken);
-            return 1;
-        }
-
-        g_logger.Log(config.integrity == IntegrityLevel::Low
-                     ? L"MODE: restricted token (Low integrity)"
-                     : L"MODE: restricted token (Medium integrity)");
-        g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
-                                       : L"Named Pipes: blocked (Everyone excluded)");
-        {
-            wchar_t msg[1024];
-            swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str());
-            g_logger.Log(msg);
-        }
-
-        // --- Step 3: Auto-grant read access to exe folders ---
-        AutoGrantExeFolderAccess(pGrantSid, exeFolder, exePath);
-
-        // --- Step 4: Grant desktop access for the restricted token ---
-        GrantDesktopAccess(pGrantSid);
-        g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
-
-        // --- Step 5: Grant configured folder access ---
-        bool grantFailed = !GrantConfiguredAccess(pGrantSid, config);
-
-        // --- Step 6: Apply deny rules ---
-        if (!ApplyDenyRules(pGrantSid, config, /*isAppContainer=*/false))
-            grantFailed = true;
-
-        // --- Step 7: Grant registry access ---
-        if (!GrantRegistryAccess(pGrantSid, config))
-            grantFailed = true;
 
         if (grantFailed)
             fprintf(stderr, "          Run as Administrator to modify ACLs.\n");
 
-        // --- Step 8: Build attribute list (child process policy only) ---
-        AttributeListState attrs = BuildAttributeList(config, nullptr, /*isRestricted=*/true);
-        if (!attrs.valid) {
-            FreeSid(pGrantSid);
-            CloseHandle(hRestrictedToken);
-            return 1;
+        // Register grant revocation in guard (runs on any exit)
+        guard.Add([]() { RevokeAllGrants(); });
+
+        // =================================================================
+        // PHASE 3: PREPARE — capabilities, env, pipes
+        // =================================================================
+
+        // Step 3a: [AC] Build capabilities (network SIDs)
+        CapabilityState caps = {};
+        SECURITY_CAPABILITIES sc{};
+        if (isAppContainer) {
+            caps = BuildCapabilities(config);
+            sc.AppContainerSid = pSid;
+            sc.Capabilities = caps.capCount > 0 ? caps.caps : nullptr;
+            sc.CapabilityCount = caps.capCount;
+            guard.Add([&caps]() { FreeCapabilities(caps); });
         }
 
-        // --- Step 9: Log stdin, environment, and config summary ---
+        // Step 3b: Build attribute list
+        AttributeListState attrs = BuildAttributeList(config,
+            isAppContainer ? &sc : nullptr, isRestricted);
+        if (!attrs.valid) return 1;
+        guard.Add([&attrs]() { FreeAttributeList(attrs); });
+
+        // Step 3c: Log stdin, build environment, print config summary
         LogStdinMode(config.stdinMode);
         std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
         LogEnvironmentState(config);
-        PrintConfigSummary(config, exePath, exeArgs, /*isRestricted=*/true);
+        PrintConfigSummary(config, exePath, exeArgs, isRestricted);
 
-        // --- Step 10: Setup audit and crash dumps ---
+        // Step 3d: Setup audit and crash dumps
         std::wstring procmonExe;
         bool auditActive = false;
         SetupAudit(auditLogPath, config.quiet, procmonExe, auditActive);
@@ -516,90 +379,100 @@ namespace Sandbox {
         bool crashDumpsEnabled = false;
         SetupCrashDumps(auditLogPath, dumpPath, exePath, crashExeName, crashDumpsEnabled);
 
-        // --- Step 11: Create output pipe and stdin handle ---
+        // Step 3e: Create output pipe and stdin handle
         HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
         if (!SetupOutputPipe(hReadPipe, hWritePipe)) {
             fprintf(stderr, "[Error] Could not create output pipe.\n");
-            FreeAttributeList(attrs);
-            FreeSid(pGrantSid);
-            CloseHandle(hRestrictedToken);
             return 1;
         }
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
         if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
             CloseHandle(hReadPipe); CloseHandle(hWritePipe);
-            FreeAttributeList(attrs);
-            FreeSid(pGrantSid);
-            CloseHandle(hRestrictedToken);
             return 1;
         }
 
-        // --- Step 12: Launch the child process ---
+        // =================================================================
+        // PHASE 4: LAUNCH & RUN
+        // =================================================================
+
+        // Step 4a: Launch the child process (suspended)
         PROCESS_INFORMATION pi{};
         bool launched = LaunchChildProcess(
-            /*isRestricted=*/true, hRestrictedToken, attrs.pAttrList,
-            envBlock, exeFolder, exePath, exeArgs, hStdin, hWritePipe, pi);
+            isRestricted,
+            isRestricted ? hRestrictedToken : nullptr,
+            attrs.pAttrList, envBlock, exeFolder, exePath, exeArgs,
+            hStdin, hWritePipe, pi);
 
+        // Close write end (parent doesn't need it) and stdin file
         CloseHandle(hWritePipe);
-        FreeAttributeList(attrs);
         if (hStdinFile) CloseHandle(hStdinFile);
 
         if (!launched) {
             g_logger.LogSummary(GetLastError(), false, 0);
             g_logger.Stop();
             CloseHandle(hReadPipe);
-            RevokeDesktopAccess();
-            RevokeAllGrants();
+            // [AC] Delete profile on launch failure
+            if (isAppContainer)
+                DeleteAppContainerProfile(containerName.c_str());
             DeleteCleanupTask();
-            FreeSid(pGrantSid);
-            CloseHandle(hRestrictedToken);
-            return 1;
+            return 1;  // guard runs all cleanup
         }
 
         g_logger.LogConfig(config, exePath, exeArgs);
 
-        // --- Step 13: Assign job object for resource limits ---
+        // Step 4b: Assign job object for resource limits
         HANDLE hJob = AssignJobObject(config, pi.hProcess);
 
-        // --- Step 14: Resume child and start timeout watchdog ---
+        // Step 4c: Resume child and start timeout watchdog
         ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
 
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
         HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
 
-        // --- Step 15: Relay output and wait for exit ---
+        // Step 4d: Relay output and wait for exit
         DWORD exitCode = RelayOutputAndWait(pi.hProcess, hReadPipe,
                                              hTimeoutThread, timeoutCtx,
                                              config.timeoutSeconds);
 
-        // --- Step 16: Log summary and finalize audit/dumps ---
+        // =================================================================
+        // PHASE 5: CLEANUP (guard handles grants, SID, token, caps, attrs)
+        // =================================================================
+
+        // Step 5a: Log summary and finalize audit/dumps
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
         FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, dumpPath,
                               crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
 
-        // --- Step 17: Cleanup all sandbox state ---
+        // Step 5b: Close process and job handles
         CloseHandle(pi.hProcess);
         if (hJob) CloseHandle(hJob);
 
+        // Step 5c: Mode-specific cleanup
         g_logger.Log(L"CLEANUP: starting");
-        RevokeDesktopAccess();
-        RevokeAllGrants();
+        // Guard will run: RevokeAllGrants, RevokeDesktopAccess (if RT),
+        //                 DisableLoopback (if AC+localhost), FreeCapabilities,
+        //                 FreeAttributeList, FreeSid, CloseHandle(token)
+
+        // [AC] Delete AppContainer profile
+        if (isAppContainer) {
+            HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
+            g_logger.Log((L"PROFILE_DELETE: " + containerName +
+                (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
+        }
+
         DeleteCleanupTask();
         g_logger.Log(L"CLEANUP: complete");
         g_logger.Stop();
-        FreeSid(pGrantSid);
-        CloseHandle(hRestrictedToken);
 
+        // guard.~SandboxGuard() runs remaining cleanups (reverse order)
         return static_cast<int>(exitCode);
     }
 
     // =====================================================================
-    // RunSandboxed — common entry point, dispatches to the correct pipeline.
+    // RunSandboxed — common entry point.
     //
-    // This is the top-level orchestrator. It performs instance-wide setup
-    // (ID generation, logger start, stale state cleanup) then delegates
-    // to either RunAppContainer() or RunRestricted().
+    // Instance-wide setup (ID, logger, stale state) then RunPipeline().
     // =====================================================================
     inline int RunSandboxed(const SandboxConfig& config,
                             const std::wstring& exePath,
@@ -610,7 +483,6 @@ namespace Sandbox {
         // --- Generate instance ID (UUID) for this run ---
         g_instanceId = GenerateInstanceId();
         std::wstring containerName = ContainerNameFromId(g_instanceId);
-        bool isRestricted = (config.tokenMode == TokenMode::Restricted);
 
         // --- Determine working directory ---
         std::wstring exeFolder = config.workdir.empty() ? GetExeFolder() : config.workdir;
@@ -627,14 +499,9 @@ namespace Sandbox {
         CreateCleanupTask();
         LogSandyIdentity();
 
-        // --- Dispatch to mode-specific pipeline ---
-        if (isRestricted) {
-            return RunRestricted(config, exePath, exeArgs, exeFolder,
-                                 auditLogPath, dumpPath);
-        } else {
-            return RunAppContainer(config, exePath, exeArgs, containerName,
-                                    exeFolder, auditLogPath, dumpPath);
-        }
+        // --- Run the unified pipeline ---
+        return RunPipeline(config, exePath, exeArgs, containerName,
+                            exeFolder, auditLogPath, dumpPath);
     }
 
     // -----------------------------------------------------------------------

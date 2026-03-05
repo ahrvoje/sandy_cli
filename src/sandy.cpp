@@ -6,7 +6,7 @@
 #include "framework.h"
 #include "Sandbox.h"
 
-constexpr const char* kVersion = "0.91";
+constexpr const char* kVersion = "0.95";
 
 // -----------------------------------------------------------------------
 // Print usage help (full reference including TOML config example)
