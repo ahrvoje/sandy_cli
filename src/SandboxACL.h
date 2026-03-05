@@ -1,7 +1,8 @@
 // =========================================================================
-// SandboxACL.h — Pure ACL operations (grant, deny, restore)
+// SandboxACL.h — Pure ACL operations (grant, deny, remove)
 //
-// Low-level helpers for modifying and restoring file/registry DACLs.
+// Low-level helpers for modifying file/registry DACLs and removing
+// specific SID ACEs.  Multi-instance safe: never replaces entire DACLs.
 // Grant tracking, persistence, and revocation are in SandboxGrants.h.
 // =========================================================================
 #pragma once
@@ -11,7 +12,8 @@
 namespace Sandbox {
 
     // Callback type for recording grants (defined in SandboxGrants.h)
-    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, PSECURITY_DESCRIPTOR);
+    // Receives: path, object type, SID string of the principal granted/denied
+    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&);
 
     // -----------------------------------------------------------------------
     // Convert user-friendly registry path to Win32 object path
@@ -64,13 +66,9 @@ namespace Sandbox {
     // Steps:
     //   1. Read current DACL
     //   2. Build new DACL with the ALLOW ACE added
-    //   3. Record the grant (in-memory + registry) via RecordGrant()
+    //   3. Record grant (path + SID string) via RecordGrant()
     //   4. Apply the new DACL (TreeSet for directories)
     //   5. Log resulting SDDL
-    //
-    // RecordGrant (from SandboxGrants.h) must be called AFTER this
-    // function — but the caller passes pSD so RecordGrant can snapshot
-    // the original DACL.  This is done via the recordFn callback.
     // -----------------------------------------------------------------------
     inline bool GrantObjectAccess(PSID pSid, const std::wstring& path,
                                   AccessLevel level,
@@ -99,10 +97,16 @@ namespace Sandbox {
         PACL pNewDacl = nullptr;
         rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
         if (rc != ERROR_SUCCESS) { LocalFree(pSD); return false; }
-
-        // 3. Record the grant (write-ahead before modifying the object)
-        if (recordFn) recordFn(path, objType, pSD);
         LocalFree(pSD);
+
+        // 3. Record the grant (path + SID string for ACE-level removal)
+        if (recordFn) {
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(pSid, &sidStr)) {
+                recordFn(path, objType, sidStr);
+                LocalFree(sidStr);
+            }
+        }
 
         // 4. Apply new DACL
         DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
@@ -163,8 +167,14 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) return false;
 
-        // Record the grant (write-ahead)
-        if (recordFn) recordFn(path, objType, pSD);
+        // Record the grant (path + SID for ACE-level removal)
+        if (recordFn) {
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(pSid, &sidStr)) {
+                recordFn(path, objType, sidStr);
+                LocalFree(sidStr);
+            }
+        }
 
         PACL pNewDacl = nullptr;
 
@@ -301,87 +311,120 @@ namespace Sandbox {
         }
         return rc == ERROR_SUCCESS;
     }
-
     // -----------------------------------------------------------------------
-    // RestoreDacl — restore a single object's DACL from saved SDDL.
-    // Uses TreeSet for directories. Falls back to NTFS Object ID if renamed.
+    // RemoveSidFromDacl — remove all ACEs for a specific SID from an object.
+    //
+    // Multi-instance safe: only removes ACEs matching the given SID string.
+    // Other ACEs (from other instances, users, system) are untouched.
+    // Uses TreeSet for directories to propagate to children.
+    // Returns number of ACEs removed.
     // -----------------------------------------------------------------------
-    inline void RestoreDacl(const std::wstring& path, const std::wstring& sddl,
-                            SE_OBJECT_TYPE objType,
-                            const BYTE objectId[16] = nullptr)
+    inline int RemoveSidFromDacl(const std::wstring& path,
+                                  const std::wstring& sidString,
+                                  SE_OBJECT_TYPE objType)
     {
-        std::wstring resolvedPath = path;
+        // Convert SID string to binary SID
+        PSID pTargetSid = nullptr;
+        if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid))
+            return 0;
 
-        // If original path is gone, try Object ID lookup
-        if (objType == SE_FILE_OBJECT &&
-            GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
-            objectId != nullptr) {
-            // ResolveByObjectId is in SandboxGrants.h — forward-declared here
-            // to avoid circular dependency.  The caller (RevokeAllGrants) always
-            // resolves before calling RestoreDacl, so objectId path is rare.
-            bool hasOid = false;
-            for (int i = 0; i < 16; i++) if (objectId[i]) { hasOid = true; break; }
-            if (!hasOid) {
-                g_logger.Log((L"ACL_RESTORE_SKIP: path gone, OID not found: " + path).c_str());
-                return;
-            }
-            // Volume-level Object ID lookup
-            if (path.size() < 2 || path[1] != L':') return;
-            std::wstring volPath = L"\\\\.\\" + path.substr(0, 2);
-            HANDLE hVol = CreateFileW(volPath.c_str(), GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                nullptr, OPEN_EXISTING, 0, nullptr);
-            if (hVol == INVALID_HANDLE_VALUE) {
-                g_logger.Log((L"ACL_RESTORE_SKIP: path gone, OID not found: " + path).c_str());
-                return;
-            }
-            FILE_ID_DESCRIPTOR fid = {};
-            fid.dwSize = sizeof(fid);
-            fid.Type = ObjectIdType;
-            memcpy(&fid.ObjectId, objectId, 16);
-            HANDLE hFile = OpenFileById(hVol, &fid, GENERIC_READ | WRITE_DAC,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                nullptr, FILE_FLAG_BACKUP_SEMANTICS);
-            CloseHandle(hVol);
-            if (hFile == INVALID_HANDLE_VALUE) {
-                g_logger.Log((L"ACL_RESTORE_SKIP: path gone, OID not found: " + path).c_str());
-                return;
-            }
-            wchar_t newPath[1024] = {};
-            DWORD len = GetFinalPathNameByHandleW(hFile, newPath, 1024, 0);
-            CloseHandle(hFile);
-            if (len == 0 || len >= 1024) return;
-            resolvedPath = newPath;
-            if (resolvedPath.substr(0, 4) == L"\\\\?\\")
-                resolvedPath = resolvedPath.substr(4);
-            g_logger.Log((L"OID_RESOLVE: " + path + L" -> " + resolvedPath).c_str());
-        }
-
+        // Read current DACL
+        PACL pOldDacl = nullptr;
         PSECURITY_DESCRIPTOR pSD = nullptr;
-        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                sddl.c_str(), SDDL_REVISION_1, &pSD, nullptr))
-            return;
-
-        BOOL present = FALSE, defaulted = FALSE;
-        PACL pDacl = nullptr;
-        if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-            DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(resolvedPath.c_str()) : 0;
-            bool isDir = (objType == SE_FILE_OBJECT)
-                         && (attrs != INVALID_FILE_ATTRIBUTES)
-                         && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-            if (isDir) {
-                TreeSetNamedSecurityInfoW(
-                    const_cast<LPWSTR>(resolvedPath.c_str()), objType,
-                    DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr,
-                    TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
-            } else {
-                SetNamedSecurityInfoW(
-                    const_cast<LPWSTR>(resolvedPath.c_str()), objType,
-                    DACL_SECURITY_INFORMATION, nullptr, nullptr, pDacl, nullptr);
-            }
-            g_logger.Log((L"ACL_RESTORE: " + resolvedPath).c_str());
+        DWORD rc = GetNamedSecurityInfoW(
+            path.c_str(), objType, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &pOldDacl, nullptr, &pSD);
+        if (rc != ERROR_SUCCESS) {
+            LocalFree(pTargetSid);
+            return 0;
         }
+
+        // Walk ACE list, build new DACL without matching ACEs
+        ACL_SIZE_INFORMATION aclInfo = {};
+        if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            return 0;
+        }
+
+        int removed = 0;
+        DWORD newAclSize = sizeof(ACL);
+        // First pass: compute size of new ACL
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
+
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+
+            if (pAceSid && EqualSid(pAceSid, pTargetSid)) {
+                removed++;
+            } else {
+                newAclSize += pAceHdr->AceSize;
+            }
+        }
+
+        if (removed == 0) {
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            return 0;
+        }
+
+        // Second pass: build new ACL
+        PACL pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+        if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            if (pNewDacl) LocalFree(pNewDacl);
+            return 0;
+        }
+
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
+
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+
+            if (pAceSid && EqualSid(pAceSid, pTargetSid))
+                continue;  // skip — this is ours
+            AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
+        }
+
         LocalFree(pSD);
+        LocalFree(pTargetSid);
+
+        // Apply cleaned DACL
+        DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+        bool isDir = (objType == SE_FILE_OBJECT)
+                     && (attrs != INVALID_FILE_ATTRIBUTES)
+                     && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+        if (isDir) {
+            rc = TreeSetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
+                TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
+        } else {
+            rc = SetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        }
+        LocalFree(pNewDacl);
+
+        if (rc == ERROR_SUCCESS) {
+            wchar_t msg[256];
+            swprintf(msg, 256, L"ACL_REMOVE: %s -> %d ACEs removed for SID %s",
+                     path.c_str(), removed, sidString.c_str());
+            g_logger.Log(msg);
+        }
+        return removed;
     }
 
 } // namespace Sandbox
+

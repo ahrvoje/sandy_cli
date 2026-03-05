@@ -22,9 +22,10 @@ Each Sandy instance applies its own config independently. Three concurrent
 instances can grant `read`, `write`, and `all` to the **same folder** and each
 will enforce different permissions. This is verified by `test_concurrent.bat`.
 
-During cleanup, each instance only revokes its own grants. The registry stores
-the original SDDL for each modified path, and `GetOtherInstancePaths()` ensures
-paths still needed by other live instances are not revoked prematurely.
+During cleanup, each instance removes only **its own ACEs** using `RemoveSidFromDacl`,
+which walks the DACL and removes ACEs matching the instance's SID. For shared SIDs
+(Restricted Token mode), `GetOtherInstancePaths()` skips paths still needed by
+other live instances.
 
 # ACL Propagation — TreeSetNamedSecurityInfoW
 
@@ -34,9 +35,9 @@ NOT reliably propagate to existing children, causing `0xC0000022` failures in
 large directory trees (e.g. Python's 36K files).
 
 This applies to all three DACL modification paths in `SandboxACL.h`:
-- `GrantObjectAccess` — grant
-- `RestoreGrantsFromKey` — crash recovery restore
-- `RevokeAllGrants` — in-process cleanup
+- `GrantObjectAccess` — grant (adds ACE)
+- `DenyObjectAccess` — deny (adds/modifies ACE)
+- `RemoveSidFromDacl` — cleanup (removes ACEs for a specific SID)
 
 **Never** replace `TreeSetNamedSecurityInfoW` with `SetNamedSecurityInfoW` for
 directories. File-only grants still use `SetNamedSecurityInfoW` (no children).
@@ -204,3 +205,58 @@ reducedMask = existingMask & ~(denyMask & ~sharedBits)
 ```
 
 **Shared bits** are always preserved: `SYNCHRONIZE`, `FILE_READ_ATTRIBUTES`, `READ_CONTROL`. These support basic file operations (`stat()`, handle synchronization, DACL inspection).
+
+# Multi-Instance ACL Safety — ACE-Level Removal
+
+## The Problem with DACL Snapshot Restoration
+
+The original design saved the full DACL as SDDL before granting, then replaced
+the entire DACL on cleanup. This races when multiple instances modify the same
+folder:
+
+```
+Instance A: saves DACL = S0
+Instance B: saves DACL = S0 + A's ACE = S1
+Instance A exits: replaces DACL with S0 → B's child loses access
+Instance B exits: replaces DACL with S1 → A's zombie ACE is back
+```
+
+## The Fix: ACE-Level Addition and Removal
+
+**Grant** adds an ACE for the instance's SID to the existing DACL.
+**Revoke** walks the DACL, removes only ACEs matching the instance's SID,
+leaves everything else untouched.
+
+This is implemented in `RemoveSidFromDacl()` (`SandboxACL.h`):
+1. Convert SID string → binary SID
+2. Read current DACL via `GetNamedSecurityInfoW`
+3. Walk ACE list with `GetAce()`, match via `EqualSid()`
+4. Build new DACL from non-matching ACEs
+5. Apply via `SetNamedSecurityInfoW` / `TreeSetNamedSecurityInfoW`
+
+## Registry Format Change
+
+| Field | Before | After |
+|-------|--------|-------|
+| Grant record | `TYPE\|PATH\|SDDL` | `TYPE\|PATH\|SID` |
+| `ACLGrant` struct | `originalSDDL` + `objectId[16]` | `sidString` |
+| `RecordGrant` param | `PSECURITY_DESCRIPTOR` | `const std::wstring& sidString` |
+
+## Mode-Specific Safety
+
+| Mode | SID per instance | Cleanup |
+|------|------------------|---------|
+| AppContainer | Unique (per-profile) | Remove ACEs for our SID — zero interference |
+| Restricted Token | Shared (`S-1-5-12`) | Skip paths used by other live instances |
+
+## Removed Components
+
+- `RestoreDacl()` — replaced by `RemoveSidFromDacl()`
+- `StampObjectId()` / `ResolveByObjectId()` — OID tracking not needed for ACE removal
+- SDDL snapshot in `RecordGrant()` — only SID string is stored
+
+**Never** revert to snapshot-based DACL restoration. ACE-level removal is the
+only approach that is safe for concurrent multi-instance operation.
+
+Verified by `test_multiinstance.bat` — overlapping grants, instance exit,
+DACL restoration, and kill+cleanup scenarios.

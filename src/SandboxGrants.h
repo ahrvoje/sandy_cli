@@ -2,8 +2,8 @@
 // SandboxGrants.h — Grant tracking, persistence, and revocation
 //
 // Tracks all ACL modifications made during a sandbox session, persists
-// them to the registry for crash recovery, and restores original DACLs
-// on exit.  Multi-instance safe: skips paths used by other live instances.
+// them to the registry for crash recovery, and removes only our ACEs
+// on exit.  Multi-instance safe: only touches ACEs for our own SID.
 // =========================================================================
 #pragma once
 
@@ -20,8 +20,7 @@ namespace Sandbox {
     struct ACLGrant {
         std::wstring       path;
         SE_OBJECT_TYPE     objType;
-        std::wstring       originalSDDL;
-        BYTE               objectId[16] = {};  // NTFS Object ID for rename-resilient cleanup
+        std::wstring       sidString;  // SID of the principal granted/denied
     };
 
     // -----------------------------------------------------------------------
@@ -120,36 +119,13 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Stamp NTFS Object ID on a file/directory for rename-resilient cleanup.
-    // Returns the 16-byte Object ID (or all zeros on failure).
-    // -----------------------------------------------------------------------
-    inline void StampObjectId(const std::wstring& path, BYTE outId[16])
-    {
-        memset(outId, 0, 16);
-        HANDLE hFile = CreateFileW(path.c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE) return;
-        FILE_OBJECTID_BUFFER ob = {};
-        DWORD b = 0;
-        if (DeviceIoControl(hFile, FSCTL_CREATE_OR_GET_OBJECT_ID,
-                nullptr, 0, &ob, sizeof(ob), &b, nullptr))
-            memcpy(outId, ob.ObjectId, 16);
-        CloseHandle(hFile);
-    }
-
-    // -----------------------------------------------------------------------
-    // Save a grant to the in-memory list AND the registry (write-ahead).
-    // Called by GrantObjectAccess and DenyObjectAccess before modifying DACLs.
+    // Save a grant to the in-memory list AND the registry.
+    // Called by GrantObjectAccess and DenyObjectAccess via RecordGrantCallback.
+    // Stores SID string (for ACE-level removal) — no SDDL snapshot.
     // -----------------------------------------------------------------------
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
-                            PSECURITY_DESCRIPTOR pSD)
+                            const std::wstring& sidString)
     {
-        LPWSTR origSddl = nullptr;
-        if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &origSddl, nullptr))
-            return;
-
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
         // --- Persist to registry ---
@@ -209,29 +185,15 @@ namespace Sandbox {
             RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
                              reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
 
-            // Format: TYPE|PATH|SDDL
+            // Format: TYPE|PATH|SID
             std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-            std::wstring data = typeStr + L"|" + path + L"|" + origSddl;
+            std::wstring data = typeStr + L"|" + path + L"|" + sidString;
 
             wchar_t valueName[32];
             swprintf(valueName, 32, L"%lu", nextIdx);
             RegSetValueExW(hKey, valueName, 0, REG_SZ,
                            reinterpret_cast<const BYTE*>(data.c_str()),
                            static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
-
-            // Stamp NTFS Object ID for rename-resilient cleanup
-            if (objType == SE_FILE_OBJECT) {
-                BYTE oid[16] = {};
-                StampObjectId(path, oid);
-                bool hasOid = false;
-                for (int i = 0; i < 16; i++) if (oid[i]) { hasOid = true; break; }
-                if (hasOid) {
-                    wchar_t oidName[32];
-                    swprintf(oidName, 32, L"_oid_%lu", nextIdx);
-                    RegSetValueExW(hKey, oidName, 0, REG_BINARY, oid, 16);
-                    g_logger.Log((L"OID_STAMP: " + path).c_str());
-                }
-            }
 
             // Increment counter
             nextIdx++;
@@ -243,13 +205,10 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { path, objType, origSddl };
-        if (objType == SE_FILE_OBJECT)
-            StampObjectId(path, grant.objectId);
+        ACLGrant grant = { path, objType, sidString };
         g_aclGrants.push_back(std::move(grant));
 
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
-        LocalFree(origSddl);
     }
 
     // -----------------------------------------------------------------------
@@ -264,58 +223,16 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Resolve a path via NTFS Object ID if original path is gone
+    // Collect path+SID pairs granted by OTHER live sandy instances.
+    // Returns set of "path|sid" strings for precise skip logic.
     // -----------------------------------------------------------------------
-    inline std::wstring ResolveByObjectId(const std::wstring& originalPath,
-                                          const BYTE objectId[16])
+    inline std::set<std::wstring> GetOtherInstancePathSids(const std::wstring& excludeId)
     {
-        bool hasOid = false;
-        for (int i = 0; i < 16; i++) { if (objectId[i]) { hasOid = true; break; } }
-        if (!hasOid) return {};
-
-        if (originalPath.size() < 2 || originalPath[1] != L':') return {};
-        std::wstring volPath = L"\\\\.\\" + originalPath.substr(0, 2);
-
-        HANDLE hVol = CreateFileW(volPath.c_str(), GENERIC_READ,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, 0, nullptr);
-        if (hVol == INVALID_HANDLE_VALUE) return {};
-
-        FILE_ID_DESCRIPTOR fid = {};
-        fid.dwSize = sizeof(fid);
-        fid.Type = ObjectIdType;
-        memcpy(&fid.ObjectId, objectId, 16);
-
-        HANDLE hFile = OpenFileById(hVol, &fid,
-            GENERIC_READ | WRITE_DAC,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            nullptr, FILE_FLAG_BACKUP_SEMANTICS);
-        CloseHandle(hVol);
-        if (hFile == INVALID_HANDLE_VALUE) return {};
-
-        wchar_t newPath[1024] = {};
-        DWORD len = GetFinalPathNameByHandleW(hFile, newPath, 1024, 0);
-        CloseHandle(hFile);
-        if (len == 0 || len >= 1024) return {};
-
-        std::wstring result = newPath;
-        if (result.substr(0, 4) == L"\\\\?\\")
-            result = result.substr(4);
-
-        g_logger.Log((L"OID_RESOLVE: " + originalPath + L" -> " + result).c_str());
-        return result;
-    }
-
-    // -----------------------------------------------------------------------
-    // Collect paths granted by OTHER live sandy instances
-    // -----------------------------------------------------------------------
-    inline std::set<std::wstring> GetOtherInstancePaths(const std::wstring& excludeId)
-    {
-        std::set<std::wstring> paths;
+        std::set<std::wstring> pathSids;
         HKEY hParent = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return paths;
+            return pathSids;
 
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
@@ -348,20 +265,26 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
+                // Format: TYPE|PATH|SID — extract path and SID
                 auto sep1 = data.find(L'|');
                 auto sep2 = data.rfind(L'|');
-                if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1)
-                    paths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
+                if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1) {
+                    std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
+                    std::wstring sid = data.substr(sep2 + 1);
+                    pathSids.insert(path + L"|" + sid);
+                }
             }
             RegCloseKey(hKey);
         }
         RegCloseKey(hParent);
-        return paths;
+        return pathSids;
     }
 
     // -----------------------------------------------------------------------
-    // RevokeAllGrants — restore all DACLs to pre-grant state.
-    // Thread-safe, multi-instance safe, double-cleanup guarded.
+    // RevokeAllGrants — remove all ACEs we added, using SID-based removal.
+    // Multi-instance safe: only removes ACEs for our SID.
+    // For shared SIDs (RT mode), skips paths used by other live instances.
+    // Thread-safe, double-cleanup guarded.
     // -----------------------------------------------------------------------
     inline void RevokeAllGrants()
     {
@@ -369,47 +292,32 @@ namespace Sandbox {
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
-        std::set<std::wstring> otherPaths = GetOtherInstancePaths(g_instanceId);
+        // Collect path+SID pairs from other live instances.
+        // Only skip removal when another instance uses the SAME SID on the SAME path
+        // (RT shared SID case). AppContainer instances have unique SIDs, so their
+        // ACE removal never interferes even on overlapping paths.
+        std::set<std::wstring> otherPathSids = GetOtherInstancePathSids(g_instanceId);
 
-        // Collect all grant paths for ancestor-skip logic
-        std::set<std::wstring> allGrantPaths;
-        for (const auto& grant : g_aclGrants)
-            allGrantPaths.insert(grant.path);
-
-        // Restore in reverse order
-        int restored = 0, skipped = 0;
+        // Deduplicate: same path may appear multiple times (grant + deny)
+        std::set<std::wstring> processed;
+        int removed = 0, skipped = 0;
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
-            if (otherPaths.count(it->path)) {
-                g_logger.Log((L"ACL_SKIP: " + it->path + L" (other instance active)").c_str());
+            // Skip if already processed this path
+            if (processed.count(it->path)) continue;
+            processed.insert(it->path);
+
+            // Skip only when another instance uses the same SID on the same path
+            std::wstring pathSidKey = it->path + L"|" + it->sidString;
+            if (otherPathSids.count(pathSidKey)) {
+                g_logger.Log((L"ACL_SKIP: " + it->path + L" (same SID active in other instance)").c_str());
                 skipped++;
                 continue;
             }
 
-            // Skip renamed children covered by a parent TreeSet
-            if (it->objType == SE_FILE_OBJECT &&
-                GetFileAttributesW(it->path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                bool hasParentGrant = false;
-                for (const auto& grantPath : allGrantPaths) {
-                    if (grantPath == it->path) continue;
-                    if (it->path.size() > grantPath.size() &&
-                        _wcsnicmp(it->path.c_str(), grantPath.c_str(), grantPath.size()) == 0 &&
-                        (it->path[grantPath.size()] == L'\\' || it->path[grantPath.size()] == L'/')) {
-                        hasParentGrant = true;
-                        break;
-                    }
-                }
-                if (hasParentGrant) {
-                    g_logger.Log((L"ACL_SKIP_CHILD: " + it->path +
-                                  L" (renamed, parent TreeSet will handle)").c_str());
-                    skipped++;
-                    continue;
-                }
-            }
-
-            RestoreDacl(it->path, it->originalSDDL, it->objType, it->objectId);
-            restored++;
+            int n = RemoveSidFromDacl(it->path, it->sidString, it->objType);
+            removed += n;
         }
-        { wchar_t msg[128]; swprintf(msg, 128, L"REVOKE_SUMMARY: %d restored, %d skipped", restored, skipped);
+        { wchar_t msg[128]; swprintf(msg, 128, L"REVOKE_SUMMARY: %d ACEs removed, %d paths skipped", removed, skipped);
           g_logger.Log(msg); }
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -417,7 +325,8 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // RestoreGrantsFromKey — restore grants from a single registry subkey
+    // RestoreGrantsFromKey — remove ACEs from a single registry subkey.
+    // Parses TYPE|PATH|SID format and removes the SID's ACEs.
     // -----------------------------------------------------------------------
     inline void RestoreGrantsFromKey(HKEY hKey,
                                       const std::set<std::wstring>& protectedPaths = {})
@@ -426,6 +335,7 @@ namespace Sandbox {
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
+        std::set<std::wstring> processed;
         for (DWORD vi = 0; vi < valueCount; vi++) {
             std::wstring vname, data;
             if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
@@ -437,20 +347,18 @@ namespace Sandbox {
 
             std::wstring typeStr = data.substr(0, sep1);
             std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
-            std::wstring sddl = data.substr(sep2 + 1);
+            std::wstring sidString = data.substr(sep2 + 1);
+
+            if (processed.count(path)) continue;
+            processed.insert(path);
 
             if (protectedPaths.count(path)) {
                 g_logger.Log((L"ACL_SKIP_STALE: " + path + L" (live instance active)").c_str());
                 continue;
             }
 
-            BYTE oid[16] = {};
-            std::wstring oidName = L"_oid_" + vname;
-            DWORD oidSize = 16;
-            RegQueryValueExW(hKey, oidName.c_str(), nullptr, nullptr, oid, &oidSize);
-
             SE_OBJECT_TYPE objType = (typeStr == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-            RestoreDacl(path, sddl, objType, oid);
+            RemoveSidFromDacl(path, sidString, objType);
         }
     }
 
@@ -531,7 +439,7 @@ namespace Sandbox {
             RegCloseKey(hKey);
         }
 
-        // Restore and delete stale (dead PID) subkeys only
+        // Remove stale ACEs and delete registry subkeys
         for (const auto& subKey : staleKeys) {
             std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + subKey;
             HKEY hKey = nullptr;

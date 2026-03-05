@@ -25,9 +25,9 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void RecordGrantCallback(const std::wstring& path,
                                      SE_OBJECT_TYPE objType,
-                                     PSECURITY_DESCRIPTOR pSD)
+                                     const std::wstring& sidString)
     {
-        RecordGrant(path, objType, pSD);
+        RecordGrant(path, objType, sidString);
     }
 
     // -----------------------------------------------------------------------
