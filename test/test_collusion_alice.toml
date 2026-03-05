@@ -1,0 +1,41 @@
+# Collusion test — Alice config (Instance A)
+# EXITS FIRST to trigger cleanup race
+
+[sandbox]
+token = 'appcontainer'
+workdir = 'inherit'
+
+[allow]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read = ['C:\Users\H\test_collusion\scripts']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_collusion\shared']
+
+[deny]
+all = []
+write = []
+read = []
+execute = []
+append = []
+delete = []
+
+[privileges]
+system_dirs = true
+network = false
+localhost = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = false
+
+[environment]
+inherit = false
+pass = []
+
+[limit]
+timeout = 60
+memory = 0
+processes = 0
