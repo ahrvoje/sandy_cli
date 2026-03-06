@@ -9,6 +9,17 @@
 
 ---
 
+## Quick Start
+
+```
+sandy.exe --print-container-toml > myconfig.toml     # generate template
+sandy.exe --dry-run -c myconfig.toml -x python.exe   # validate config (no changes)
+sandy.exe -c myconfig.toml -x python.exe script.py   # run sandboxed
+sandy.exe --status                                   # check active instances
+sandy.exe --cleanup                                  # fix stale state
+sandy.exe --explain 131                              # decode exit code
+```
+
 ## What is Sandy?
 
 Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). All settings are configured explicitly via TOML — no hidden defaults.
@@ -36,7 +47,10 @@ sandy.exe -p <report>       -x <executable> [args...]
 sandy.exe --print-container-toml          (print default appcontainer config)
 sandy.exe --print-restricted-toml         (print default restricted config)
 sandy.exe --cleanup                       (restore stale state from crashed runs)
-sandy.exe --status                        (show active instances and stale state)
+sandy.exe --status [--json]                (show active instances and stale state)
+sandy.exe --explain <code>                 (decode exit code: Sandy, NTSTATUS, Win32)
+sandy.exe --dry-run -c <config.toml> [-x <exec>]  (validate + show plan, no changes)
+sandy.exe --print-config -c <config.toml>  (print resolved config)
 ```
 
 | Flag | Description |
@@ -55,9 +69,31 @@ sandy.exe --status                        (show active instances and stale state
 | `--print-container-toml` | Print default AppContainer config to stdout |
 | `--print-restricted-toml` | Print default Restricted Token config to stdout |
 | `--cleanup` | Restore stale state from crashed runs (loopback, ACLs, WER, scheduled task) |
-| `--status` | Show active sandy instances, stale grants, and scheduled task |
+| `--status [--json]` | Show active sandy instances, stale grants, and scheduled tasks |
+| `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
+| `--dry-run`, `--check` | Validate config + show planned changes (no system modifications) |
+| `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
 
-All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it. Sandy forwards the child process's exit code.
+All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it.
+
+### Exit codes
+
+Sandy follows the POSIX high-code convention used by `bash`, `env`, `timeout`, and `git bisect`. Child exit codes 0-124 pass through with zero ambiguity.
+
+| Code | Meaning |
+|:----:|---------|
+| `0` | Success — child exited cleanly, or info command succeeded |
+| `1`-`124` | Child's exit code (passed through unchanged) |
+| `125` | Sandy internal / general error |
+| `126` | Cannot execute — `CreateProcess` failed (permission denied, bad format) |
+| `127` | Command not found — executable does not exist on disk |
+| `128` | Configuration error — invalid TOML, wrong-mode keys, config file not found |
+| `129` | Sandbox setup failed — token/SID creation, ACL grants, or pipe creation |
+| `130` | Timeout — child killed by Sandy's timeout watchdog |
+| `131` | Child crashed — NTSTATUS crash code detected (e.g. `0xC0000005`) |
+
+> [!TIP]
+> In automation scripts, check for `exit code >= 125` to detect Sandy-level errors. Codes 130 and 131 indicate the child ran but terminated abnormally.
 
 ---
 

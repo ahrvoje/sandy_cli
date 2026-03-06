@@ -15,6 +15,30 @@
 
 namespace Sandbox {
 
+    // -----------------------------------------------------------------------
+    // Sandy exit codes — POSIX high-code convention (125+).
+    //
+    // Child exit codes 0-124 pass through unchanged with zero ambiguity.
+    // Sandy wrapper errors use 125+ following bash/env/timeout/git bisect:
+    //   125   = internal error (git bisect convention)
+    //   126   = cannot execute (bash/env convention)
+    //   127   = command not found (bash/env convention)
+    //   128+  = Sandy-specific conditions
+    //
+    // On Windows, child exit codes > 124 (e.g. 0xC0000005 truncated to
+    // 8-bit) may alias Sandy codes — the EXIT_CLASS log line disambiguates.
+    // -----------------------------------------------------------------------
+    namespace SandyExit {
+        constexpr int Success      = 0;    // child exited 0, or info command succeeded
+        constexpr int InternalError = 125; // Sandy internal / unspecified error
+        constexpr int CannotExec   = 126;  // CreateProcess failed (permission denied, bad format)
+        constexpr int NotFound     = 127;  // executable not found on disk
+        constexpr int ConfigError  = 128;  // TOML parse/validation error, config file not found
+        constexpr int SetupError   = 129;  // sandbox setup failed (token, SID, ACL, pipes)
+        constexpr int Timeout      = 130;  // child killed by Sandy's timeout watchdog
+        constexpr int ChildCrash   = 131;  // child exited with NTSTATUS crash code
+    }
+
     // Container identity — per-instance UUID for isolation
     constexpr const wchar_t* kContainerPrefix = L"Sandy_";
 

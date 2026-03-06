@@ -91,7 +91,19 @@ Each instance creates its own scheduled task: `SandyCleanup_<uuid>`. On clean ex
 - Isolated flags (`--status`, `--cleanup`, `--print-*`, `-v`, `-h`) must appear alone
 - Informational output → stdout (pipeable, redirectable)
 - Errors/warnings → stderr
-- Exit code 0 = success, 1 = error
+- Exit codes (POSIX high-code convention, defined in `SandyExit` namespace in `SandboxTypes.h`):
+
+| Code | Meaning |
+|:----:|---------|
+| 0 | Success (child exited 0, or info command succeeded) |
+| 1-124 | Child exit code (passed through unchanged) |
+| 125 | Sandy internal / general error |
+| 126 | Cannot execute (CreateProcess failed) |
+| 127 | Command not found (exe doesn't exist) |
+| 128 | Configuration error (invalid TOML, file not found) |
+| 129 | Sandbox setup failed (token, SID, ACL, pipes) |
+| 130 | Timeout (child killed by watchdog) |
+| 131 | Child crashed (NTSTATUS crash code) |
 
 ---
 

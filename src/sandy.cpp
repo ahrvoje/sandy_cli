@@ -6,7 +6,8 @@
 #include "framework.h"
 #include "Sandbox.h"
 
-constexpr const char* kVersion = "0.96";
+constexpr const char* kVersion = "0.97";
+using namespace Sandbox;
 
 // -----------------------------------------------------------------------
 // Print usage help (full reference including TOML config example)
@@ -23,7 +24,10 @@ static void PrintUsage()
         "  sandy.exe --print-container-toml          (print default appcontainer config)\n"
         "  sandy.exe --print-restricted-toml         (print default restricted config)\n"
         "  sandy.exe --cleanup                       (restore stale state from crashed runs)\n"
-        "  sandy.exe --status                        (show active instances and stale state)\n"
+        "  sandy.exe --status [--json]                (show active instances and stale state)\n"
+        "  sandy.exe --explain <code>                 (decode exit code: Sandy, NTSTATUS, Win32)\n"
+        "  sandy.exe --dry-run -c <config.toml> [-x <exec>]  (validate + show plan, no changes)\n"
+        "  sandy.exe --print-config -c <config.toml>  (print resolved config)\n"
         "\n"
         "Options:\n"
         "  -c, --config <path>   Path to TOML config file\n"
@@ -35,6 +39,10 @@ static void PrintUsage()
         "  -x, --exec <path>     Executable to run sandboxed (consumes remaining args)\n"
         "  -p, --profile <path>  Profile unsandboxed run for sandbox feasibility (requires Procmon + admin)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
+        "  --dry-run, --check    Validate config + show plan (no system changes)\n"
+        "  --print-config        Print resolved config to stdout\n"
+        "  --json                JSON output (with --status)\n"
+        "  --explain <code>      Decode exit code (Sandy, NTSTATUS, Win32)\n"
         "  -v, --version         Print version\n"
         "  -h, --help            Print this help text\n"
         "\n"
@@ -145,11 +153,22 @@ static void PrintUsage()
         "  SEH handler catches fatal errors in sandy itself.\n"
         "\n"
         "Multi-instance:\n"
-        "  Each instance creates its own AppContainer profile (Sandy_<UUID>) with a\n"
-        "  unique SID, so concurrent instances do not interfere with each other's\n"
-        "  file grants. Registry state is keyed by UUID. On exit, an instance only\n"
-        "  revokes its own ACEs; paths still needed by other instances are preserved.\n"
-        "  Use --status to see active instances. Use --cleanup to clear stale state.\n",
+        "  Each instance uses a unique per-instance SID (AppContainer: S-1-15-2-*,\n"
+        "  Restricted Token: S-1-9-*), so concurrent instances do not interfere with\n"
+        "  each other's file grants. Registry state is keyed by UUID. On exit, each\n"
+        "  instance removes only its own ACEs. Use --status to see active instances.\n"
+        "  Use --cleanup to clear stale state.\n"
+        "\n"
+        "Exit codes (POSIX convention — child codes 0-124 pass through unchanged):\n"
+        "  0       Success (child exited 0, or info command succeeded)\n"
+        "  1-124   Child's exit code (passed through with zero ambiguity)\n"
+        "  125     Sandy internal/general error\n"
+        "  126     Cannot execute (CreateProcess failed, permission denied)\n"
+        "  127     Command not found (executable does not exist)\n"
+        "  128     Configuration error (invalid TOML, wrong-mode keys)\n"
+        "  129     Sandbox setup failed (token, SID, ACL, or pipe creation)\n"
+        "  130     Timeout (child killed by watchdog)\n"
+        "  131     Child crashed (NTSTATUS crash code detected)\n",
         kVersion
     );
 }
@@ -359,133 +378,142 @@ static std::vector<std::wstring> EnumSandyProfiles()
 }
 
 // -----------------------------------------------------------------------
-// Show active instances and stale state (--status)
+// Show active instances and stale state (--status [--json])
 // -----------------------------------------------------------------------
-static int HandleStatus()
+static int HandleStatus(bool json = false)
 {
-    bool found = false;
+    // --- Collect data ---
+    struct Inst { std::wstring uuid; DWORD pid; bool alive; };
+    struct Wer  { DWORD pid; std::wstring exe; bool alive; };
+    std::vector<Inst> insts;
+    std::vector<Wer>  wers;
+    std::vector<std::wstring> tasks;
+    std::vector<std::wstring> profiles;
 
-    // Check Grants registry
+    // Grants registry
     HKEY hGrants = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
                       KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        for (DWORD i = 0; i < subKeyCount; i++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hGrants, i, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
-            std::wstring fullKey = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + name;
-            HKEY hSub = nullptr;
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hSub) == ERROR_SUCCESS) {
-                Sandbox::ReadPidAndCtime(hSub, pid, ctime);
-                RegCloseKey(hSub);
+        DWORD n = 0;
+        RegQueryInfoKeyW(hGrants, 0, 0, 0, &n, 0, 0, 0, 0, 0, 0, 0);
+        for (DWORD i = 0; i < n; i++) {
+            wchar_t nm[128]; DWORD nl = 128;
+            if (RegEnumKeyExW(hGrants, i, nm, &nl, 0, 0, 0, 0) != ERROR_SUCCESS) continue;
+            std::wstring fk = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + nm;
+            HKEY hS = nullptr; DWORD pid = 0; ULONGLONG ct = 0;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fk.c_str(), 0, KEY_READ, &hS) == ERROR_SUCCESS) {
+                Sandbox::ReadPidAndCtime(hS, pid, ct); RegCloseKey(hS);
             }
-            if (Sandbox::IsProcessAlive(pid, ctime))
-                printf("  [ACTIVE]  PID %-6lu  %ls\n", pid, name);
-            else
-                printf("  [STALE]   PID %-6lu  %ls (dead process)\n", pid, name);
-            found = true;
+            insts.push_back({ nm, pid, Sandbox::IsProcessAlive(pid, ct) });
         }
         RegCloseKey(hGrants);
     }
 
-    // Check WER registry
+    // WER registry
     HKEY hWER = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
                       KEY_READ, &hWER) == ERROR_SUCCESS) {
-        DWORD valueCount = 0;
-        RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                         &valueCount, nullptr, nullptr, nullptr, nullptr);
-        for (DWORD i = 0; i < valueCount; i++) {
-            wchar_t name[64];
-            DWORD nameLen = 64;
-            DWORD dataSize = 0;
-            if (RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
-                              nullptr, &dataSize) != ERROR_SUCCESS)
-                continue;
-            DWORD pid = static_cast<DWORD>(_wtoi(name));
-            std::wstring exeName(dataSize / sizeof(wchar_t), L'\0');
-            nameLen = 64;
-            RegEnumValueW(hWER, i, name, &nameLen, nullptr, nullptr,
-                          reinterpret_cast<BYTE*>(&exeName[0]), &dataSize);
-            while (!exeName.empty() && exeName.back() == L'\0') exeName.pop_back();
-
+        DWORD vc = 0;
+        RegQueryInfoKeyW(hWER, 0, 0, 0, 0, 0, 0, &vc, 0, 0, 0, 0);
+        for (DWORD i = 0; i < vc; i++) {
+            wchar_t nm[64]; DWORD nl = 64, ds = 0;
+            if (RegEnumValueW(hWER, i, nm, &nl, 0, 0, 0, &ds) != ERROR_SUCCESS) continue;
+            DWORD pid = (DWORD)_wtoi(nm);
+            std::wstring exe(ds / sizeof(wchar_t), L'\0');
+            nl = 64;
+            RegEnumValueW(hWER, i, nm, &nl, 0, 0, (BYTE*)&exe[0], &ds);
+            while (!exe.empty() && exe.back() == L'\0') exe.pop_back();
             HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-            if (h) {
-                CloseHandle(h);
-                printf("  [ACTIVE]  PID %-6lu  WER key for %ls\n", pid, exeName.c_str());
-            } else {
-                printf("  [STALE]   PID %-6lu  WER key for %ls (dead process)\n", pid, exeName.c_str());
-            }
-            found = true;
+            bool alive = (h != nullptr); if (h) CloseHandle(h);
+            wers.push_back({ pid, exe, alive });
         }
         RegCloseKey(hWER);
     }
 
-    // Check scheduled tasks (enumerate SandyCleanup_* tasks)
+    // Scheduled tasks
     {
         std::wstring cmd = L"schtasks.exe /Query /FO CSV /NH";
-        HANDLE hRead = nullptr, hWrite = nullptr;
-        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
-        if (CreatePipe(&hRead, &hWrite, &sa, 0)) {
+        HANDLE hR = 0, hW = 0;
+        SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
+        if (CreatePipe(&hR, &hW, &sa, 0)) {
             STARTUPINFOW si = { sizeof(si) };
-            si.hStdOutput = hWrite;
-            si.hStdError = hWrite;
+            si.hStdOutput = hW; si.hStdError = hW;
             si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
             si.wShowWindow = SW_HIDE;
             PROCESS_INFORMATION pi{};
-            if (CreateProcessW(nullptr, const_cast<LPWSTR>(cmd.c_str()),
-                    nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-                CloseHandle(hWrite);
-                std::string output;
-                char buf[4096];
-                DWORD bytesRead;
-                while (ReadFile(hRead, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0)
-                    output.append(buf, bytesRead);
-                CloseHandle(hRead);
+            if (CreateProcessW(0, (LPWSTR)cmd.c_str(), 0, 0, TRUE,
+                               CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
+                CloseHandle(hW);
+                std::string out; char buf[4096]; DWORD br;
+                while (ReadFile(hR, buf, sizeof(buf), &br, 0) && br > 0) out.append(buf, br);
+                CloseHandle(hR);
                 WaitForSingleObject(pi.hProcess, 5000);
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                std::istringstream stream(output);
-                std::string line;
-                while (std::getline(stream, line)) {
-                    std::wstring wline(line.begin(), line.end());
-                    if (wline.find(Sandbox::kCleanupTaskPrefix) != std::wstring::npos) {
-                        // Extract task name between quotes
-                        auto q1 = wline.find(L'"');
-                        auto q2 = wline.find(L'"', q1 + 1);
-                        if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
-                            std::wstring taskPath = wline.substr(q1 + 1, q2 - q1 - 1);
-                            auto bs = taskPath.find_last_of(L'\\');
-                            std::wstring taskName = (bs != std::wstring::npos) ? taskPath.substr(bs + 1) : taskPath;
-                            printf("  [TASK]    %ls scheduled task exists\n", taskName.c_str());
-                            found = true;
-                        }
+                CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+                std::istringstream ss(out); std::string line;
+                while (std::getline(ss, line)) {
+                    std::wstring wl(line.begin(), line.end());
+                    if (wl.find(Sandbox::kCleanupTaskPrefix) == std::wstring::npos) continue;
+                    auto q1 = wl.find(L'"'), q2 = wl.find(L'"', q1 + 1);
+                    if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
+                        auto tp = wl.substr(q1 + 1, q2 - q1 - 1);
+                        auto bs = tp.find_last_of(L'\\');
+                        tasks.push_back(bs != std::wstring::npos ? tp.substr(bs + 1) : tp);
                     }
                 }
-            } else {
-                CloseHandle(hRead);
-                CloseHandle(hWrite);
-            }
+            } else { CloseHandle(hR); CloseHandle(hW); }
         }
     }
 
-    // Check Windows AppContainer Mappings for Sandy_ profiles
-    for (const auto& m : EnumSandyProfiles()) {
-        printf("  [PROFILE] %ls\n", m.c_str());
-        found = true;
-    }
+    profiles = EnumSandyProfiles();
 
-    if (!found)
-        printf("Sandy - no active instances or stale state.\n");
+    // --- Output ---
+    if (json) {
+        auto esc = [](const std::wstring& s) {
+            std::string r; for (wchar_t c : s) {
+                if (c == L'"') r += "\\\""; else if (c == L'\\') r += "\\\\";
+                else if (c < 128) r += (char)c;
+                else { char b[8]; snprintf(b, 8, "\\u%04X", (unsigned)c); r += b; }
+            } return r;
+        };
+        printf("{\"instances\":[");
+        for (size_t i = 0; i < insts.size(); i++)
+            printf("%s{\"uuid\":\"%s\",\"pid\":%lu,\"status\":\"%s\"}",
+                   i ? "," : "", esc(insts[i].uuid).c_str(),
+                   insts[i].pid, insts[i].alive ? "active" : "stale");
+        printf("],\"wer\":[");
+        for (size_t i = 0; i < wers.size(); i++)
+            printf("%s{\"pid\":%lu,\"exe\":\"%s\",\"status\":\"%s\"}",
+                   i ? "," : "", wers[i].pid,
+                   esc(wers[i].exe).c_str(), wers[i].alive ? "active" : "stale");
+        printf("],\"tasks\":[");
+        for (size_t i = 0; i < tasks.size(); i++)
+            printf("%s\"%s\"", i ? "," : "", esc(tasks[i]).c_str());
+        printf("],\"profiles\":[");
+        for (size_t i = 0; i < profiles.size(); i++)
+            printf("%s\"%s\"", i ? "," : "", esc(profiles[i]).c_str());
+        printf("]}\n");
+    } else {
+        bool found = false;
+        for (auto& x : insts) {
+            printf("  [%s]  PID %-6lu  %ls%s\n",
+                   x.alive ? "ACTIVE" : "STALE ", x.pid, x.uuid.c_str(),
+                   x.alive ? "" : " (dead process)");
+            found = true;
+        }
+        for (auto& w : wers) {
+            printf("  [%s]  PID %-6lu  WER key for %ls%s\n",
+                   w.alive ? "ACTIVE" : "STALE ", w.pid, w.exe.c_str(),
+                   w.alive ? "" : " (dead process)");
+            found = true;
+        }
+        for (auto& t : tasks) { printf("  [TASK]    %ls scheduled task exists\n", t.c_str()); found = true; }
+        for (auto& p : profiles) { printf("  [PROFILE] %ls\n", p.c_str()); found = true; }
+        if (!found) printf("Sandy - no active instances or stale state.\n");
+    }
     return 0;
 }
+
+
 
 // -----------------------------------------------------------------------
 // Restore stale state from crashed runs (--cleanup)
@@ -514,6 +542,284 @@ static int HandleCleanup()
 }
 
 // -----------------------------------------------------------------------
+// Explain an exit code (--explain <code>)
+// -----------------------------------------------------------------------
+static int HandleExplain(const wchar_t* codeStr)
+{
+    // Parse code (decimal, hex, or negative)
+    wchar_t* end = nullptr;
+    long long code = wcstoll(codeStr, &end, 0);
+    if (end == codeStr || *end != L'\0') {
+        fprintf(stderr, "Error: '%ls' is not a valid number.\n", codeStr);
+        return SandyExit::InternalError;
+    }
+    DWORD dw = static_cast<DWORD>(code);
+
+    printf("Code: %lld (0x%08X)\n\n", code, dw);
+
+    // Sandy exit codes
+    struct { int code; const char* name; const char* desc; } sandyCodes[] = {
+        { 0,   "Success",       "Child exited cleanly, or info command succeeded" },
+        { 125, "InternalError", "Sandy internal / general error" },
+        { 126, "CannotExec",    "CreateProcess failed (permission denied, bad format)" },
+        { 127, "NotFound",      "Executable not found on disk" },
+        { 128, "ConfigError",   "Configuration error (invalid TOML, wrong-mode keys)" },
+        { 129, "SetupError",    "Sandbox setup failed (token, SID, ACL, pipes)" },
+        { 130, "Timeout",       "Child killed by Sandy's timeout watchdog" },
+        { 131, "ChildCrash",    "Child crashed (NTSTATUS crash code detected)" },
+    };
+    for (auto& s : sandyCodes) {
+        if (s.code == static_cast<int>(code)) {
+            printf("Sandy exit code: %s\n  %s\n", s.name, s.desc);
+            return 0;
+        }
+    }
+
+    // Known NTSTATUS crash codes
+    struct { DWORD code; const char* name; } crashCodes[] = {
+        { 0xC0000005, "STATUS_ACCESS_VIOLATION (SIGSEGV equivalent)" },
+        { 0xC00000FD, "STATUS_STACK_OVERFLOW" },
+        { 0xC0000409, "STATUS_STACK_BUFFER_OVERRUN (/GS security check failure)" },
+        { 0x80000003, "STATUS_BREAKPOINT (INT 3 / debugger break)" },
+        { 0xC0000374, "STATUS_HEAP_CORRUPTION" },
+        { 0xC0000096, "STATUS_PRIVILEGED_INSTRUCTION" },
+        { 0xC000001D, "STATUS_ILLEGAL_INSTRUCTION" },
+        { 0xC0000094, "STATUS_INTEGER_DIVIDE_BY_ZERO" },
+        { 0xC000008C, "STATUS_ARRAY_BOUNDS_EXCEEDED" },
+        { 0xC0000135, "STATUS_DLL_NOT_FOUND" },
+        { 0xC0000142, "STATUS_DLL_INIT_FAILED" },
+        { 0x40010004, "STATUS_DEBUGGER_INACTIVE (WerFault)" },
+    };
+    for (auto& c : crashCodes) {
+        if (c.code == dw) {
+            printf("NTSTATUS: %s\n", c.name);
+            return 0;
+        }
+    }
+
+    // Try FormatMessage for Win32 or NTSTATUS
+    wchar_t* msgBuf = nullptr;
+    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    DWORD len = FormatMessageW(flags, nullptr, dw, MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+                               reinterpret_cast<LPWSTR>(&msgBuf), 0, nullptr);
+    if (len > 0 && msgBuf) {
+        // Strip trailing newline
+        while (len > 0 && (msgBuf[len-1] == L'\n' || msgBuf[len-1] == L'\r')) msgBuf[--len] = 0;
+        printf("System message: %ls\n", msgBuf);
+        LocalFree(msgBuf);
+    } else {
+        // Try NTSTATUS via ntdll
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll) {
+            len = FormatMessageW(flags | FORMAT_MESSAGE_FROM_HMODULE, hNtdll, dw,
+                                 MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+                                 reinterpret_cast<LPWSTR>(&msgBuf), 0, nullptr);
+            if (len > 0 && msgBuf) {
+                while (len > 0 && (msgBuf[len-1] == L'\n' || msgBuf[len-1] == L'\r')) msgBuf[--len] = 0;
+                printf("NTSTATUS message: %ls\n", msgBuf);
+                LocalFree(msgBuf);
+            } else {
+                printf("Unknown code.\n");
+            }
+        } else {
+            printf("Unknown code.\n");
+        }
+    }
+
+    // Additional context for NTSTATUS range
+    if (dw >= 0x80000000)
+        printf("  (NTSTATUS range: 0x8* = warning, 0xC* = error/crash)\n");
+    else if (code >= 1 && code <= 124)
+        printf("  (In Sandy: this would be the child process's own exit code)\n");
+
+    return 0;
+}
+
+// -----------------------------------------------------------------------
+// Dry-run mode (--dry-run / --check) — validate config + show plan
+// -----------------------------------------------------------------------
+static const char* AccessLevelName(Sandbox::AccessLevel a) {
+    switch (a) {
+        case Sandbox::AccessLevel::Read:    return "read";
+        case Sandbox::AccessLevel::Write:   return "write";
+        case Sandbox::AccessLevel::Execute: return "execute";
+        case Sandbox::AccessLevel::Append:  return "append";
+        case Sandbox::AccessLevel::Delete:  return "delete";
+        case Sandbox::AccessLevel::All:     return "all";
+    }
+    return "?";
+}
+
+static void PrintFolderEntries(const char* section,
+                               const std::vector<Sandbox::FolderEntry>& entries)
+{
+    printf("[%s]\n", section);
+    if (entries.empty()) { printf("  (none)\n"); return; }
+    // Group by access level
+    for (int a = 0; a <= 5; a++) {
+        auto lvl = static_cast<Sandbox::AccessLevel>(a);
+        bool first = true;
+        for (auto& e : entries) {
+            if (e.access != lvl) continue;
+            if (first) { printf("  %s:\n", AccessLevelName(lvl)); first = false; }
+            printf("    %ls\n", e.path.c_str());
+        }
+    }
+}
+
+static int HandleDryRun(const Sandbox::SandboxConfig& config,
+                        const std::wstring& exePath,
+                        const std::wstring& exeArgs)
+{
+    bool isRestricted = (config.tokenMode == Sandbox::TokenMode::Restricted);
+    printf("=== Sandy Dry Run ===\n\n");
+
+    printf("Mode: %s\n", isRestricted ? "restricted" : "appcontainer");
+    if (isRestricted)
+        printf("Integrity: %s\n",
+               config.integrity == Sandbox::IntegrityLevel::Low ? "low" : "medium");
+    if (!exePath.empty()) printf("Executable: %ls\n", exePath.c_str());
+    if (!exeArgs.empty()) printf("Arguments: %ls\n", exeArgs.c_str());
+    printf("Working dir: %s\n\n",
+           config.workdir.empty() ? "(sandy.exe folder)" : "custom");
+
+    PrintFolderEntries("allow", config.folders);
+    printf("\n");
+    PrintFolderEntries("deny", config.denyFolders);
+
+    printf("\n[privileges]\n");
+    if (!isRestricted) {
+        printf("  system_dirs:     %s\n", config.allowSystemDirs ? "true" : "false");
+        printf("  network:         %s\n", config.allowNetwork ? "true" : "false");
+        printf("  localhost:       %s\n", config.allowLocalhost ? "true" : "false");
+        printf("  lan:             %s\n", config.allowLan ? "true" : "false");
+    } else {
+        printf("  named_pipes:     %s\n", config.allowNamedPipes ? "true" : "false");
+    }
+    printf("  stdin:           %ls\n", config.stdinMode.c_str());
+    printf("  clipboard_read:  %s\n", config.allowClipboardRead ? "true" : "false");
+    printf("  clipboard_write: %s\n", config.allowClipboardWrite ? "true" : "false");
+    printf("  child_processes: %s\n", config.allowChildProcesses ? "true" : "false");
+
+    if (isRestricted) {
+        printf("\n[registry]\n");
+        if (!config.registryRead.empty()) {
+            printf("  read:\n");
+            for (auto& k : config.registryRead) printf("    %ls\n", k.c_str());
+        }
+        if (!config.registryWrite.empty()) {
+            printf("  write:\n");
+            for (auto& k : config.registryWrite) printf("    %ls\n", k.c_str());
+        }
+        if (config.registryRead.empty() && config.registryWrite.empty())
+            printf("  (none)\n");
+    }
+
+    printf("\n[limit]\n");
+    printf("  timeout:   %lu%s\n", config.timeoutSeconds,
+           config.timeoutSeconds == 0 ? " (unlimited)" : "s");
+    printf("  memory:    %zuMB%s\n", config.memoryLimitMB,
+           config.memoryLimitMB == 0 ? " (unlimited)" : "");
+    printf("  processes: %lu%s\n", config.maxProcesses,
+           config.maxProcesses == 0 ? " (unlimited)" : "");
+
+    printf("\n[environment]\n");
+    printf("  inherit: %s\n", config.envInherit ? "true" : "false");
+    if (!config.envPass.empty()) {
+        printf("  pass:");
+        for (auto& v : config.envPass) printf(" %ls", v.c_str());
+        printf("\n");
+    }
+
+    printf("\n=== Config valid. No system state modified. ===\n");
+    return 0;
+}
+
+// -----------------------------------------------------------------------
+// Print resolved config (--print-config)
+// -----------------------------------------------------------------------
+static void PrintFolderToml(const char* section,
+                            const std::vector<Sandbox::FolderEntry>& entries)
+{
+    printf("[%s]\n", section);
+    for (int a = 0; a <= 5; a++) {
+        auto lvl = static_cast<Sandbox::AccessLevel>(a);
+        std::string paths;
+        for (auto& e : entries) {
+            if (e.access != lvl) continue;
+            if (!paths.empty()) paths += ", ";
+            // Convert wstring path to narrow for printf
+            paths += "'";
+            for (wchar_t c : e.path) paths += (c < 128) ? (char)c : '?';
+            paths += "'";
+        }
+        if (!paths.empty())
+            printf("%s = [%s]\n", AccessLevelName(lvl), paths.c_str());
+    }
+}
+
+static int HandlePrintConfig(const Sandbox::SandboxConfig& config)
+{
+    bool isRT = (config.tokenMode == Sandbox::TokenMode::Restricted);
+
+    printf("[sandbox]\n");
+    printf("token = '%s'\n", isRT ? "restricted" : "appcontainer");
+    if (isRT)
+        printf("integrity = '%s'\n",
+               config.integrity == Sandbox::IntegrityLevel::Low ? "low" : "medium");
+    printf("workdir = '%ls'\n\n",
+           config.workdir.empty() ? L"inherit" : config.workdir.c_str());
+
+    PrintFolderToml("allow", config.folders);
+    printf("\n");
+    PrintFolderToml("deny", config.denyFolders);
+
+    printf("\n[privileges]\n");
+    if (!isRT) {
+        printf("system_dirs     = %s\n", config.allowSystemDirs ? "true" : "false");
+        printf("network         = %s\n", config.allowNetwork ? "true" : "false");
+        printf("localhost       = %s\n", config.allowLocalhost ? "true" : "false");
+        printf("lan             = %s\n", config.allowLan ? "true" : "false");
+    } else {
+        printf("named_pipes     = %s\n", config.allowNamedPipes ? "true" : "false");
+    }
+    printf("stdin           = %ls\n", config.stdinMode.c_str());
+    printf("clipboard_read  = %s\n", config.allowClipboardRead ? "true" : "false");
+    printf("clipboard_write = %s\n", config.allowClipboardWrite ? "true" : "false");
+    printf("child_processes = %s\n", config.allowChildProcesses ? "true" : "false");
+
+    if (isRT) {
+        printf("\n[registry]\n");
+        auto printKeys = [](const char* k, const std::vector<std::wstring>& v) {
+            printf("%s = [", k);
+            for (size_t i = 0; i < v.size(); i++) {
+                if (i) printf(", ");
+                printf("'%ls'", v[i].c_str());
+            }
+            printf("]\n");
+        };
+        printKeys("read",  config.registryRead);
+        printKeys("write", config.registryWrite);
+    }
+
+    printf("\n[environment]\n");
+    printf("inherit = %s\n", config.envInherit ? "true" : "false");
+    printf("pass = [");
+    for (size_t i = 0; i < config.envPass.size(); i++) {
+        if (i) printf(", ");
+        printf("'%ls'", config.envPass[i].c_str());
+    }
+    printf("]\n");
+
+    printf("\n[limit]\n");
+    printf("timeout   = %lu\n", config.timeoutSeconds);
+    printf("memory    = %zu\n", config.memoryLimitMB);
+    printf("processes = %lu\n", config.maxProcesses);
+
+    return 0;
+}
+
+// -----------------------------------------------------------------------
 // Sandboxed execution (separated for SEH wrapping)
 // -----------------------------------------------------------------------
 static int RunMain(int argc, wchar_t* argv[])
@@ -528,22 +834,24 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring exeArgs;
     bool quiet = false;
     bool logStamp = false;
+    bool dryRun = false;
+    bool printConfig = false;
+    bool jsonOutput = false;
 
     // --- Pre-scan for isolated flags ---
-    // These flags must appear alone (with no other options).
-    // They write informational output to stdout/stderr and exit immediately.
+    // These flags must appear alone (or with a minimal companion like --json).
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
         bool isIsolated = (arg == L"-v" || arg == L"--version" ||
                            arg == L"-h" || arg == L"--help" ||
-                           arg == L"--status" || arg == L"--cleanup" ||
+                           arg == L"--cleanup" ||
                            arg == L"--print-container-toml" ||
                            arg == L"--print-restricted-toml");
         if (isIsolated) {
             if (argc > 2) {
                 fprintf(stderr, "Error: %ls must be used alone, without other options.\n",
                         arg.c_str());
-                return 1;
+                return SandyExit::InternalError;
             }
             if (arg == L"-v" || arg == L"--version") {
                 printf("sandy v%s\n", kVersion);
@@ -561,12 +869,28 @@ static int RunMain(int argc, wchar_t* argv[])
                 PrintRestrictedToml();
                 return 0;
             }
-            if (arg == L"--status") {
-                return HandleStatus();
-            }
             if (arg == L"--cleanup") {
                 return HandleCleanup();
             }
+        }
+
+        // --status [--json] — up to 2 args
+        if (arg == L"--status") {
+            bool json = (argc > 2 && std::wstring(argv[i == 1 ? 2 : 1]) == L"--json");
+            if (argc > (json ? 3 : 2)) {
+                fprintf(stderr, "Error: --status only accepts --json as companion.\n");
+                return SandyExit::InternalError;
+            }
+            return HandleStatus(json);
+        }
+
+        // --explain <code> — exactly 2 args
+        if (arg == L"--explain") {
+            if (argc != 3 || i + 1 >= argc) {
+                fprintf(stderr, "Error: --explain requires exactly one argument.\n");
+                return SandyExit::InternalError;
+            }
+            return HandleExplain(argv[i + 1]);
         }
     }
 
@@ -579,6 +903,12 @@ static int RunMain(int argc, wchar_t* argv[])
         }
         else if (arg == L"-L" || arg == L"--log-stamp") {
             logStamp = true;
+        }
+        else if (arg == L"--dry-run" || arg == L"--check") {
+            dryRun = true;
+        }
+        else if (arg == L"--print-config") {
+            printConfig = true;
         }
         else if ((arg == L"-c" || arg == L"--config") && i + 1 < argc) {
             configPath = argv[++i];
@@ -614,7 +944,7 @@ static int RunMain(int argc, wchar_t* argv[])
         else {
             fprintf(stderr, "Unknown option: %ls\n\n", arg.c_str());
             PrintUsage();
-            return 1;
+            return SandyExit::InternalError;
         }
     }
 
@@ -623,22 +953,27 @@ static int RunMain(int argc, wchar_t* argv[])
         if (exePath.empty()) {
             fprintf(stderr, "Error: -p requires -x <executable>.\n\n");
             PrintUsage();
-            return 1;
+            return SandyExit::InternalError;
         }
         int rc = Sandbox::RunProfile(exePath, exeArgs, profilePath);
         return rc;
     }
 
     // --- No config/exec provided ---
-    if ((configPath.empty() && configString.empty()) || exePath.empty()) {
+    if (configPath.empty() && configString.empty()) {
         PrintUsage();
-        return 1;
+        return SandyExit::InternalError;
+    }
+    if (exePath.empty() && !dryRun && !printConfig) {
+        fprintf(stderr, "Error: -x <executable> required (or use --dry-run / --print-config).\n\n");
+        PrintUsage();
+        return SandyExit::InternalError;
     }
 
     if (!configPath.empty() && !configString.empty()) {
         fprintf(stderr, "Error: -c and -s are mutually exclusive.\n\n");
         PrintUsage();
-        return 1;
+        return SandyExit::InternalError;
     }
 
     // --- Load configuration ---
@@ -649,14 +984,21 @@ static int RunMain(int argc, wchar_t* argv[])
         DWORD attrs = GetFileAttributesW(configPath.c_str());
         if (attrs == INVALID_FILE_ATTRIBUTES) {
             fprintf(stderr, "Error: Config file not found: %ls\n", configPath.c_str());
-            return 1;
+            return SandyExit::ConfigError;
         }
         config = Sandbox::LoadConfig(configPath);
     }
     if (config.parseError) {
         fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
-        return 1;
+        return SandyExit::ConfigError;
     }
+
+    // --- Config-only modes (no -x needed) ---
+    if (printConfig)
+        return HandlePrintConfig(config);
+    if (dryRun)
+        return HandleDryRun(config, exePath, exeArgs);
+
     // --- Apply timestamp + UID prefix to log filenames if --log-stamp ---
     if (logStamp) {
         SYSTEMTIME st;
@@ -702,9 +1044,8 @@ int wmain(int argc, wchar_t* argv[])
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();
-        wchar_t msg[128]; swprintf(msg, 128, L"FATAL_EXCEPTION: 0x%08X", code);
-        Sandbox::g_logger.Log(msg);
-        Sandbox::CleanupSandbox();
-        return 1;
+        g_logger.LogFmt(L"FATAL_EXCEPTION: 0x%08X", code);
+        CleanupSandbox();
+        return SandyExit::InternalError;
     }
 }

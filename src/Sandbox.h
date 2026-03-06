@@ -320,7 +320,7 @@ namespace Sandbox {
         auto setup = isAppContainer
             ? SetupAppContainer(containerName, guard)
             : SetupRestrictedToken(config, guard);
-        if (!setup.ok) return 1;
+        if (!setup.ok) return SandyExit::SetupError;
 
         PSID pSid = setup.pSid;
         HANDLE hRestrictedToken = setup.hRestrictedToken;
@@ -330,6 +330,7 @@ namespace Sandbox {
         // =================================================================
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
         // =================================================================
+        ULONGLONG tGrantStart = GetTickCount64();
 
         // Step 2a: Auto-grant read access to exe folders
         AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
@@ -368,6 +369,8 @@ namespace Sandbox {
         // Register grant revocation in guard (runs on any exit)
         guard.Add([]() { RevokeAllGrants(); });
 
+        g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
+
         // =================================================================
         // PHASE 3: PREPARE — capabilities, env, pipes
         // =================================================================
@@ -386,7 +389,7 @@ namespace Sandbox {
         // Step 3b: Build attribute list
         AttributeListState attrs = BuildAttributeList(config,
             isAppContainer ? &sc : nullptr, isRestricted);
-        if (!attrs.valid) return 1;
+        if (!attrs.valid) return SandyExit::SetupError;
         guard.Add([&attrs]() { FreeAttributeList(attrs); });
 
         // Step 3c: Log stdin, build environment, print config summary
@@ -409,13 +412,15 @@ namespace Sandbox {
         HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
         if (!SetupOutputPipe(hReadPipe, hWritePipe)) {
             g_logger.Log(L"ERROR: pipe creation failed");
-            return 1;
+            return SandyExit::SetupError;
         }
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
         if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
             CloseHandle(hReadPipe); CloseHandle(hWritePipe);
-            return 1;
+            return SandyExit::SetupError;
         }
+
+        g_logger.LogFmt(L"TIMING: total setup %llums (ready to launch)", GetTickCount64() - tGrantStart);
 
         // =================================================================
         // PHASE 4: LAUNCH & RUN
@@ -437,8 +442,9 @@ namespace Sandbox {
         if (hStdinFile) CloseHandle(hStdinFile);
 
         if (!launched) {
+            DWORD launchErr = GetLastError();
             g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
-            g_logger.LogSummary(GetLastError(), false, 0);
+            g_logger.LogSummary(launchErr, false, 0);
             CloseHandle(hReadPipe);
             // [AC] Delete profile on launch failure
             if (isAppContainer)
@@ -447,7 +453,10 @@ namespace Sandbox {
             DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (launch failure)");
             g_logger.Stop();
-            return 1;
+            // POSIX convention: 127 = not found, 126 = cannot execute
+            bool notFound = (launchErr == ERROR_FILE_NOT_FOUND ||
+                             launchErr == ERROR_PATH_NOT_FOUND);
+            return notFound ? SandyExit::NotFound : SandyExit::CannotExec;
         }
 
         // Step 4b: Assign job object for resource limits
@@ -507,7 +516,19 @@ namespace Sandbox {
         g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
         g_logger.Stop();
 
-        return static_cast<int>(exitCode);
+        // Map child exit code to Sandy exit code:
+        //   timeout  → SandyExit::Timeout (7)
+        //   crash    → SandyExit::ChildCrash (9)
+        //   normal   → child's exit code as-is
+        int sandyExit;
+        if (timeoutCtx.timedOut)
+            sandyExit = SandyExit::Timeout;
+        else if (IsCrashExitCode(exitCode))
+            sandyExit = SandyExit::ChildCrash;
+        else
+            sandyExit = static_cast<int>(exitCode);
+
+        return sandyExit;
     }
 
     // =====================================================================
@@ -528,7 +549,7 @@ namespace Sandbox {
         // --- Determine working directory ---
         std::wstring exeFolder = config.workdir.empty() ? GetExeFolder() : config.workdir;
         if (exeFolder.empty())
-            return 1;
+            return SandyExit::SetupError;
 
         // --- Start logger early for forensic logging ---
         if (!config.logPath.empty())
