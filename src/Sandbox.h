@@ -39,14 +39,10 @@ namespace Sandbox {
         bool allOk = true;
         for (const auto& entry : config.folders) {
             bool ok = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
-            if (!ok) {
-                allOk = false;
-            }
-            wchar_t msg[1024];
-            swprintf(msg, 1024, L"GRANT: [%s] %s -> %s (mask=0x%08X)",
-                     AccessTag(entry.access), entry.path.c_str(),
-                     ok ? L"OK" : L"FAILED", AccessMask(entry.access));
-            g_logger.Log(msg);
+            if (!ok) allOk = false;
+            g_logger.LogFmt(L"GRANT: [%s] %s -> %s (mask=0x%08X)",
+                            AccessTag(entry.access), entry.path.c_str(),
+                            ok ? L"OK" : L"FAILED", AccessMask(entry.access));
         }
         return allOk;
     }
@@ -60,14 +56,10 @@ namespace Sandbox {
         for (const auto& entry : config.denyFolders) {
             if (entry.path.empty()) continue;
             bool ok = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
-            if (!ok) {
-                allOk = false;
-            }
-            wchar_t msg[1024];
-            swprintf(msg, 1024, L"DENY: [%s] %s -> %s (mask=0x%08X)",
-                     AccessTag(entry.access), entry.path.c_str(),
-                     ok ? L"OK" : L"FAILED", AccessMask(entry.access));
-            g_logger.Log(msg);
+            if (!ok) allOk = false;
+            g_logger.LogFmt(L"DENY: [%s] %s -> %s (mask=0x%08X)",
+                            AccessTag(entry.access), entry.path.c_str(),
+                            ok ? L"OK" : L"FAILED", AccessMask(entry.access));
         }
         return allOk;
     }
@@ -78,24 +70,14 @@ namespace Sandbox {
     inline bool GrantRegistryAccess(PSID pSid, const SandboxConfig& config)
     {
         bool allOk = true;
-        for (const auto& key : config.registryRead) {
-            std::wstring win32Path = RegistryToWin32Path(key);
-            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Read, RecordGrantCallback, SE_REGISTRY_KEY);
-            wchar_t msg[512];
-            swprintf(msg, 512, L"GRANT_REG: [R] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
-            g_logger.Log(msg);
-            if (!ok) {
-                allOk = false;
-            }
-        }
-        for (const auto& key : config.registryWrite) {
-            std::wstring win32Path = RegistryToWin32Path(key);
-            bool ok = GrantObjectAccess(pSid, win32Path, AccessLevel::Write, RecordGrantCallback, SE_REGISTRY_KEY);
-            wchar_t msg[512];
-            swprintf(msg, 512, L"GRANT_REG: [W] %s -> %s", key.c_str(), ok ? L"OK" : L"FAILED");
-            g_logger.Log(msg);
-            if (!ok) {
-                allOk = false;
+        struct RegGrant { const std::vector<std::wstring>& keys; AccessLevel level; const wchar_t* tag; };
+        for (auto& rg : { RegGrant{config.registryRead, AccessLevel::Read, L"R"},
+                          RegGrant{config.registryWrite, AccessLevel::Write, L"W"} }) {
+            for (const auto& key : rg.keys) {
+                std::wstring win32Path = RegistryToWin32Path(key);
+                bool ok = GrantObjectAccess(pSid, win32Path, rg.level, RecordGrantCallback, SE_REGISTRY_KEY);
+                if (!ok) allOk = false;
+                g_logger.LogFmt(L"GRANT_REG: [%s] %s -> %s", rg.tag, key.c_str(), ok ? L"OK" : L"FAILED");
             }
         }
         return allOk;
@@ -206,6 +188,106 @@ namespace Sandbox {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // SetupResult — output of Phase 1 (token/SID setup)
+    // -----------------------------------------------------------------------
+    struct SetupResult {
+        PSID   pSid = nullptr;
+        HANDLE hRestrictedToken = nullptr;
+        bool   containerCreated = false;
+        bool   ok = false;
+    };
+
+    // -----------------------------------------------------------------------
+    // SetupAppContainer — create AppContainer profile and get SID.
+    // -----------------------------------------------------------------------
+    inline SetupResult SetupAppContainer(const std::wstring& containerName, SandboxGuard& guard)
+    {
+        SetupResult r;
+        PSID pContainerSid = nullptr;
+        HRESULT hr = CreateAppContainerProfile(
+            containerName.c_str(), L"Sandy Sandbox",
+            L"Sandboxed environment for running executables",
+            nullptr, 0, &pContainerSid);
+        if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
+            hr = DeriveAppContainerSidFromAppContainerName(containerName.c_str(), &pContainerSid);
+            r.containerCreated = false;
+        } else {
+            r.containerCreated = SUCCEEDED(hr);
+        }
+        if (FAILED(hr) || !pContainerSid) {
+            g_logger.LogFmt(L"ERROR: AppContainer creation failed (0x%08X)", hr);
+            return r;
+        }
+        r.pSid = pContainerSid;
+        guard.Add([pContainerSid]() { FreeSid(pContainerSid); });
+
+        g_logger.Log(L"MODE: appcontainer");
+        g_logger.LogFmt(L"CONTAINER: %s", r.containerCreated ? L"created" : L"reused existing");
+        LPWSTR sidStr = nullptr;
+        if (ConvertSidToStringSidW(pContainerSid, &sidStr)) {
+            g_logger.LogFmt(L"CONTAINER_SID: %s", sidStr);
+            LocalFree(sidStr);
+        }
+        r.ok = true;
+        return r;
+    }
+
+    // -----------------------------------------------------------------------
+    // SetupRestrictedToken — create per-instance SID and restricted token.
+    // -----------------------------------------------------------------------
+    inline SetupResult SetupRestrictedToken(const SandboxConfig& config, SandboxGuard& guard)
+    {
+        SetupResult r;
+
+        // Generate per-instance grant SID (S-1-9-<uuid>)
+        //
+        // Uses SECURITY_RESOURCE_MANAGER_AUTHORITY — the Microsoft-
+        // designated authority for third-party resource managers.
+        // Each instance gets a unique SID derived from a GUID, so:
+        //   - ACEs are distinguishable per instance
+        //   - Cleanup removes only THIS instance's ACEs
+        //   - No multi-instance DACL race conditions
+        GUID sidGuid{};
+        CoCreateGuid(&sidGuid);
+        SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };
+        PSID pGrantSid = nullptr;
+        if (!AllocateAndInitializeSid(&rmAuth, 4,
+                sidGuid.Data1,
+                static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
+                static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
+                                   (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
+                static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
+                                   (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
+                0, 0, 0, 0, &pGrantSid)) {
+            g_logger.LogFmt(L"ERROR: SID allocation failed (error %lu)", GetLastError());
+            return r;
+        }
+        r.pSid = pGrantSid;
+        guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
+
+        // Create restricted token with per-instance SID
+        r.hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
+        if (!r.hRestrictedToken) {
+            g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)", GetLastError());
+            return r;
+        }
+        guard.Add([&r]() { if (r.hRestrictedToken) CloseHandle(r.hRestrictedToken); });
+
+        LPWSTR sidStr = nullptr;
+        if (ConvertSidToStringSidW(pGrantSid, &sidStr)) {
+            g_logger.LogFmt(L"RT_SID: %s", sidStr);
+            LocalFree(sidStr);
+        }
+        g_logger.Log(config.integrity == IntegrityLevel::Low
+                     ? L"MODE: restricted token (Low integrity)"
+                     : L"MODE: restricted token (Medium integrity)");
+        g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
+                                           : L"Named Pipes: blocked (Everyone excluded)");
+        r.ok = true;
+        return r;
+    }
+
     // =====================================================================
     // RunPipeline — single unified sandbox pipeline
     //
@@ -235,100 +317,15 @@ namespace Sandbox {
         // PHASE 1: SETUP — create token/SID, log mode
         // =================================================================
 
-        PSID pSid = nullptr;           // The SID used for all ACL operations
-        HANDLE hRestrictedToken = nullptr;
-        bool containerCreated = false;
+        auto setup = isAppContainer
+            ? SetupAppContainer(containerName, guard)
+            : SetupRestrictedToken(config, guard);
+        if (!setup.ok) return 1;
 
-        if (isAppContainer) {
-            // [AC] Create AppContainer profile → get container SID
-            PSID pContainerSid = nullptr;
-            HRESULT hr = CreateAppContainerProfile(
-                containerName.c_str(), L"Sandy Sandbox",
-                L"Sandboxed environment for running executables",
-                nullptr, 0, &pContainerSid);
-            if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
-                hr = DeriveAppContainerSidFromAppContainerName(containerName.c_str(), &pContainerSid);
-                containerCreated = false;
-            } else {
-                containerCreated = SUCCEEDED(hr);
-            }
-            if (FAILED(hr) || !pContainerSid) {
-                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: AppContainer creation failed (0x%08X)", hr);
-                  g_logger.Log(emsg); }
-                return 1;
-            }
-            pSid = pContainerSid;
-            guard.Add([pContainerSid]() { FreeSid(pContainerSid); });
+        PSID pSid = setup.pSid;
+        HANDLE hRestrictedToken = setup.hRestrictedToken;
 
-            g_logger.Log(L"MODE: appcontainer");
-            wchar_t msg[1024];
-            swprintf(msg, 1024, L"CONTAINER: %s", containerCreated ? L"created" : L"reused existing");
-            g_logger.Log(msg);
-            LPWSTR sidStr = nullptr;
-            if (ConvertSidToStringSidW(pContainerSid, &sidStr)) {
-                swprintf(msg, 1024, L"CONTAINER_SID: %s", sidStr);
-                g_logger.Log(msg);
-                LocalFree(sidStr);
-            }
-
-        } else {
-            // [RT] Create per-instance grant SID (S-1-9-<uuid>)
-            //
-            // Uses SECURITY_RESOURCE_MANAGER_AUTHORITY — the Microsoft-
-            // designated authority for third-party resource managers.
-            // Each instance gets a unique SID derived from a GUID, so:
-            //   - ACEs are distinguishable per instance
-            //   - Cleanup removes only THIS instance's ACEs
-            //   - No multi-instance DACL race conditions
-            //
-            // S-1-5-12 (Restricted Code) remains in the restricting SID
-            // list inside CreateRestrictedSandboxToken for system object
-            // access, but is NOT used for Sandy's own grants.
-            GUID sidGuid{};
-            CoCreateGuid(&sidGuid);
-            SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };  // SECURITY_RESOURCE_MANAGER_AUTHORITY
-            PSID pGrantSid = nullptr;
-            if (!AllocateAndInitializeSid(&rmAuth, 4,
-                    sidGuid.Data1,
-                    static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
-                    static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
-                                       (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
-                    static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
-                                       (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
-                    0, 0, 0, 0, &pGrantSid)) {
-                DWORD err = GetLastError();
-                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SID allocation failed (error %lu)", err);
-                  g_logger.Log(emsg); }
-                return 1;
-            }
-            pSid = pGrantSid;
-            guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
-
-            // [RT] Create restricted token with per-instance SID
-            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
-            if (!hRestrictedToken) {
-                DWORD err = GetLastError();
-                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: restricted token creation failed (error %lu)", err);
-                  g_logger.Log(emsg); }
-                return 1;
-            }
-            guard.Add([&hRestrictedToken]() { if (hRestrictedToken) CloseHandle(hRestrictedToken); });
-
-            { LPWSTR sidStr = nullptr;
-              if (ConvertSidToStringSidW(pGrantSid, &sidStr)) {
-                  g_logger.Log((L"RT_SID: " + std::wstring(sidStr)).c_str());
-                  LocalFree(sidStr);
-              }
-            }
-
-            g_logger.Log(config.integrity == IntegrityLevel::Low
-                         ? L"MODE: restricted token (Low integrity)"
-                         : L"MODE: restricted token (Medium integrity)");
-            g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
-                                           : L"Named Pipes: blocked (Everyone excluded)");
-        }
-
-        { wchar_t msg[1024]; swprintf(msg, 1024, L"WORKDIR: %s", exeFolder.c_str()); g_logger.Log(msg); }
+        g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
 
         // =================================================================
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
@@ -477,13 +474,11 @@ namespace Sandbox {
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
         if (timeoutCtx.timedOut)
             g_logger.Log(L"EXIT_CLASS: TIMEOUT");
-        else if (IsCrashExitCode(exitCode)) {
-            wchar_t emsg[128]; swprintf(emsg, 128, L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
-            g_logger.Log(emsg);
-        } else if (exitCode != 0) {
-            wchar_t emsg[128]; swprintf(emsg, 128, L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
-            g_logger.Log(emsg);
-        } else
+        else if (IsCrashExitCode(exitCode))
+            g_logger.LogFmt(L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
+        else if (exitCode != 0)
+            g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
+        else
             g_logger.Log(L"EXIT_CLASS: CLEAN");
         FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, dumpPath,
                               crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
@@ -509,8 +504,7 @@ namespace Sandbox {
         guard.RunAll();
 
         DeleteCleanupTask(g_instanceId);
-        { wchar_t msg[128]; swprintf(msg, 128, L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
-          g_logger.Log(msg); }
+        g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
         g_logger.Stop();
 
         return static_cast<int>(exitCode);

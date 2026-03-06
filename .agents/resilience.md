@@ -11,9 +11,10 @@ Sandy persists grants in `HKCU\Software\Sandy\Grants\<UUID>` with per-instance s
 - `_pid` (DWORD): the sandy.exe process ID
 - `_ctime` (QWORD): process creation time (FILETIME)
 - `_container` (REG_SZ): AppContainer profile moniker
-- Numbered values: `access|path|original_sddl` for each granted folder
+- `_nextIdx` (DWORD): next grant index counter
+- Numbered values: `TYPE|PATH|SID` or `TYPE|PATH|SID|TRAPPED:sid1;sid2` for each granted/denied path
 
-On clean exit, the instance deletes its own subkey and restores folder ACLs.
+On clean exit, the instance removes its own ACEs via `RemoveSidFromDacl()`, deletes its subkey, and removes its per-instance scheduled task.
 On crash/kill, the subkey persists as a stale entry for `--cleanup` to handle.
 
 ---
@@ -64,13 +65,15 @@ Never trust `OpenProcess` success alone to determine liveness. Process objects o
 
 `--cleanup` calls in this order:
 1. `ForceDisableLoopback()` — removes loopback exemptions
-2. `RestoreStaleGrants()` — enumerates grant subkeys, detects dead PIDs, restores original DACLs, deletes stale AppContainer profiles, removes subkeys
+2. `RestoreStaleGrants()` — enumerates grant subkeys, detects dead PIDs, removes stale ACEs via `RemoveSidFromDacl()`, deletes stale AppContainer profiles, removes subkeys
 3. `RestoreStaleWER()` — removes stale WER exception keys
-4. `DeleteCleanupTask()` — removes scheduled task only if no grant subkeys remain
-5. `EnumSandyProfiles()` — deletes orphaned AppContainer profiles from Windows Mappings
+4. `DeleteStaleCleanupTasks()` — finds and deletes scheduled tasks for dead instances
+
+### Per-Instance Cleanup Tasks
+Each instance creates its own scheduled task: `SandyCleanup_<uuid>`. On clean exit, the instance deletes its task via `DeleteCleanupTask()`. Stale tasks from crashed instances are cleaned by `DeleteStaleCleanupTasks()`, which enumerates all `SandyCleanup_*` tasks and deletes those whose PIDs are no longer alive.
 
 ### Key design constraint
-`DeleteCleanupTask` checks for remaining grant subkeys before deleting the scheduled task. If `RestoreStaleGrants` fails to clean even one subkey, the scheduled task persists — this is intentional as a safety net.
+`RestoreStaleGrants` skips paths used by other live instances (the `livePaths` set). If any live instance still needs a path, its ACEs are preserved.
 
 ---
 

@@ -120,8 +120,7 @@ namespace Sandbox {
 
         LUID changeNotifyLuid{};
         if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid)) {
-            { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SeChangeNotifyPrivilege lookup failed (error %lu)", GetLastError());
-              g_logger.Log(emsg); }
+            g_logger.LogFmt(L"ERROR: SeChangeNotifyPrivilege lookup failed (error %lu)", GetLastError());
             if (pAuthUsersSid) FreeSid(pAuthUsersSid);
             FreeSid(pUsersSid);
             FreeSid(pEveryoneSid);

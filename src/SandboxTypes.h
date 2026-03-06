@@ -273,6 +273,17 @@ namespace Sandbox {
             ReleaseSRWLockExclusive(&lock);
         }
 
+        // Formatted log — replaces { wchar_t buf[N]; swprintf(...); Log(buf); }
+        void LogFmt(const wchar_t* fmt, ...) {
+            if (!active) return;
+            wchar_t buf[1024];
+            va_list args;
+            va_start(args, fmt);
+            vswprintf(buf, 1024, fmt, args);
+            va_end(args);
+            Log(buf);
+        }
+
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
             if (!active) return;
             AcquireSRWLockExclusive(&lock);

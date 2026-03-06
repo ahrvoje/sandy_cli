@@ -71,18 +71,6 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // LaunchResult — captures all state from a process launch.
-    // Returned by LaunchChildProcess so the caller can inspect, wait, or
-    // hand off to RelayOutputAndWait.
-    // -----------------------------------------------------------------------
-    struct LaunchResult {
-        bool              ok = false;       // true if process was created
-        PROCESS_INFORMATION pi = {};        // process/thread handles
-        HANDLE            hReadPipe = nullptr;  // parent's read end of stdout pipe
-        HANDLE            hJob = nullptr;   // job object handle (may be null)
-    };
-
-    // -----------------------------------------------------------------------
     // SetupOutputPipe — create an anonymous pipe for child stdout/stderr.
     //
     // Outputs: hRead  — parent's read end (non-inheritable)
@@ -100,10 +88,8 @@ namespace Sandbox {
             return false;
         SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-        wchar_t msg[256];
-        swprintf(msg, 256, L"PIPE: stdout/stderr read=0x%p write=0x%p",
-                 (void*)hRead, (void*)hWrite);
-        g_logger.Log(msg);
+        g_logger.LogFmt(L"PIPE: stdout/stderr read=0x%p write=0x%p",
+                        (void*)hRead, (void*)hWrite);
         return true;
     }
 
@@ -199,24 +185,16 @@ namespace Sandbox {
 
         if (!created) {
             DWORD err = GetLastError();
-            wchar_t msg[1024];
-            swprintf(msg, 1024, L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
-            g_logger.Log(msg);
-            swprintf(msg, 1024, L"LAUNCH_DIAG: cmdline=%zu chars, envBlock=%zu wchars (%s)",
-                     cmdLine.size(), envBlock.size(),
-                     envBlock.empty() ? L"inherited" : L"custom");
-            g_logger.Log(msg);
-            swprintf(msg, 1024, L"LAUNCH_DIAG: workdir=%s", workDir.c_str());
-            g_logger.Log(msg);
+            g_logger.LogFmt(L"LAUNCH_FAILED: %s (error %lu)", exePath.c_str(), err);
+            g_logger.LogFmt(L"LAUNCH_DIAG: cmdline=%zu chars, envBlock=%zu wchars (%s)",
+                            cmdLine.size(), envBlock.size(),
+                            envBlock.empty() ? L"inherited" : L"custom");
+            g_logger.LogFmt(L"LAUNCH_DIAG: workdir=%s", workDir.c_str());
             return false;
         }
 
         // Forensic: log the launch
-        {
-            wchar_t pidMsg[256];
-            swprintf(pidMsg, 256, L"LAUNCH: PID %lu, cmd=\"%s\"", pi.dwProcessId, cmdLine.c_str());
-            g_logger.Log(pidMsg);
-        }
+        g_logger.LogFmt(L"LAUNCH: PID %lu, cmd=\"%s\"", pi.dwProcessId, cmdLine.c_str());
         return true;
     }
 
@@ -262,10 +240,8 @@ namespace Sandbox {
         if (!AssignProcessToJobObject(hJob, hProcess))
         g_logger.Log(L"JOB_ASSIGN: FAILED (limits NOT enforced)");
 
-        wchar_t msg[256];
-        swprintf(msg, 256, L"JOB: memory=%zuMB, processes=%lu, ui_flags=0x%X",
-                 config.memoryLimitMB, config.maxProcesses, uiFlags);
-        g_logger.Log(msg);
+        g_logger.LogFmt(L"JOB: memory=%zuMB, processes=%lu, ui_flags=0x%X",
+                        config.memoryLimitMB, config.maxProcesses, uiFlags);
 
         return hJob;
     }
@@ -319,10 +295,8 @@ namespace Sandbox {
         if (hTimeoutThread) {
             WaitForSingleObject(hTimeoutThread, 5000);
             CloseHandle(hTimeoutThread);
-            if (timeoutCtx.timedOut) {
-                { wchar_t msg[128]; swprintf(msg, 128, L"TIMEOUT: killed after %lus", timeoutSec);
-                  g_logger.Log(msg); }
-            }
+            if (timeoutCtx.timedOut)
+                g_logger.LogFmt(L"TIMEOUT: killed after %lus", timeoutSec);
         }
 
         return exitCode;
@@ -340,9 +314,7 @@ namespace Sandbox {
         if (ctx.seconds == 0) return nullptr;
 
         HANDLE hThread = CreateThread(nullptr, 0, TimeoutThread, &ctx, 0, nullptr);
-        wchar_t msg[128];
-        swprintf(msg, 128, L"TIMEOUT: armed %lus", ctx.seconds);
-        g_logger.Log(msg);
+        g_logger.LogFmt(L"TIMEOUT: armed %lus", ctx.seconds);
         return hThread;
     }
 

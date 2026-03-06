@@ -423,8 +423,7 @@ namespace Sandbox {
                                   it->wasDenied, it->trappedSids, needSkipTree);
             removed += n;
         }
-        { wchar_t msg[128]; swprintf(msg, 128, L"REVOKE_SUMMARY: %d ACEs removed, %d paths skipped", removed, skipped);
-          g_logger.Log(msg); }
+        g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed, %d paths skipped", removed, skipped);
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
         ClearPersistedGrants();
@@ -579,14 +578,10 @@ namespace Sandbox {
             }
             LSTATUS delResult = RegDeleteTreeW(HKEY_CURRENT_USER, fullKey.c_str());
             if (delResult != ERROR_SUCCESS) {
-                wchar_t msg[256];
-                swprintf(msg, 256, L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
-                g_logger.Log(msg);
+                g_logger.LogFmt(L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
                 delResult = RegDeleteKeyW(HKEY_CURRENT_USER, fullKey.c_str());
-                if (delResult != ERROR_SUCCESS) {
-                    swprintf(msg, 256, L"REG_DELETE_FALLBACK_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
-                    g_logger.Log(msg);
-                }
+                if (delResult != ERROR_SUCCESS)
+                    g_logger.LogFmt(L"REG_DELETE_FALLBACK_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
             }
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
         }

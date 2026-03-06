@@ -20,7 +20,10 @@ have already been discovered, debugged, and fixed.
 # Logging
 
 - **All actions affecting any OS item** (files, registry, DACLs, processes, tokens,
-  profiles, network rules) **must be logged via `g_logger.Log()`**.
+  profiles, network rules) **must be logged via `g_logger.Log()` or `g_logger.LogFmt()`**.
+- **Use `g_logger.LogFmt(fmt, ...)` for formatted messages** — never the manual
+  `{ wchar_t buf[N]; swprintf(...); g_logger.Log(buf); }` pattern.
+  `LogFmt` uses a 1024-char internal buffer and handles `va_list` automatically.
 - **Never use stdout/stderr for operational logging** if `g_logger` can cover it.
   `printf`/`wprintf` is only for user-facing CLI output (banner, status, help).
   Everything else goes through the logger.
@@ -33,10 +36,10 @@ ACL, token, or cleanup logic.
 
 | Aspect | AppContainer | Restricted Token |
 |--------|-------------|-----------------|
-| SID | Unique per instance (UUID-derived) | Shared user SID |
+| SID | Unique per instance (`S-1-15-2-*`) | Unique per instance (`S-1-9-*`) |
 | DENY ACEs | **Ignored by kernel** | Honored normally |
 | Deny mechanism | Allow-token arithmetic (mask reduction) | Real `DENY_ACCESS` ACEs |
-| Cleanup | Remove ACEs by SID — zero interference | Skip paths used by other live instances |
+| Cleanup | Remove ACEs by SID — zero interference | Remove ACEs by SID — zero interference |
 
 # DENY Rules — INVARIANT
 
@@ -93,6 +96,26 @@ path, STOP. You are about to write dead code that will pass no test.**
   - **`.bat`** — orchestrator (manages lifecycle, DACL snapshots, assertions)
 - Not all three are always needed, but **never inline TOML or Python into
   the `.bat` file**. Keep them as separate files.
+
+# Architecture — Pipeline Structure
+
+`Sandbox.h` implements a **single linear pipeline** (`RunPipeline`) in 5 phases:
+
+| Phase | Name | Key functions |
+|-------|------|---------------|
+| 1 | SETUP | `SetupAppContainer()` or `SetupRestrictedToken()` → `SetupResult` |
+| 2 | GRANT | `GrantConfiguredAccess`, `ApplyDenyRules`, `GrantRegistryAccess` |
+| 3 | PREPARE | `BuildCapabilities`, `BuildAttributeList`, `BuildEnvironmentBlock` |
+| 4 | LAUNCH | `LaunchChildProcess`, `AssignJobObject`, `RelayOutputAndWait` |
+| 5 | CLEANUP | `SandboxGuard::RunAll()`, `DeleteCleanupTask` |
+
+- **Phase 1** is dispatched via `SetupAppContainer`/`SetupRestrictedToken` which
+  return a flat `SetupResult` struct. Mode logic is contained inside these helpers.
+- **All cleanup** is managed by `SandboxGuard` (RAII) — cleanup actions are registered
+  via `guard.Add(lambda)` and execute in reverse order on scope exit or explicit
+  `RunAll()`.
+- **Entry point**: `RunSandboxed()` → generates instance ID, starts logger,
+  cleans stale state → calls `RunPipeline()`.
 
 # Shell Environment
 

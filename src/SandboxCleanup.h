@@ -287,9 +287,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void LogSandyIdentity()
     {
-        wchar_t msg[512];
-        swprintf(msg, 512, L"SANDY: PID %lu", GetCurrentProcessId());
-        g_logger.Log(msg);
+        g_logger.LogFmt(L"SANDY: PID %lu", GetCurrentProcessId());
 
         HANDLE hToken = nullptr;
         if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
@@ -303,8 +301,7 @@ namespace Sandbox {
                                 *GetSidSubAuthorityCount(pTIL->Label.Sid) - 1);
                     const wchar_t* ilName = il >= SECURITY_MANDATORY_HIGH_RID ? L"High (elevated)" :
                                             il >= SECURITY_MANDATORY_MEDIUM_RID ? L"Medium" : L"Low";
-                    swprintf(msg, 512, L"SANDY: integrity=%s (0x%04X)", ilName, il);
-                g_logger.Log(msg);
+                    g_logger.LogFmt(L"SANDY: integrity=%s (0x%04X)", ilName, il);
                 }
             }
             CloseHandle(hToken);

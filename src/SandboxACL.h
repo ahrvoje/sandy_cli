@@ -54,11 +54,8 @@ namespace Sandbox {
         PPROG_INVOKE_SETTING pInvokeSetting, PVOID Args, BOOL SecuritySet)
     {
         (void)pInvokeSetting; (void)Args; (void)SecuritySet;
-        if (Status != ERROR_SUCCESS && pObjectName) {
-            wchar_t msg[512];
-            swprintf(msg, 512, L"ACL_TREE_ERROR: %s (error %lu)", pObjectName, Status);
-            g_logger.Log(msg);
-        }
+        if (Status != ERROR_SUCCESS && pObjectName)
+            g_logger.LogFmt(L"ACL_TREE_ERROR: %s (error %lu)", pObjectName, Status);
     }
 
     // -----------------------------------------------------------------------
@@ -302,10 +299,8 @@ namespace Sandbox {
                 }
             }
 
-            wchar_t msg[256];
-            swprintf(msg, 256, L"DENY_AC: existing=0x%08X deny=0x%08X reduced=0x%08X",
-                     existingMask, denyMask, reducedMask);
-            g_logger.Log(msg);
+            g_logger.LogFmt(L"DENY_AC: existing=0x%08X deny=0x%08X reduced=0x%08X",
+                            existingMask, denyMask, reducedMask);
 
         } else {
             // Restricted mode: real DENY ACEs work
@@ -500,14 +495,11 @@ namespace Sandbox {
         }
         LocalFree(pNewDacl);
 
-        if (rc == ERROR_SUCCESS) {
-            wchar_t msg[512];
-            swprintf(msg, 512, L"ACL_REMOVE: %s -> %d ACEs removed for SID %s%s%s",
-                     path.c_str(), removed, sidString.c_str(),
-                     trappedSids.empty() ? L"" : L" +trapped:",
-                     trappedSids.empty() ? L"" : trappedSids.c_str());
-            g_logger.Log(msg);
-        }
+        if (rc == ERROR_SUCCESS)
+            g_logger.LogFmt(L"ACL_REMOVE: %s -> %d ACEs removed for SID %s%s%s",
+                            path.c_str(), removed, sidString.c_str(),
+                            trappedSids.empty() ? L"" : L" +trapped:",
+                            trappedSids.empty() ? L"" : trappedSids.c_str());
         return removed;
     }
 

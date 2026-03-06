@@ -262,8 +262,8 @@ This is implemented in `RemoveSidFromDacl()` (`SandboxACL.h`):
 
 | Mode | SID per instance | Cleanup |
 |------|------------------|---------|
-| AppContainer | Unique (per-profile) | Remove ACEs for our SID — zero interference |
-| Restricted Token | Shared (`S-1-5-12`) | Skip paths used by other live instances |
+| AppContainer | Unique (per-profile, `S-1-15-2-*`) | Remove ACEs for our SID — zero interference |
+| Restricted Token | Unique (per-GUID, `S-1-9-*`) | Remove ACEs for our SID — zero interference |
 
 ## Removed Components
 

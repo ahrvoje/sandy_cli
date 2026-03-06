@@ -273,7 +273,7 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 |--------|:------------:|:--------------:|:-----------------:|
 | **Integrity level** | 🔒 Low | 🔒 Low | 🔒 Medium |
 | **Object namespace** | 🔒 Isolated | 🔒 Shared | 🔒 Shared |
-| **Process identity** | 🔒 AppContainer SID | 🔒 User SID restricted | 🔒 User SID restricted |
+| **Process identity** | 🔒 AppContainer SID | 🔒 Per-instance SID restricted | 🔒 Per-instance SID restricted |
 | **Elevation** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **Privilege stripping** | 🔒 All stripped | 🔒 All except SeChangeNotify | 🔒 All except SeChangeNotify |
 | **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
@@ -476,11 +476,11 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
-| **ACL grants** | `[allow]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (write-ahead SDDL) |
+| **ACL grants** | `[allow]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
 | **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
-| **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup`) |
+| **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup_<UUID>`) — one per instance |
 | **WER keys** | `-a` or `-d` crash dumps | `HKCU\Software\Sandy\WER` (PID as value name) |
 
 ### Exit scenarios
@@ -495,11 +495,11 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 ### How it works
 
-1. **Write-ahead logging:** Before modifying any DACL, Sandy persists the original SDDL to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
+1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
 
-2. **Scheduled task safety net:** A `SandyCleanup` scheduled task is created to run `sandy.exe --cleanup` at next logon. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
+2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
 
-3. **Multi-instance safety:** Each instance generates a UUID at startup and creates its own AppContainer profile (`Sandy_<UUID>`) with a unique SID. This means concurrent instances have completely independent file grants that cannot interfere with each other. On exit, an instance only revokes its own ACEs; paths still granted by other live instances are preserved. Registry subkeys use the UUID as the key name, with stored PID for liveness checks during `--cleanup`.
+3. **Multi-instance safety:** Each instance generates a UUID at startup and uses a unique SID for all ACL operations — AppContainer uses a UUID-derived profile SID (`S-1-15-2-*`), Restricted Token uses a GUID-derived SID (`S-1-9-*`). This means concurrent instances have completely independent file grants that cannot interfere with each other. On exit, each instance removes only its own ACEs via `RemoveSidFromDacl`. Registry subkeys use the UUID as the key name, with stored PID for liveness checks during `--cleanup`.
 
    > **For agents and automation:** Multiple Sandy instances can safely run concurrently with overlapping folder grants. Each instance's sandbox is fully isolated. Use `--status` to inspect active instances and `--cleanup` to clear any stale state.
 
