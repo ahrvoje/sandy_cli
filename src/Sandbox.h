@@ -13,6 +13,8 @@
 #include "SandboxGuard.h"
 #include "SandboxToken.h"
 #include "SandboxAudit.h"
+#include "SandboxCrashDump.h"
+#include "SandboxProfile.h"
 #include "SandboxCleanup.h"
 #include "SandboxCapabilities.h"
 #include "SandboxEnvironment.h"

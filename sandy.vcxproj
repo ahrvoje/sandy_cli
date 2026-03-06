@@ -139,11 +139,24 @@
     <ClInclude Include="src\Resource.h" />
     <ClInclude Include="src\sandy.h" />
     <ClInclude Include="src\targetver.h" />
+    <ClInclude Include="src\TomlParser.h" />
+    <ClInclude Include="src\SandboxTypes.h" />
     <ClInclude Include="src\Sandbox.h" />
-    <ClInclude Include="src\SandboxProcess.h" />
-    <ClInclude Include="src\SandboxCleanup.h" />
+    <ClInclude Include="src\SandboxACL.h" />
+    <ClInclude Include="src\SandboxAudit.h" />
     <ClInclude Include="src\SandboxCapabilities.h" />
+    <ClInclude Include="src\SandboxCLI.h" />
+    <ClInclude Include="src\SandboxCleanup.h" />
+    <ClInclude Include="src\SandboxConfig.h" />
+    <ClInclude Include="src\SandboxCrashDump.h" />
+    <ClInclude Include="src\SandboxDryRun.h" />
     <ClInclude Include="src\SandboxEnvironment.h" />
+    <ClInclude Include="src\SandboxGrants.h" />
+    <ClInclude Include="src\SandboxGuard.h" />
+    <ClInclude Include="src\SandboxProcess.h" />
+    <ClInclude Include="src\SandboxProfile.h" />
+    <ClInclude Include="src\SandboxStatus.h" />
+    <ClInclude Include="src\SandboxToken.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\sandy.cpp" />
