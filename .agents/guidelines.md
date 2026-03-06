@@ -115,6 +115,16 @@ The only reliable build command:
 - Output: `x64\Release\sandy.exe`.
 - **Do not** use `devenv`, `cl.exe`, `cmake`, or other build methods.
 - **Do not** omit quotes around the MSBuild path — it contains spaces.
+- **Do not** call bare `msbuild` — it is not on the PATH:
+  ```
+  # BROKEN — msbuild is not recognized
+  msbuild sandy.sln /p:Configuration=Release /p:Platform=x64
+  ```
+- **Do not** use the wrong solution filename — it is `sandy.sln`, not `sandy_cli.sln`:
+  ```
+  # BROKEN — MSB1009: Project file does not exist
+  & "...MSBuild.exe" sandy_cli.sln /p:Configuration=Release /p:Platform=x64
+  ```
 - **Do not** wrap in `cmd /c` — nested quoting breaks path resolution:
   ```
   # BROKEN — 'C:\Program' is not recognized

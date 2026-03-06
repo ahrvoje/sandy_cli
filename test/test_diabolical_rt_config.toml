@@ -1,0 +1,54 @@
+# Diabolical test config — Restricted Token mode
+#
+# TREE:
+#   test_diabolical/
+#     scripts/              [allow read]
+#     arena/                [allow all]
+#       killzone/           [deny all]  — empty, target for delete-recreate
+#       fortress/           [deny all]  — has files, rename target
+#       readonly_zone/      [deny write] — partial deny
+#       playground/         inherits all — self-DACL escalation testing
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+workdir = 'inherit'
+
+[allow]
+execute = []
+read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_diabolical\scripts']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_diabolical\arena']
+
+[deny]
+all = [
+    'C:\Users\H\test_diabolical\arena\killzone',
+    'C:\Users\H\test_diabolical\arena\fortress',
+]
+write = ['C:\Users\H\test_diabolical\arena\readonly_zone']
+read = []
+execute = []
+append = []
+delete = []
+
+[privileges]
+named_pipes = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = false
+
+[registry]
+read = []
+write = []
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 60
+memory = 0
+processes = 0

@@ -17,63 +17,135 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // Startup task — safety net for crash/power-loss scenarios.
-    // Creates a schtask that runs "sandy.exe" (cleanup-only) at next logon.
-    // Deleted on clean exit so it only fires if sandy didn't get to clean up.
+    // Each instance creates its own task: SandyCleanup_<uuid>.
+    // Deleted on clean exit; stale tasks cleaned by --cleanup.
     // -----------------------------------------------------------------------
-    constexpr const wchar_t* kCleanupTaskName = L"SandyCleanup";
+    constexpr const wchar_t* kCleanupTaskPrefix = L"SandyCleanup_";
+
+    inline std::wstring CleanupTaskName(const std::wstring& instanceId)
+    {
+        return kCleanupTaskPrefix + instanceId;
+    }
 
     // -----------------------------------------------------------------------
-    // CreateCleanupTask — register a scheduled task for crash recovery.
+    // CreateCleanupTask — register a per-instance scheduled task.
     //
-    // Inputs:  (none — uses current exe path)
-    // Effect:  creates SandyCleanup logon task pointing to current exe
-    // Verifiable: task appears in "schtasks /Query /TN SandyCleanup"
+    // Inputs:  instanceId — this instance's UUID
+    // Effect:  creates SandyCleanup_<uuid> logon task
     // -----------------------------------------------------------------------
-    inline void CreateCleanupTask()
+    inline void CreateCleanupTask(const std::wstring& instanceId)
     {
         wchar_t exePath[MAX_PATH];
         if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) return;
 
+        std::wstring taskName = CleanupTaskName(instanceId);
         std::wstring args = L"/Create /TN \"";
-        args += kCleanupTaskName;
+        args += taskName;
         args += L"\" /TR \"\\\"";
         args += exePath;
         args += L"\\\" --cleanup\" /SC ONLOGON /F /RL HIGHEST";
 
         if (RunSchtasks(args) == 0) {
-            g_logger.Log(L"SCHTASK: created SandyCleanup (logon trigger)");
+            g_logger.Log((L"SCHTASK: created " + taskName).c_str());
         }
     }
 
     // -----------------------------------------------------------------------
-    // DeleteCleanupTask — remove the crash-recovery scheduled task.
+    // DeleteCleanupTask — remove this instance's scheduled task.
     //
-    // Inputs:  (none)
-    // Effect:  deletes task only if no other instances have pending grants
-    // Verifiable: task no longer appears in schtasks /Query
+    // Inputs:  instanceId — this instance's UUID
+    // Effect:  deletes SandyCleanup_<uuid> unconditionally
     // -----------------------------------------------------------------------
-    inline void DeleteCleanupTask()
+    inline void DeleteCleanupTask(const std::wstring& instanceId)
     {
-        // Only delete the task if no other instances have pending grants.
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ, &hParent) == ERROR_SUCCESS) {
-            DWORD subKeyCount = 0;
-            RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-            RegCloseKey(hParent);
-            if (subKeyCount > 0) {
-                g_logger.Log(L"SCHTASK: kept SandyCleanup (other instances have pending grants)");
-                return;
-            }
-        }
-
+        std::wstring taskName = CleanupTaskName(instanceId);
         std::wstring args = L"/Delete /TN \"";
-        args += kCleanupTaskName;
+        args += taskName;
         args += L"\" /F";
 
         if (RunSchtasks(args) == 0) {
-            g_logger.Log(L"SCHTASK: deleted SandyCleanup");
+            g_logger.Log((L"SCHTASK: deleted " + taskName).c_str());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DeleteStaleCleanupTasks — remove tasks from dead instances.
+    //
+    // Lists all SandyCleanup_* tasks via schtasks, extracts instance IDs,
+    // and deletes tasks whose instance has no live grants registry entry.
+    // Called by --cleanup and RestoreStaleGrants.
+    // -----------------------------------------------------------------------
+    inline void DeleteStaleCleanupTasks()
+    {
+        // Query all tasks matching our prefix
+        // schtasks /Query /FO CSV /NH gives: "TaskName","Next Run Time","Status"
+        std::wstring cmd = L"schtasks.exe /Query /FO CSV /NH";
+        HANDLE hRead = nullptr, hWrite = nullptr;
+        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+        if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
+
+        STARTUPINFOW si = { sizeof(si) };
+        si.hStdOutput = hWrite;
+        si.hStdError = hWrite;
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(nullptr, const_cast<LPWSTR>(cmd.c_str()),
+                nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(hRead);
+            CloseHandle(hWrite);
+            return;
+        }
+        CloseHandle(hWrite);
+
+        // Read output
+        std::string output;
+        char buf[4096];
+        DWORD bytesRead;
+        while (ReadFile(hRead, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0)
+            output.append(buf, bytesRead);
+        CloseHandle(hRead);
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+
+        // Parse CSV lines for SandyCleanup_ prefix
+        std::wstring prefix = kCleanupTaskPrefix;
+        std::istringstream stream(output);
+        std::string line;
+        while (std::getline(stream, line)) {
+            // Find SandyCleanup_ in the line
+            // CSV format: "\TaskFolder\SandyCleanup_uuid",...
+            std::wstring wline(line.begin(), line.end());
+            auto pos = wline.find(prefix);
+            if (pos == std::wstring::npos) continue;
+
+            // Extract instance ID: from after prefix to next quote
+            auto idStart = pos + prefix.size();
+            auto idEnd = wline.find(L'"', idStart);
+            if (idEnd == std::wstring::npos) idEnd = wline.size();
+            std::wstring instanceId = wline.substr(idStart, idEnd - idStart);
+            if (instanceId.empty()) continue;
+
+            // Check if this instance has live grants
+            std::wstring regKey = std::wstring(kGrantsParentKey) + L"\\" + instanceId;
+            HKEY hKey = nullptr;
+            bool isLive = false;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
+                              KEY_READ, &hKey) == ERROR_SUCCESS) {
+                DWORD pid = 0; ULONGLONG ctime = 0;
+                ReadPidAndCtime(hKey, pid, ctime);
+                isLive = IsProcessAlive(pid, ctime);
+                RegCloseKey(hKey);
+            }
+
+            if (!isLive) {
+                std::wstring taskName = prefix + instanceId;
+                std::wstring delArgs = L"/Delete /TN \"" + taskName + L"\" /F";
+                if (RunSchtasks(delArgs) == 0) {
+                    g_logger.Log((L"SCHTASK_STALE: deleted " + taskName).c_str());
+                }
+            }
         }
     }
 

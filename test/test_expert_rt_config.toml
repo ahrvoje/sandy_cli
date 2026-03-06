@@ -1,0 +1,60 @@
+# Expert adversarial test config — Restricted Token mode
+#
+# TREE (created by batch runner):
+#   test_expert/
+#     arena/                        [allow all]
+#       denied_zone/                [deny all]
+#       readonly_zone/              [deny write]
+#       double_deny/                [deny write + deny read]
+#       deep/a/b/c/d/               [deny all]
+#       playground/                 inherits all
+#     scripts/                      [allow read]
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+workdir = 'inherit'
+
+[allow]
+execute = []
+read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_expert\scripts']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_expert\arena']
+
+[deny]
+all = [
+    'C:\Users\H\test_expert\arena\denied_zone',
+    'C:\Users\H\test_expert\arena\deep\a\b\c\d',
+]
+write = [
+    'C:\Users\H\test_expert\arena\readonly_zone',
+    'C:\Users\H\test_expert\arena\double_deny',
+]
+read = [
+    'C:\Users\H\test_expert\arena\double_deny',
+]
+execute = []
+append = []
+delete = []
+
+[privileges]
+named_pipes = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = false
+
+[registry]
+read = []
+write = []
+
+[environment]
+inherit = false
+pass = []
+
+[limit]
+timeout = 90
+memory = 0
+processes = 0

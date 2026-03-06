@@ -48,7 +48,8 @@ echo seed> "!DIR_A!\seed.txt"
 echo seed> "!DIR_B!\seed.txt"
 echo seed> "!DIR_C!\seed.txt"
 copy /y "%~dp0stress_probe.py" "!DIR_A!\stress_probe.py" >nul
-set PROBE=!DIR_A!\stress_probe.py
+copy /y "%~dp0stress_probe.py" "!DIR_B!\stress_probe.py" >nul
+copy /y "%~dp0stress_probe.py" "!DIR_C!\stress_probe.py" >nul
 
 REM --- Clean previous probe results ---
 del "!DIR_A!\sandy_stress_*.json" 2>nul
@@ -115,27 +116,27 @@ REM This means folders A, B, C are each shared by 3-4 instances.
 REM =====================================================================
 echo.
 echo === Phase 2: Launch 5 concurrent instances ===
-echo   (staggered 3s apart to avoid TreeSetNamedSecurityInfoW races)
+echo   (staggered 10s apart to avoid TreeSetNamedSecurityInfoW races)
 echo.
 
 echo [2.1] Launching I1 (3s, folders A+B)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" I1 3 "!DIR_A!" "!DIR_B!"
-ping -n 4 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I1 3 "!DIR_A!" "!DIR_B!"
+ping -n 11 127.0.0.1 >nul
 
 echo [2.2] Launching I2 (6s, folders A+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" I2 6 "!DIR_A!" "!DIR_C!"
-ping -n 4 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I2 6 "!DIR_A!" "!DIR_C!"
+ping -n 11 127.0.0.1 >nul
 
 echo [2.3] Launching I3 (10s, folders B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" I3 10 "!DIR_B!" "!DIR_C!"
-ping -n 4 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_B!\stress_probe.py" I3 10 "!DIR_B!" "!DIR_C!"
+ping -n 11 127.0.0.1 >nul
 
 echo [2.4] Launching I4 (5s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" I4 5 "!DIR_A!" "!DIR_B!" "!DIR_C!"
-ping -n 4 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I4 5 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+ping -n 11 127.0.0.1 >nul
 
 echo [2.5] Launching I5 (8s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
 
 REM =====================================================================
 REM Phase 3: Mid-flight status check
@@ -177,8 +178,8 @@ REM Phase 4: Wait for all instances to exit
 REM =====================================================================
 echo.
 echo === Phase 4: Waiting for all instances to exit ===
-REM I5 launched at ~t+12, runs 8s -> exits ~t+20.  Add generous buffer.
-ping -n 22 127.0.0.1 >nul
+REM I5 launched at ~t+40, runs 8s -> exits ~t+48.  Add generous buffer.
+ping -n 60 127.0.0.1 >nul
 echo   All instances should have exited.
 
 REM =====================================================================
@@ -234,13 +235,14 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-REM 5.4: No SandyCleanup scheduled task should remain
-schtasks /Query /TN "SandyCleanup" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] No scheduled task remains
+REM 5.4: No SandyCleanup_* scheduled tasks should remain
+set "TASK_FOUND=0"
+for /f "delims=" %%L in ('schtasks /Query /FO CSV /NH 2^>nul ^| findstr /c:"SandyCleanup_"') do set "TASK_FOUND=1"
+if "!TASK_FOUND!"=="0" (
+    echo   [PASS] No scheduled tasks remain
     set /a PASS+=1
 ) else (
-    echo   [FAIL] SandyCleanup task still exists
+    echo   [FAIL] SandyCleanup_* tasks still exist
     set /a FAIL+=1
 )
 

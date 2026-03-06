@@ -139,7 +139,7 @@ static void PrintUsage()
         "  required read/write paths, network/pipe/registry usage.\n"
         "\n"
         "Crash resilience:\n"
-        "  A scheduled task (SandyCleanup) restores stale state at next logon.\n"
+        "  Per-instance scheduled tasks (SandyCleanup_<uuid>) restore stale state at next logon.\n"
         "  Use --cleanup to manually restore stale state from crashed runs.\n"
         "  Ctrl+C/Break/close triggers cleanup before exit.\n"
         "  SEH handler catches fatal errors in sandy itself.\n"
@@ -428,12 +428,52 @@ static int HandleStatus()
         RegCloseKey(hWER);
     }
 
-    // Check scheduled task
-    bool taskExists = (Sandbox::RunHiddenProcess(
-        L"schtasks.exe /Query /TN \"SandyCleanup\"") == 0);
-    if (taskExists) {
-        printf("  [TASK]    SandyCleanup scheduled task exists\n");
-        found = true;
+    // Check scheduled tasks (enumerate SandyCleanup_* tasks)
+    {
+        std::wstring cmd = L"schtasks.exe /Query /FO CSV /NH";
+        HANDLE hRead = nullptr, hWrite = nullptr;
+        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+        if (CreatePipe(&hRead, &hWrite, &sa, 0)) {
+            STARTUPINFOW si = { sizeof(si) };
+            si.hStdOutput = hWrite;
+            si.hStdError = hWrite;
+            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_HIDE;
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(nullptr, const_cast<LPWSTR>(cmd.c_str()),
+                    nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                CloseHandle(hWrite);
+                std::string output;
+                char buf[4096];
+                DWORD bytesRead;
+                while (ReadFile(hRead, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0)
+                    output.append(buf, bytesRead);
+                CloseHandle(hRead);
+                WaitForSingleObject(pi.hProcess, 5000);
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+                std::istringstream stream(output);
+                std::string line;
+                while (std::getline(stream, line)) {
+                    std::wstring wline(line.begin(), line.end());
+                    if (wline.find(Sandbox::kCleanupTaskPrefix) != std::wstring::npos) {
+                        // Extract task name between quotes
+                        auto q1 = wline.find(L'"');
+                        auto q2 = wline.find(L'"', q1 + 1);
+                        if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
+                            std::wstring taskPath = wline.substr(q1 + 1, q2 - q1 - 1);
+                            auto bs = taskPath.find_last_of(L'\\');
+                            std::wstring taskName = (bs != std::wstring::npos) ? taskPath.substr(bs + 1) : taskPath;
+                            printf("  [TASK]    %ls scheduled task exists\n", taskName.c_str());
+                            found = true;
+                        }
+                    }
+                }
+            } else {
+                CloseHandle(hRead);
+                CloseHandle(hWrite);
+            }
+        }
     }
 
     // Check Windows AppContainer Mappings for Sandy_ profiles
@@ -455,7 +495,7 @@ static int HandleCleanup()
     Sandbox::ForceDisableLoopback();
     Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
     Sandbox::RestoreStaleWER();
-    Sandbox::DeleteCleanupTask();
+    Sandbox::DeleteStaleCleanupTasks();
 
     // Clean orphaned Sandy AppContainer profiles from Windows Mappings
     auto orphans = EnumSandyProfiles();

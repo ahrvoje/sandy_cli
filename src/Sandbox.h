@@ -25,9 +25,10 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void RecordGrantCallback(const std::wstring& path,
                                      SE_OBJECT_TYPE objType,
-                                     const std::wstring& sidString)
+                                     const std::wstring& sidString,
+                                     const std::wstring& trappedSids)
     {
-        RecordGrant(path, objType, sidString);
+        RecordGrant(path, objType, sidString, trappedSids);
     }
 
     // -----------------------------------------------------------------------
@@ -271,8 +272,40 @@ namespace Sandbox {
             }
 
         } else {
-            // [RT] Create restricted token + allocate grant SID
-            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity);
+            // [RT] Create per-instance grant SID (S-1-9-<uuid>)
+            //
+            // Uses SECURITY_RESOURCE_MANAGER_AUTHORITY — the Microsoft-
+            // designated authority for third-party resource managers.
+            // Each instance gets a unique SID derived from a GUID, so:
+            //   - ACEs are distinguishable per instance
+            //   - Cleanup removes only THIS instance's ACEs
+            //   - No multi-instance DACL race conditions
+            //
+            // S-1-5-12 (Restricted Code) remains in the restricting SID
+            // list inside CreateRestrictedSandboxToken for system object
+            // access, but is NOT used for Sandy's own grants.
+            GUID sidGuid{};
+            CoCreateGuid(&sidGuid);
+            SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };  // SECURITY_RESOURCE_MANAGER_AUTHORITY
+            PSID pGrantSid = nullptr;
+            if (!AllocateAndInitializeSid(&rmAuth, 4,
+                    sidGuid.Data1,
+                    static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
+                    static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
+                                       (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
+                    static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
+                                       (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
+                    0, 0, 0, 0, &pGrantSid)) {
+                DWORD err = GetLastError();
+                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SID allocation failed (error %lu)", err);
+                  g_logger.Log(emsg); }
+                return 1;
+            }
+            pSid = pGrantSid;
+            guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
+
+            // [RT] Create restricted token with per-instance SID
+            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
             if (!hRestrictedToken) {
                 DWORD err = GetLastError();
                 { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: restricted token creation failed (error %lu)", err);
@@ -281,17 +314,12 @@ namespace Sandbox {
             }
             guard.Add([&hRestrictedToken]() { if (hRestrictedToken) CloseHandle(hRestrictedToken); });
 
-            PSID pGrantSid = nullptr;
-            SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
-            if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
-                0, 0, 0, 0, 0, 0, 0, &pGrantSid)) {
-                DWORD err = GetLastError();
-                { wchar_t emsg[128]; swprintf(emsg, 128, L"ERROR: SID allocation failed (error %lu)", err);
-                  g_logger.Log(emsg); }
-                return 1;
+            { LPWSTR sidStr = nullptr;
+              if (ConvertSidToStringSidW(pGrantSid, &sidStr)) {
+                  g_logger.Log((L"RT_SID: " + std::wstring(sidStr)).c_str());
+                  LocalFree(sidStr);
+              }
             }
-            pSid = pGrantSid;
-            guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
 
             g_logger.Log(config.integrity == IntegrityLevel::Low
                          ? L"MODE: restricted token (Low integrity)"
@@ -419,7 +447,7 @@ namespace Sandbox {
             if (isAppContainer)
                 DeleteAppContainerProfile(containerName.c_str());
             guard.RunAll();
-            DeleteCleanupTask();
+            DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (launch failure)");
             g_logger.Stop();
             return 1;
@@ -480,7 +508,7 @@ namespace Sandbox {
         // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
         guard.RunAll();
 
-        DeleteCleanupTask();
+        DeleteCleanupTask(g_instanceId);
         { wchar_t msg[128]; swprintf(msg, 128, L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
           g_logger.Log(msg); }
         g_logger.Stop();
@@ -515,7 +543,7 @@ namespace Sandbox {
         // --- Common startup: clean stale state, warn, create safety net ---
         CleanupStaleStartupState(exePath);
         WarnStaleRegistryEntries();
-        CreateCleanupTask();
+        CreateCleanupTask(g_instanceId);
         LogSandyIdentity();
         g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
         if (!config.configSource.empty())
@@ -543,7 +571,7 @@ namespace Sandbox {
         }
         RestoreStaleGrants();
         RestoreStaleWER();
-        DeleteCleanupTask();
+        DeleteStaleCleanupTasks();
         g_logger.Log(L"EMERGENCY_CLEANUP: complete");
         g_logger.Stop();
     }

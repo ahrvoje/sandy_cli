@@ -1,0 +1,47 @@
+# Sandy audit crash test configuration — Restricted Token mode
+# Deliberately restrictive: read-only access to Python + test dir.
+# No write access anywhere — forces the test script to crash.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+workdir = 'inherit'
+
+[allow]
+read = [
+    'C:\Users\H\AppData\Local\Programs\Python\Python314',
+    'C:\Users\H\test_audit\scripts',
+]
+write = []
+execute = []
+append = []
+delete = []
+all = []
+
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
+named_pipes = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[registry]
+read = []
+write = []
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 0
+memory = 0
+processes = 0

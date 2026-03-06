@@ -13,9 +13,14 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Create a restricted sandbox token (alternative to AppContainer).
     // Uses restricting SIDs + configurable integrity level.
-    // il: Low = stronger isolation (may break some apps), Medium = wider compat.
+    // il:           Low = stronger isolation, Medium = wider compat.
+    // pInstanceSid: per-instance SID (S-1-9-<uuid>) for multi-instance
+    //               isolation.  Added to restricting SIDs so the dual
+    //               access check requires ACEs for THIS instance's SID.
+    //               Nullptr accepted (legacy single-instance behavior).
     // -----------------------------------------------------------------------
-    inline HANDLE CreateRestrictedSandboxToken(IntegrityLevel il)
+    inline HANDLE CreateRestrictedSandboxToken(IntegrityLevel il,
+                                                PSID pInstanceSid = nullptr)
     {
         HANDLE hToken = nullptr;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &hToken))
@@ -91,6 +96,11 @@ namespace Sandbox {
         restrictSids.push_back({ pUsersSid, 0 });
         if (pLogonSid) restrictSids.push_back({ pLogonSid, 0 });
         restrictSids.push_back({ pEveryoneSid, 0 });
+
+        // Per-instance SID (S-1-9-<uuid>) — enables multi-instance ACE
+        // isolation. Each instance's grants use this unique SID, so cleanup
+        // only removes THIS instance's ACEs without affecting others.
+        if (pInstanceSid) restrictSids.push_back({ pInstanceSid, 0 });
 
         // Authenticated Users (S-1-5-11) — many system objects (WinSxS
         // manifests, CRT DLLs, API set resolvers) grant access to

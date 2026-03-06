@@ -4,17 +4,33 @@ description: Critical ACL design facts to avoid regressions in Sandy sandbox
 
 # Per-Instance Isolation — Unique SIDs
 
-Every Sandy instance generates a UUID-based container name (`Sandy_<uuid>`).
-`CreateAppContainerProfile` derives a unique SID from this name, so **every
-concurrent Sandy process has its own AppContainer SID**. This means:
+Both sandbox modes now use per-instance SIDs for complete ACE isolation:
+
+**AppContainer mode:** Each instance generates a UUID-based container name
+(`Sandy_<uuid>`). `CreateAppContainerProfile` derives a unique SID
+(`S-1-15-2-*`) from this name.
+
+**Restricted Token mode:** Each instance generates a unique SID under
+`SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-<GUID-dwords>`). This is the
+Microsoft-designated authority for third-party resource managers — zero
+collision risk with any OS SIDs. The instance SID is:
+- Used for all grant/deny operations (replaces the old shared `S-1-5-12`)
+- Added to the restricting SID list in `CreateRestrictedToken`
+- `S-1-5-12` remains in restricting SIDs for system object access only
+
+Sources for `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`{0,0,0,0,0,9}`):
+- [MS-DTYP §2.4.1 SID_IDENTIFIER_AUTHORITY](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/c6ce4275-3d90-4890-ab3a-514745e4637e) — Microsoft protocol spec listing all predefined SID identifier authorities
+- [SID_IDENTIFIER_AUTHORITY structure (winnt.h)](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-sid_identifier_authority) — Win32 API reference
+- Windows SDK `winnt.h` defines `SECURITY_RESOURCE_MANAGER_AUTHORITY` as `{0,0,0,0,0,9}` — authority value 9 is reserved for third-party resource managers and is not assigned to any Windows OS subsystem
+
+This means for **both modes**:
 
 - ACL grants are per-instance — one instance's grants never leak to another.
 - Cleanup is per-instance — revoking one instance's grants doesn't affect others.
 - The registry tracks grants per instance under `HKCU\Software\Sandy\Grants\<uuid>`.
 
-**Never** revert to a fixed container name (e.g. `SandySandbox`). A deterministic
-name causes all instances to share one SID, making concurrent different-grant
-scenarios impossible and causing stale ACE accumulation.
+**Never** revert to a fixed or shared SID. In RT mode, the old `S-1-5-12` as
+grant SID caused all instances to share ACEs, creating unsolvable DACL races.
 
 # Per-Instance Grants and Behavior
 
@@ -23,9 +39,9 @@ instances can grant `read`, `write`, and `all` to the **same folder** and each
 will enforce different permissions. This is verified by `test_concurrent.bat`.
 
 During cleanup, each instance removes only **its own ACEs** using `RemoveSidFromDacl`,
-which walks the DACL and removes ACEs matching the instance's SID. For shared SIDs
-(Restricted Token mode), `GetOtherInstancePaths()` skips paths still needed by
-other live instances.
+which walks the DACL and removes ACEs matching the instance's SID. Since both
+modes now use unique SIDs, the `GetOtherInstancePathSids()` skip logic is only
+a safety net — two instances will never produce the same SID+path combination.
 
 # ACL Propagation — TreeSetNamedSecurityInfoW
 

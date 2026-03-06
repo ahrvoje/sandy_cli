@@ -20,7 +20,10 @@ namespace Sandbox {
     struct ACLGrant {
         std::wstring       path;
         SE_OBJECT_TYPE     objType;
-        std::wstring       sidString;  // SID of the principal granted/denied
+        std::wstring       sidString;
+        // SID of the principal granted/denied
+        std::wstring       trappedSids;    // semicolon-separated trapped AC SIDs (deny entries only)
+        bool               wasDenied = false;
     };
 
     // -----------------------------------------------------------------------
@@ -124,7 +127,8 @@ namespace Sandbox {
     // Stores SID string (for ACE-level removal) — no SDDL snapshot.
     // -----------------------------------------------------------------------
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
-                            const std::wstring& sidString)
+                            const std::wstring& sidString,
+                            const std::wstring& trappedSids = L"")
     {
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
@@ -185,9 +189,12 @@ namespace Sandbox {
             RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
                              reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
 
-            // Format: TYPE|PATH|SID
+            // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|TRAPPED:sid1;sid2
             std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
             std::wstring data = typeStr + L"|" + path + L"|" + sidString;
+            if (!trappedSids.empty()) {
+                data += L"|TRAPPED:" + trappedSids;
+            }
 
             wchar_t valueName[32];
             swprintf(valueName, 32, L"%lu", nextIdx);
@@ -205,7 +212,7 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { path, objType, sidString };
+        ACLGrant grant = { path, objType, sidString, trappedSids, !trappedSids.empty() };
         g_aclGrants.push_back(std::move(grant));
 
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -265,14 +272,18 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                // Format: TYPE|PATH|SID — extract path and SID
+                // Format: TYPE|PATH|SID or TYPE|PATH|SID|TRAPPED:...
                 auto sep1 = data.find(L'|');
-                auto sep2 = data.rfind(L'|');
-                if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1) {
-                    std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
-                    std::wstring sid = data.substr(sep2 + 1);
-                    pathSids.insert(path + L"|" + sid);
-                }
+                if (sep1 == std::wstring::npos) continue;
+                auto sep2 = data.find(L'|', sep1 + 1);
+                if (sep2 == std::wstring::npos) continue;
+                std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
+                // SID ends at next pipe (if TRAPPED suffix) or end of string
+                std::wstring sidPart = data.substr(sep2 + 1);
+                auto sep3 = sidPart.find(L'|');
+                std::wstring sid = (sep3 != std::wstring::npos)
+                    ? sidPart.substr(0, sep3) : sidPart;
+                pathSids.insert(path + L"|" + sid);
             }
             RegCloseKey(hKey);
         }
@@ -281,9 +292,72 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Collect deny paths from OTHER live sandy instances.
+    // Returns set of paths where another instance has a deny entry
+    // (identified by TRAPPED: suffix in the registry value).
+    // Used to prevent TreeSet from propagating into children with
+    // PROTECTED_DACL set by another instance's deny rules.
+    // -----------------------------------------------------------------------
+    inline std::set<std::wstring> GetOtherInstanceDenyPaths(const std::wstring& excludeId)
+    {
+        std::set<std::wstring> denyPaths;
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return denyPaths;
+
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                continue;
+            if (excludeId == name) continue;
+
+            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey) != ERROR_SUCCESS)
+                continue;
+
+            DWORD pid = 0; ULONGLONG ctime = 0;
+            ReadPidAndCtime(hKey, pid, ctime);
+            if (!IsProcessAlive(pid, ctime)) {
+                RegCloseKey(hKey);
+                continue;
+            }
+
+            DWORD valueCount = 0;
+            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                             &valueCount, nullptr, nullptr, nullptr, nullptr);
+            for (DWORD vi = 0; vi < valueCount; vi++) {
+                std::wstring vname, data;
+                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
+                // Only care about deny entries (have |TRAPPED: suffix)
+                if (data.find(L"|TRAPPED:") == std::wstring::npos) continue;
+                // Extract path
+                auto sep1 = data.find(L'|');
+                if (sep1 == std::wstring::npos) continue;
+                auto sep2 = data.find(L'|', sep1 + 1);
+                if (sep2 == std::wstring::npos) continue;
+                denyPaths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
+            }
+            RegCloseKey(hKey);
+        }
+        RegCloseKey(hParent);
+        return denyPaths;
+    }
+
+    // -----------------------------------------------------------------------
     // RevokeAllGrants — remove all ACEs we added, using SID-based removal.
     // Multi-instance safe: only removes ACEs for our SID.
     // For shared SIDs (RT mode), skips paths used by other live instances.
+    // Skips TreeSet when another instance has a deny on a child path
+    // (to avoid propagating into children with PROTECTED_DACL).
     // Thread-safe, double-cleanup guarded.
     // -----------------------------------------------------------------------
     inline void RevokeAllGrants()
@@ -297,6 +371,24 @@ namespace Sandbox {
         // (RT shared SID case). AppContainer instances have unique SIDs, so their
         // ACE removal never interferes even on overlapping paths.
         std::set<std::wstring> otherPathSids = GetOtherInstancePathSids(g_instanceId);
+
+        // Collect deny paths from other live instances.
+        // If our cleanup path is a parent of a deny path, we must skip TreeSet
+        // to avoid propagating into children with PROTECTED_DACL.
+        std::set<std::wstring> otherDenyPaths = GetOtherInstanceDenyPaths(g_instanceId);
+
+        // Helper: check if any deny path is a child of the given path
+        auto hasChildDeny = [&](const std::wstring& parentPath) -> bool {
+            std::wstring prefix = parentPath;
+            // Ensure prefix ends with backslash for correct prefix matching
+            if (!prefix.empty() && prefix.back() != L'\\') prefix += L'\\';
+            for (const auto& dp : otherDenyPaths) {
+                if (dp.length() > prefix.length() &&
+                    _wcsnicmp(dp.c_str(), prefix.c_str(), prefix.length()) == 0)
+                    return true;
+            }
+            return false;
+        };
 
         // Deduplicate: same path may appear multiple times (grant + deny)
         std::set<std::wstring> processed;
@@ -314,7 +406,21 @@ namespace Sandbox {
                 continue;
             }
 
-            int n = RemoveSidFromDacl(it->path, it->sidString, it->objType);
+            // For non-deny directory grants: skip TreeSet if another instance
+            // has a deny on a child path (to preserve PROTECTED_DACL)
+            bool needSkipTree = false;
+            if (!it->wasDenied && it->objType == SE_FILE_OBJECT) {
+                DWORD attrs = GetFileAttributesW(it->path.c_str());
+                if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                    if (hasChildDeny(it->path)) {
+                        needSkipTree = true;
+                        g_logger.Log((L"ACL_NOTREE: " + it->path + L" (child has active deny in other instance)").c_str());
+                    }
+                }
+            }
+
+            int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
+                                  it->wasDenied, it->trappedSids, needSkipTree);
             removed += n;
         }
         { wchar_t msg[128]; swprintf(msg, 128, L"REVOKE_SUMMARY: %d ACEs removed, %d paths skipped", removed, skipped);
@@ -342,12 +448,27 @@ namespace Sandbox {
 
             auto sep1 = data.find(L'|');
             if (sep1 == std::wstring::npos) continue;
-            auto sep2 = data.rfind(L'|');
-            if (sep2 == std::wstring::npos || sep2 <= sep1) continue;
-
             std::wstring typeStr = data.substr(0, sep1);
-            std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
-            std::wstring sidString = data.substr(sep2 + 1);
+            std::wstring rest = data.substr(sep1 + 1);
+
+            // Find second pipe (separating path from SID)
+            auto sep2 = rest.find(L'|');
+            if (sep2 == std::wstring::npos) continue;
+            std::wstring path = rest.substr(0, sep2);
+            std::wstring sidAndTrapped = rest.substr(sep2 + 1);
+
+            // Check for TRAPPED: suffix (format: SID|TRAPPED:sid1;sid2)
+            std::wstring sidString;
+            std::wstring trappedSids;
+            bool wasDenied = false;
+            auto trapSep = sidAndTrapped.find(L"|TRAPPED:");
+            if (trapSep != std::wstring::npos) {
+                sidString = sidAndTrapped.substr(0, trapSep);
+                trappedSids = sidAndTrapped.substr(trapSep + 9); // skip "|TRAPPED:"
+                wasDenied = true;
+            } else {
+                sidString = sidAndTrapped;
+            }
 
             if (processed.count(path)) continue;
             processed.insert(path);
@@ -358,7 +479,7 @@ namespace Sandbox {
             }
 
             SE_OBJECT_TYPE objType = (typeStr == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-            RemoveSidFromDacl(path, sidString, objType);
+            RemoveSidFromDacl(path, sidString, objType, wasDenied, trappedSids);
         }
     }
 
@@ -407,10 +528,12 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
+                // Format: TYPE|PATH|SID or TYPE|PATH|SID|TRAPPED:...
                 auto sep1 = data.find(L'|');
-                auto sep2 = data.rfind(L'|');
-                if (sep1 != std::wstring::npos && sep2 != std::wstring::npos && sep2 > sep1)
-                    outPaths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
+                if (sep1 == std::wstring::npos) continue;
+                auto sep2 = data.find(L'|', sep1 + 1);
+                if (sep2 == std::wstring::npos) continue;
+                outPaths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
             }
         };
 

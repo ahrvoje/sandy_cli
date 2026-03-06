@@ -1,0 +1,57 @@
+# Adversarial "Break Sandy" test configuration — Restricted Token mode
+#
+# TREE:
+#   test_evil/
+#     scripts/              [allow read]  — test script
+#     arena/                [allow all]   — the playground
+#       passage/            inherits all  — contains junction escape
+#       vault/              [deny all]    — primary target
+#       LongSecretName/     [deny all]    — 8.3 alias target
+#       records/            [deny write]  — ADS + write bypass
+#       CaseSensitive/      [deny all]    — case mismatch target
+#       deep/               inherits all  — MAX_PATH stress
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+workdir = 'inherit'
+
+[allow]
+execute = []
+read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_evil\scripts']
+write = []
+append = []
+delete = []
+all = ['C:\Users\H\test_evil\arena']
+
+[deny]
+all = [
+    'C:\Users\H\test_evil\arena\vault',
+    'C:\Users\H\test_evil\arena\LongSecretName',
+    'C:\Users\H\test_evil\arena\CaseSensitive',
+]
+write = ['C:\Users\H\test_evil\arena\records']
+read = []
+execute = []
+append = []
+delete = []
+
+[privileges]
+named_pipes = false
+stdin = false
+clipboard_read = false
+clipboard_write = false
+child_processes = true
+
+[registry]
+read = []
+write = []
+
+[environment]
+inherit = true
+pass = []
+
+[limit]
+timeout = 60
+memory = 0
+processes = 0
