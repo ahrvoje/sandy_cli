@@ -160,9 +160,9 @@ running processes, or the host platform. Every rule below is mandatory.
 | Phase | Name | Key functions |
 |-------|------|---------------|
 | 1 | SETUP | `SetupAppContainer()` or `SetupRestrictedToken()` → `SetupResult` |
-| 2 | GRANT | `GrantConfiguredAccess`, `ApplyDenyRules`, `GrantRegistryAccess` |
+| 2 | GRANT | `ApplyAccessPipeline` (depth-sorted allow+deny), `GrantRegistryAccess` |
 | 3 | PREPARE | `BuildCapabilities`, `BuildAttributeList`, `BuildEnvironmentBlock` |
-| 4 | LAUNCH | `LaunchChildProcess`, `AssignJobObject`, `RelayOutputAndWait` |
+| 4 | LAUNCH | `LaunchChildProcess`, `AssignJobObject`, `WaitForChildExit` |
 | 5 | CLEANUP | `SandboxGuard::RunAll()`, `DeleteCleanupTask` |
 
 - **Phase 1** is dispatched via `SetupAppContainer`/`SetupRestrictedToken` which

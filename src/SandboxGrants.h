@@ -24,6 +24,7 @@ namespace Sandbox {
         // SID of the principal granted/denied
         std::wstring       trappedSids;    // semicolon-separated trapped AC SIDs (deny entries only)
         bool               wasDenied = false;
+        bool               wasPeek = false;     // peek = non-recursive, skip tree-set on cleanup
     };
 
     // -----------------------------------------------------------------------
@@ -77,6 +78,7 @@ namespace Sandbox {
         std::wstring sidString;
         std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
         bool         wasDenied = false;
+        bool         wasPeek = false;
     };
 
     // -----------------------------------------------------------------------
@@ -107,7 +109,7 @@ namespace Sandbox {
     //   TYPE:  "FILE" or "REG"
     //   PATH:  non-empty, must be absolute (drive letter, UNC, or HKEY)
     //   SID:   must match S-<revision>-<authority>-... structure
-    //   Flags: only DENY:1 and TRAPPED:<sids> are recognized;
+    //   Flags: only DENY:1, PEEK:1, and TRAPPED:<sids> are recognized;
     //          any unknown |KEY:... suffix rejects the record.
     //
     // On failure, sets `reason` with a diagnostic string for logging.
@@ -155,6 +157,7 @@ namespace Sandbox {
 
         // Parse optional |KEY:VALUE suffixes
         out.wasDenied = false;
+        out.wasPeek = false;
         out.trappedSids.clear();
         if (pipePos != std::wstring::npos) {
             remaining = remaining.substr(pipePos);
@@ -162,6 +165,9 @@ namespace Sandbox {
                 remaining = remaining.substr(1);
                 if (remaining.compare(0, 6, L"DENY:1") == 0) {
                     out.wasDenied = true;
+                    remaining = remaining.substr(6);
+                } else if (remaining.compare(0, 6, L"PEEK:1") == 0) {
+                    out.wasPeek = true;
                     remaining = remaining.substr(6);
                 } else if (remaining.compare(0, 8, L"TRAPPED:") == 0) {
                     remaining = remaining.substr(8);
@@ -256,7 +262,8 @@ namespace Sandbox {
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
                             const std::wstring& sidString,
                             const std::wstring& trappedSids = L"",
-                            bool isDeny = false)
+                            bool isDeny = false,
+                            bool isPeek = false)
     {
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
@@ -327,6 +334,9 @@ namespace Sandbox {
             if (!trappedSids.empty()) {
                 data += L"|TRAPPED:" + trappedSids;
             }
+            if (isPeek) {
+                data += L"|PEEK:1";
+            }
 
             wchar_t valueName[32];
             swprintf(valueName, 32, L"%lu", nextIdx);
@@ -344,7 +354,7 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { path, objType, sidString, trappedSids, isDeny };
+        ACLGrant grant = { path, objType, sidString, trappedSids, isDeny, isPeek };
         g_aclGrants.push_back(std::move(grant));
 
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -586,8 +596,9 @@ namespace Sandbox {
 
             // For non-deny directory grants: skip TreeSet if another instance
             // has a deny on a child path (to preserve PROTECTED_DACL)
-            bool needSkipTree = false;
-            if (!it->wasDenied && it->objType == SE_FILE_OBJECT) {
+            // Peek grants are non-recursive (no inheritance) — always skip tree-set
+            bool needSkipTree = it->wasPeek;
+            if (!it->wasDenied && !needSkipTree && it->objType == SE_FILE_OBJECT) {
                 DWORD attrs = GetFileAttributesW(it->path.c_str());
                 if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
                     if (hasChildDeny(it->path)) {
@@ -642,7 +653,8 @@ namespace Sandbox {
             }
 
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-            RemoveSidFromDacl(rec.path, rec.sidString, objType, rec.wasDenied, rec.trappedSids);
+            RemoveSidFromDacl(rec.path, rec.sidString, objType,
+                              rec.wasDenied, rec.trappedSids, rec.wasPeek);
             printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
         }
     }

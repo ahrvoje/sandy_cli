@@ -29,7 +29,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ### Key Features
 
 - 🔒 **Dual sandbox modes** — AppContainer or Restricted Token with configurable integrity
-- 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
+- 📁 **Granular access control** — read, write, execute, append, delete, peek, or full access per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
 - 🛡️ **Explicit configuration** — all settings mandatory, no hidden defaults or implicit behavior
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
@@ -88,7 +88,7 @@ Sandy follows the POSIX high-code convention used by `bash`, `env`, `timeout`, a
 | `126` | Cannot execute — `CreateProcess` failed (permission denied, bad format) |
 | `127` | Command not found — executable does not exist on disk |
 | `128` | Configuration error — invalid TOML, wrong-mode keys, config file not found |
-| `129` | Sandbox setup failed — token/SID creation, ACL grants, or pipe creation |
+| `129` | Sandbox setup failed — token/SID creation, ACL grants, or stdin setup |
 | `130` | Timeout — child killed by Sandy's timeout watchdog |
 | `131` | Child crashed — NTSTATUS crash code detected (e.g. `0xC0000005`) |
 
@@ -129,6 +129,7 @@ Grant the sandboxed process access to specific files or folders. Sandy modifies 
 
 ```toml
 [allow]
+peek    = ['C:\', 'C:\Users', 'C:\Users\H']    # non-recursive directory traversal
 read    = ['C:\data\config.json', 'C:\Python314']
 write   = ['C:\logs\agent.log', 'C:\temp\output']
 execute = ['C:\tools\bin']
@@ -139,22 +140,23 @@ all     = ['C:\workspace']
 
 | Key | Permission granted |
 |-----|--------------------|
-| `read` | Read files, list directories |
-| `write` | Create and modify files (no read) |
-| `execute` | Read + execute files, list directories |
-| `append` | Append only (no overwrite, no read) |
-| `delete` | Delete only |
-| `all` | Full access (read + write + execute + delete) |
+| `peek` | List directory + stat only — **non-recursive**, applies to the named directory only |
+| `read` | Read files, list directories (recursive) |
+| `write` | Create and modify files, no read (recursive) |
+| `execute` | Read + execute files, list directories (recursive) |
+| `append` | Append only, no overwrite, no read (recursive) |
+| `delete` | Delete only (recursive) |
+| `all` | Full access: read + write + execute + delete (recursive) |
 
 > [!IMPORTANT]
-> **Recursive propagation:** Directory grants apply to the path **and all its descendants** — every subdirectory and file underneath inherits the same access level.
+> **Recursive propagation:** All grants except `peek` apply to the path **and all its descendants** — every subdirectory and file underneath inherits the same access level. `peek` is explicitly non-recursive: it grants access only to the named directory itself.
 
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
 
 ### `[deny]` — Deny access to specific paths
 
-Block specific permissions on paths that would otherwise be granted by a broader `[allow]`. Uses the same 6 access keys as `[allow]`. All 6 keys are required (use `[]` for none).
+Block specific permissions on paths that would otherwise be accessible. Uses the same 6 access keys as `[allow]` (except `peek`). All 6 keys are required (use `[]` for none).
 
 ```toml
 [deny]
@@ -168,14 +170,36 @@ all     = ['C:\workspace\secrets']           # fully block secrets/ even though 
 
 **Key behaviors:**
 
-- **Deny always wins.** If a path appears in both `[allow]` and `[deny]`, the deny takes priority. This is enforced regardless of the order they appear in the config.
 - **Deny is recursive.** A deny on a directory blocks the denied permissions on that directory **and all descendants** — subdirectories and files at every depth.
 - **Deny is surgical.** Only the specific permission type is blocked. For example, `deny.write` blocks writing and creating files, but `read`, `execute`, and `delete` remain allowed.
 - **`deny.write` does NOT block delete.** `DELETE` is a separate Windows permission from `WRITE`. To block deletion, use `deny.delete` or `deny.all`.
 - **`deny.read` blocks listing.** Denying read also blocks `os.listdir()` / `dir` because directory listing requires read-data permission.
 
+#### Allow-inside-deny (depth-sorted pipeline)
+
+Sandy supports carving out allowed subtrees from within denied areas. When an `[allow]` path is under a `[deny]` path, Sandy automatically strips the deny ACEs from the allowed subtree before granting access.
+
+```toml
+[deny]
+all = ['C:\repos']                 # deny all access to repos 
+
+[allow]
+all  = ['C:\repos\snipps']         # but allow full access to snipps
+peek = ['C:\repos']                # and allow listing the repos dir
+```
+
+**How it works:** All allow and deny entries are merged into a single pipeline, sorted by path depth (shallowest first). At each depth, deny is applied before allow. When an allow is detected under an active deny, Sandy strips the deny ACEs from the allow subtree before granting. For `peek`, the strip is non-recursive (directory only).
+
+The pipeline execution is logged:
+```
+PIPELINE: sorted 3 entries by path depth:
+    DENY  [ALL    ] C:\repos
+    ALLOW [PEEK   ] C:\repos            <- strip deny (dir only)
+    ALLOW [ALL    ] C:\repos\snipps     <- strip deny (subtree)
+```
+
 > [!TIP]
-> **Common pattern:** Grant `all` to a workspace root, then deny `write` on specific subdirectories to create read-only zones, or deny `all` on sensitive directories to fully block access.
+> **Common pattern:** Deny `all` on a broad directory, then allow specific subdirectories. The most specific (deepest) path always wins.
 
 ### `[privileges]` — Permissions
 
@@ -286,8 +310,8 @@ processes = 10      # max total active processes (including main)
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
 | &ensp; `workdir` | 🟢 required (`'inherit'` or path) | 🟢 required (`'inherit'` or path) |
-| **`[allow]`** | ­­🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
-| &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
+| **`[allow]`** | ­­🟢 required (all 7 keys) | 🟢 required (all 7 keys) |
+| &ensp; `read` `write` `execute` `append` `delete` `all` `peek` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
 | **`[deny]`** | 🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
 | &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
 | **`[privileges]`** | 🟢 required | 🟢 required |
@@ -439,6 +463,10 @@ processes = 0
 ## Logging
 
 Session logs (`-l`), audit logs (`-a`), and crash dumps (`-d`) write to the path you specify — relative paths resolve against the current working directory (standard POSIX behavior).
+
+**Early logger initialization:** The logger starts immediately after CLI argument parsing — before config loading — so config parser warnings (e.g. duplicate paths) are captured in the log file.
+
+**Console passthrough:** The child process inherits the parent's console handles directly (real TTY). Sandy does **not** interpose on stdout/stderr. This means interactive CLI tools (REPLs, Claude Code, etc.) work correctly with TTY detection, colors, and terminal features. To capture child output to a file, use standard shell redirection: `sandy ... -x myapp > output.log 2>&1`.
 
 **Log rotation:** If the target file already exists and `--log-stamp` is *not* used, Sandy automatically rotates with POSIX-style numbered suffixes:
 

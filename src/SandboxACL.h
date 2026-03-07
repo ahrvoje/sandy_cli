@@ -12,8 +12,8 @@
 namespace Sandbox {
 
     // Callback type for recording grants (defined in SandboxGrants.h)
-    // Receives: path, object type, SID string, trapped SIDs, isDeny flag
-    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool);
+    // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isPeek flag
+    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool, bool);
 
     // -----------------------------------------------------------------------
     // Convert user-friendly registry path to Win32 object path
@@ -41,6 +41,10 @@ namespace Sandbox {
         // WRITE_DAC excluded: prevents sandbox from modifying ACLs.
         // WRITE_OWNER excluded: no legitimate sandbox use for ownership changes.
         case AccessLevel::All:     return FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER);
+        // Peek: just enough to traverse a directory (lstat + readdir).
+        // No GENERIC_READ (avoids reading file contents), no inheritance.
+        case AccessLevel::Peek:    return FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
+                                          FILE_READ_EA | READ_CONTROL | SYNCHRONIZE;
         default:                   return 0;
         }
     }
@@ -78,7 +82,10 @@ namespace Sandbox {
         EXPLICIT_ACCESSW ea{};
         ea.grfAccessPermissions = permissions;
         ea.grfAccessMode = SET_ACCESS;
-        ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        // Peek: non-recursive — ACE applies only to this directory, not children
+        ea.grfInheritance = (level == AccessLevel::Peek)
+            ? 0
+            : (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
         ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
         ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
         ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
@@ -101,7 +108,7 @@ namespace Sandbox {
         if (recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", false);
+                recordFn(path, objType, sidStr, L"", false, level == AccessLevel::Peek);
                 LocalFree(sidStr);
             }
         }
@@ -110,7 +117,30 @@ namespace Sandbox {
         DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
         bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
                      && (attr & FILE_ATTRIBUTE_DIRECTORY);
-        if (isDir) {
+        if (level == AccessLevel::Peek && isDir) {
+            // Peek: use SetKernelObjectSecurity — the raw kernel API that does NOT
+            // trigger auto-inheritance propagation.  SetSecurityInfo/SetNamedSecurityInfoW
+            // both walk all children to re-evaluate inherited ACEs on directories like
+            // C:\Users\H (65+ seconds).  SetKernelObjectSecurity writes the DACL to
+            // this single object only.
+            HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (hDir == INVALID_HANDLE_VALUE) {
+                rc = GetLastError();
+            } else {
+                // Build a self-relative security descriptor with the new DACL
+                SECURITY_DESCRIPTOR sd;
+                InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+                SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
+                if (SetKernelObjectSecurity(hDir, DACL_SECURITY_INFORMATION, &sd)) {
+                    rc = ERROR_SUCCESS;
+                } else {
+                    rc = GetLastError();
+                }
+                CloseHandle(hDir);
+            }
+        } else if (isDir && level != AccessLevel::Peek) {
             rc = TreeSetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
                 DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
@@ -216,7 +246,7 @@ namespace Sandbox {
         if (recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, trappedSids, true);
+                recordFn(path, objType, sidStr, trappedSids, true, false);
                 LocalFree(sidStr);
             }
         }
@@ -489,6 +519,21 @@ namespace Sandbox {
                 const_cast<LPWSTR>(path.c_str()), objType,
                 siFlags, nullptr, nullptr, pNewDacl, nullptr,
                 TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
+        } else if (isDir && skipTreeSet) {
+            // Peek cleanup: SetKernelObjectSecurity does NOT propagate to children
+            HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (hDir == INVALID_HANDLE_VALUE) {
+                rc = GetLastError();
+            } else {
+                SECURITY_DESCRIPTOR sd;
+                InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+                SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
+                rc = SetKernelObjectSecurity(hDir, DACL_SECURITY_INFORMATION, &sd)
+                     ? ERROR_SUCCESS : GetLastError();
+                CloseHandle(hDir);
+            }
         } else {
             rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,

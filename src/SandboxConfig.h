@@ -104,7 +104,8 @@ namespace Sandbox {
                 static const std::map<std::wstring, AccessLevel> allowKeys = {
                     {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
                     {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
-                    {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All}
+                    {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All},
+                    {L"peek", AccessLevel::Peek}
                 };
                 for (const auto& [key, val] : sit->second) {
                     auto it = allowKeys.find(key);
@@ -352,12 +353,12 @@ namespace Sandbox {
                 config.parseError = true;
             }
 
-            // [allow] section + all 6 keys mandatory
+            // [allow] section + all 7 keys mandatory
             if (doc.find(L"allow") == doc.end()) {
                 fprintf(stderr, "Error: [allow] section is required. Use empty arrays [] for no grants.\n");
                 config.parseError = true;
             } else {
-                static const wchar_t* allowAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
+                static const wchar_t* allowAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all", L"peek" };
                 for (auto ak : allowAclKeys) {
                     if (allowSeen.find(ak) == allowSeen.end()) {
                         fprintf(stderr, "Error: '%ls' is required in [allow]. Use %ls = [] for no grants.\n", ak, ak);

@@ -31,6 +31,7 @@ integrity = 'medium'
 workdir = 'inherit'
 
 [allow]
+peek    = []
 execute = ['C:\Users\H\test_deep\scripts']
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
 write = []

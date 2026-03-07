@@ -64,7 +64,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Folder access level
     // -----------------------------------------------------------------------
-    enum class AccessLevel { Read, Write, Execute, Append, Delete, All };
+    enum class AccessLevel { Read, Write, Execute, Append, Delete, All, Peek };
 
     struct FolderEntry {
         std::wstring path;
@@ -74,12 +74,13 @@ namespace Sandbox {
     // Human-readable tag for an access level
     inline const wchar_t* AccessTag(AccessLevel level) {
         switch (level) {
-        case AccessLevel::Read:    return L"R";
-        case AccessLevel::Write:   return L"W";
-        case AccessLevel::Execute: return L"X";
-        case AccessLevel::Append:  return L"A";
-        case AccessLevel::Delete:  return L"D";
+        case AccessLevel::Read:    return L"READ";
+        case AccessLevel::Write:   return L"WRITE";
+        case AccessLevel::Execute: return L"EXECUTE";
+        case AccessLevel::Append:  return L"APPEND";
+        case AccessLevel::Delete:  return L"DELETE";
         case AccessLevel::All:     return L"ALL";
+        case AccessLevel::Peek:    return L"PEEK";
         default:                   return L"?";
         }
     }
@@ -264,64 +265,69 @@ namespace Sandbox {
             if (!active) return;
             AcquireSRWLockExclusive(&lock);
             auto ts = Timestamp();
-            fwprintf(logFile, L"[%s] --- Configuration ---\n", ts.c_str());
-            fwprintf(logFile, L"[%s] Executable: %s\n", ts.c_str(), exe.c_str());
+
+            // --- Header ---
+            fwprintf(logFile, L"[%s] === Configuration ===\n", ts.c_str());
+
+            // --- Target ---
+            fwprintf(logFile, L"[%s] EXEC: %s\n", ts.c_str(), exe.c_str());
             if (!args.empty())
-                fwprintf(logFile, L"[%s] Arguments:  %s\n", ts.c_str(), args.c_str());
+                fwprintf(logFile, L"[%s] ARGS: %s\n", ts.c_str(), args.c_str());
 
-            fwprintf(logFile, L"[%s] Folders:    %zu configured\n", ts.c_str(), config.folders.size());
-            for (size_t i = 0; i < config.folders.size(); i++) {
-                fwprintf(logFile, L"[%s]   [%s]  %s\n", ts.c_str(),
-                         AccessTag(config.folders[i].access), config.folders[i].path.c_str());
+            // --- Allow ---
+            if (!config.folders.empty()) {
+                fwprintf(logFile, L"[%s] ALLOW: %zu entries\n", ts.c_str(), config.folders.size());
+                for (const auto& e : config.folders)
+                    fwprintf(logFile, L"[%s]     [%-7s] %s\n", ts.c_str(), AccessTag(e.access), e.path.c_str());
             }
 
-            if (config.allowSystemDirs) fwprintf(logFile, L"[%s] System dirs: allowed\n", ts.c_str());
-            if (config.allowNetwork)    fwprintf(logFile, L"[%s] Network:     allowed\n", ts.c_str());
-            if (config.allowLocalhost)  fwprintf(logFile, L"[%s] Localhost:   allowed\n", ts.c_str());
-            if (config.allowLan)        fwprintf(logFile, L"[%s] LAN:         allowed\n", ts.c_str());
-
-            if (!config.stdinMode.empty()) {
-                if (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
-                    fwprintf(logFile, L"[%s] Stdin:       disabled (NUL)\n", ts.c_str());
-                else
-                    fwprintf(logFile, L"[%s] Stdin:       %s\n", ts.c_str(), config.stdinMode.c_str());
-            }
-            if (!config.envInherit)     fwprintf(logFile, L"[%s] Env:         filtered (%zu pass vars)\n", ts.c_str(), config.envPass.size());
-            if (config.allowNamedPipes) fwprintf(logFile, L"[%s] Named Pipes: allowed\n", ts.c_str());
-            fwprintf(logFile, L"[%s] Clipboard:   read=%s write=%s\n", ts.c_str(),
-                     config.allowClipboardRead ? L"yes" : L"no",
-                     config.allowClipboardWrite ? L"yes" : L"no");
-            fwprintf(logFile, L"[%s] Children:    %s\n", ts.c_str(),
-                     config.allowChildProcesses ? L"allowed" : L"blocked");
+            // --- Deny ---
             if (!config.denyFolders.empty()) {
-                fwprintf(logFile, L"[%s] Deny:        %zu configured\n", ts.c_str(), config.denyFolders.size());
+                fwprintf(logFile, L"[%s] DENY: %zu entries\n", ts.c_str(), config.denyFolders.size());
                 for (const auto& d : config.denyFolders)
-                    fwprintf(logFile, L"[%s]   [%s]  %s\n", ts.c_str(), AccessTag(d.access), d.path.c_str());
+                    fwprintf(logFile, L"[%s]     [%-7s] %s\n", ts.c_str(), AccessTag(d.access), d.path.c_str());
             }
+
+            // --- Registry ---
             if (!config.registryRead.empty() || !config.registryWrite.empty()) {
-                fwprintf(logFile, L"[%s] Registry:    %zu keys\n", ts.c_str(),
+                fwprintf(logFile, L"[%s] REGISTRY: %zu keys\n", ts.c_str(),
                          config.registryRead.size() + config.registryWrite.size());
                 for (const auto& k : config.registryRead)
-                    fwprintf(logFile, L"[%s]   [R]  %s\n", ts.c_str(), k.c_str());
+                    fwprintf(logFile, L"[%s]     [READ   ] %s\n", ts.c_str(), k.c_str());
                 for (const auto& k : config.registryWrite)
-                    fwprintf(logFile, L"[%s]   [W]  %s\n", ts.c_str(), k.c_str());
+                    fwprintf(logFile, L"[%s]     [WRITE  ] %s\n", ts.c_str(), k.c_str());
             }
-            if (config.timeoutSeconds)  fwprintf(logFile, L"[%s] Timeout:     %lu seconds\n", ts.c_str(), config.timeoutSeconds);
-            if (config.memoryLimitMB)   fwprintf(logFile, L"[%s] Memory:      %zu MB\n", ts.c_str(), config.memoryLimitMB);
-            if (config.maxProcesses)    fwprintf(logFile, L"[%s] Processes:   %lu max\n", ts.c_str(), config.maxProcesses);
 
-            fwprintf(logFile, L"[%s] --- Process Output ---\n", ts.c_str());
+            // --- Privileges ---
+            fwprintf(logFile, L"[%s] PRIVILEGES:\n", ts.c_str());
+            fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(), config.allowNamedPipes ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     stdin           = %s\n", ts.c_str(),
+                     config.stdinMode.empty() ? L"inherit"
+                     : _wcsicmp(config.stdinMode.c_str(), L"NUL") == 0 ? L"disabled" : config.stdinMode.c_str());
+            fwprintf(logFile, L"[%s]     clipboard       = read=%s write=%s\n", ts.c_str(),
+                     config.allowClipboardRead ? L"yes" : L"no",
+                     config.allowClipboardWrite ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     child_processes = %s\n", ts.c_str(), config.allowChildProcesses ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     environment     = %s\n", ts.c_str(),
+                     config.envInherit ? L"inherit" : L"filtered");
+            if (config.allowSystemDirs) fwprintf(logFile, L"[%s]     system_dirs     = yes\n", ts.c_str());
+            if (config.allowNetwork)    fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
+            if (config.allowLocalhost)  fwprintf(logFile, L"[%s]     localhost       = yes\n", ts.c_str());
+            if (config.allowLan)        fwprintf(logFile, L"[%s]     lan             = yes\n", ts.c_str());
+
+            // --- Limits ---
+            if (config.timeoutSeconds || config.memoryLimitMB || config.maxProcesses) {
+                fwprintf(logFile, L"[%s] LIMITS:\n", ts.c_str());
+                if (config.timeoutSeconds) fwprintf(logFile, L"[%s]     timeout         = %lu sec\n", ts.c_str(), config.timeoutSeconds);
+                if (config.memoryLimitMB)  fwprintf(logFile, L"[%s]     memory          = %zu MB\n", ts.c_str(), config.memoryLimitMB);
+                if (config.maxProcesses)   fwprintf(logFile, L"[%s]     processes       = %lu max\n", ts.c_str(), config.maxProcesses);
+            }
+
             _commit(_fileno(logFile));
             ReleaseSRWLockExclusive(&lock);
         }
 
-        void LogOutput(const char* data, DWORD len) {
-            if (!active || !data || len == 0) return;
-            AcquireSRWLockExclusive(&lock);
-            fwrite(data, 1, len, logFile);
-            _commit(_fileno(logFile));  // fsync: flush OS cache to disk (power-loss safe)
-            ReleaseSRWLockExclusive(&lock);
-        }
+        // (LogOutput removed — console passthrough: no pipe to capture from)
 
         void Log(const wchar_t* msg) {
             if (!active) return;

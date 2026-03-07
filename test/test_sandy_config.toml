@@ -6,6 +6,7 @@ token = 'appcontainer'
 workdir = 'inherit'
 
 [allow]
+peek    = []
 read = [
     'C:\Users\H\test_sandy\scripts',
     'C:\Users\H\test_sandy\R',

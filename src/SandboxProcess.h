@@ -1,8 +1,8 @@
 // =========================================================================
-// SandboxProcess.h — Process launch, IO relay, job objects, and timeout
+// SandboxProcess.h — Process launch, job objects, and timeout
 //
 // Self-contained utilities for launching sandboxed child processes,
-// capturing output, enforcing resource limits, and managing timeouts.
+// enforcing resource limits, and managing timeouts.
 // Each function is an independently testable semantic unit.
 // =========================================================================
 #pragma once
@@ -70,28 +70,7 @@ namespace Sandbox {
         return 0;
     }
 
-    // -----------------------------------------------------------------------
-    // SetupOutputPipe — create an anonymous pipe for child stdout/stderr.
-    //
-    // Outputs: hRead  — parent's read end (non-inheritable)
-    //          hWrite — child's write end (inheritable)
-    // Returns: true on success
-    // Verifiable: both handles are valid on success
-    // -----------------------------------------------------------------------
-    inline bool SetupOutputPipe(HANDLE& hRead, HANDLE& hWrite)
-    {
-        SECURITY_ATTRIBUTES sa{};
-        sa.nLength = sizeof(sa);
-        sa.bInheritHandle = TRUE;
-
-        if (!CreatePipe(&hRead, &hWrite, &sa, 65536))  // 64KB pipe buffer for crash resilience
-            return false;
-        SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-        g_logger.LogFmt(L"PIPE: stdout/stderr read=0x%p write=0x%p",
-                        (void*)hRead, (void*)hWrite);
-        return true;
-    }
+    // (SetupOutputPipe removed — console passthrough: child inherits console)
 
     // -----------------------------------------------------------------------
     // SetupStdinHandle — resolve the stdin handle for the child process.
@@ -131,15 +110,18 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // LaunchChildProcess — create the child process in the sandbox.
     //
+    // Console passthrough: stdout/stderr are inherited from the parent so
+    // the child sees a real console (TTY).  Only stdin is explicitly set
+    // when configured (NUL or file redirect).
+    //
     // Inputs:  isRestricted    — true for restricted-token, false for AppContainer
     //          hToken          — restricted token handle (only if isRestricted)
     //          pAttrList       — attribute list (capabilities/child-policy)
     //          envBlock        — environment block (empty = inherit)
     //          workDir         — working directory
     //          exePath/exeArgs — target executable and arguments
-    //          hStdin          — stdin handle for the child
-    //          hWritePipe      — child's write end of stdout/stderr pipe
-    // Returns: PROCESS_INFORMATION on success, or sets ok=false
+    //          hStdin          — stdin handle for the child (nullptr = inherit)
+    // Returns: true on success, pi filled in
     // Verifiable: pi.hProcess is valid and pi.dwProcessId > 0 on success
     // -----------------------------------------------------------------------
     inline bool LaunchChildProcess(bool isRestricted, HANDLE hToken,
@@ -148,15 +130,22 @@ namespace Sandbox {
                                    const std::wstring& workDir,
                                    const std::wstring& exePath,
                                    const std::wstring& exeArgs,
-                                   HANDLE hStdin, HANDLE hWritePipe,
+                                   HANDLE hStdin,
                                    PROCESS_INFORMATION& pi)
     {
         STARTUPINFOEXW siex{};
         siex.StartupInfo.cb = sizeof(siex);
-        siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        siex.StartupInfo.hStdOutput = hWritePipe;
-        siex.StartupInfo.hStdError  = hWritePipe;
-        siex.StartupInfo.hStdInput  = hStdin;
+
+        // Only set STARTF_USESTDHANDLES when stdin is explicitly redirected
+        // (NUL or file). When stdin is inherited (hStdin = parent's stdin),
+        // we skip the flag entirely so stdout/stderr stay on the console.
+        HANDLE hParentStdin = GetStdHandle(STD_INPUT_HANDLE);
+        if (hStdin && hStdin != hParentStdin) {
+            siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+            siex.StartupInfo.hStdInput  = hStdin;
+            siex.StartupInfo.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+            siex.StartupInfo.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+        }
         if (pAttrList) siex.lpAttributeList = pAttrList;
 
         std::wstring cmdLine = L"\"" + exePath + L"\"";
@@ -250,47 +239,22 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // RelayOutputAndWait — read child stdout/stderr, relay to parent, wait.
+    // WaitForChildExit — wait for the child to exit, handle timeout.
     //
-    // Inputs:  hProcess      — child process handle
-    //          hReadPipe     — parent's read end of the stdout pipe
+    // Console passthrough: Sandy does not interpose on stdout/stderr.
+    // The child writes directly to the console (or shell redirect).
+    //
+    // Inputs:  hProcess       — child process handle
     //          hTimeoutThread — timeout watchdog thread (may be null)
-    //          timeoutCtx    — timeout context (for checking timedOut flag)
-    //          timeoutSec    — configured timeout value (for reporting)
+    //          timeoutCtx     — timeout context (for checking timedOut flag)
+    //          timeoutSec     — configured timeout value (for reporting)
     // Returns: child exit code
     // Verifiable: exit code matches child's GetExitCodeProcess
     // -----------------------------------------------------------------------
-    inline DWORD RelayOutputAndWait(HANDLE hProcess, HANDLE hReadPipe,
-                                    HANDLE hTimeoutThread, TimeoutContext& timeoutCtx,
-                                    DWORD timeoutSec)
+    inline DWORD WaitForChildExit(HANDLE hProcess,
+                                   HANDLE hTimeoutThread, TimeoutContext& timeoutCtx,
+                                   DWORD timeoutSec)
     {
-        char buffer[4096];
-        DWORD bytesRead = 0;
-        HANDLE hStdout = GetStdHandle(STD_OUTPUT_HANDLE);
-
-        while (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-            DWORD written = 0;
-            WriteFile(hStdout, buffer, bytesRead, &written, nullptr);
-            g_logger.LogOutput(buffer, bytesRead);
-        }
-
-        // Drain any remaining data in the kernel pipe buffer after child exit.
-        // When a child crashes, its C runtime may have flushed some data to the
-        // pipe that ReadFile didn't pick up before the broken-pipe error.
-        for (;;) {
-            DWORD avail = 0;
-            if (!PeekNamedPipe(hReadPipe, nullptr, 0, nullptr, &avail, nullptr) || avail == 0)
-                break;
-            if (ReadFile(hReadPipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
-                DWORD written = 0;
-                WriteFile(hStdout, buffer, bytesRead, &written, nullptr);
-                g_logger.LogOutput(buffer, bytesRead);
-            } else {
-                break;
-            }
-        }
-        CloseHandle(hReadPipe);
-
         WaitForSingleObject(hProcess, INFINITE);
         DWORD exitCode = 0;
         GetExitCodeProcess(hProcess, &exitCode);

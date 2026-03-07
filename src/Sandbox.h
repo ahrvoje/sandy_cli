@@ -29,53 +29,153 @@ namespace Sandbox {
                                      SE_OBJECT_TYPE objType,
                                      const std::wstring& sidString,
                                      const std::wstring& trappedSids,
-                                     bool isDeny)
+                                     bool isDeny,
+                                     bool isPeek)
     {
-        RecordGrant(path, objType, sidString, trappedSids, isDeny);
+        RecordGrant(path, objType, sidString, trappedSids, isDeny, isPeek);
     }
 
     // -----------------------------------------------------------------------
-    // GrantConfiguredAccess — apply all configured folder grants.
+    // ApplyAccessPipeline — depth-sorted grant/deny execution.
+    //
+    // Merges all allow + deny entries into a single pipeline sorted by path
+    // depth (shallowest first).  When an allow path is under a previously
+    // applied deny, strips the deny ACEs from the allow subtree first, then
+    // grants.  Peek strips are non-recursive (directory only).
+    //
+    // This ensures the most specific (deepest) path always wins.
     // -----------------------------------------------------------------------
-    inline bool GrantConfiguredAccess(PSID pSid, const SandboxConfig& config)
+
+    struct PipelineEntry {
+        std::wstring path;
+        AccessLevel  access;
+        bool         isDeny;
+        int          depth;
+    };
+
+    static int PathDepth(const std::wstring& p) {
+        int d = 0;
+        for (auto c : p) if (c == L'\\') d++;
+        return d;
+    }
+
+    // Check if `child` is at or under `parent` (case-insensitive, backslash boundary)
+    static bool IsPathUnder(const std::wstring& child, const std::wstring& parent) {
+        if (child.size() < parent.size()) return false;
+        if (_wcsnicmp(child.c_str(), parent.c_str(), parent.size()) != 0) return false;
+        // Exact match or child continues with backslash
+        return child.size() == parent.size() || child[parent.size()] == L'\\';
+    }
+
+    inline bool ApplyAccessPipeline(PSID pSid, const SandboxConfig& config, bool isAppContainer)
     {
-        bool allOk = true;
-        for (const auto& entry : config.folders) {
-            DWORD rc = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
-            bool ok = (rc == ERROR_SUCCESS);
-            if (!ok) allOk = false;
-            if (ok) {
-                g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
-                                AccessTag(entry.access), entry.path.c_str(),
-                                AccessMask(entry.access));
-            } else {
-                g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
-                                AccessTag(entry.access), entry.path.c_str(),
-                                rc, GetSystemErrorMessage(rc).c_str());
+        // 1. Build pipeline
+        std::vector<PipelineEntry> pipeline;
+        for (const auto& e : config.folders) {
+            if (e.path.empty()) continue;
+            pipeline.push_back({ e.path, e.access, false, PathDepth(e.path) });
+        }
+        for (const auto& e : config.denyFolders) {
+            if (e.path.empty()) continue;
+            pipeline.push_back({ e.path, e.access, true, PathDepth(e.path) });
+        }
+
+        // 2. Stable sort: by depth ascending, deny before allow at same depth
+        std::stable_sort(pipeline.begin(), pipeline.end(),
+            [](const PipelineEntry& a, const PipelineEntry& b) {
+                if (a.depth != b.depth) return a.depth < b.depth;
+                // deny before allow at same depth
+                if (a.isDeny != b.isDeny) return a.isDeny;
+                return false;
+            });
+
+        // 3. Log the sorted plan
+        g_logger.LogFmt(L"PIPELINE: sorted %zu entries by path depth:", pipeline.size());
+        // Pre-scan: collect deny paths for annotation
+        std::vector<std::wstring> preDenyPaths;
+        for (const auto& e : pipeline) {
+            if (e.isDeny) {
+                preDenyPaths.push_back(e.path);
             }
         }
-        return allOk;
-    }
-
-    // -----------------------------------------------------------------------
-    // ApplyDenyRules — apply all configured deny ACEs (after allows).
-    // -----------------------------------------------------------------------
-    inline bool ApplyDenyRules(PSID pSid, const SandboxConfig& config, bool isAppContainer)
-    {
-        bool allOk = true;
-        for (const auto& entry : config.denyFolders) {
-            if (entry.path.empty()) continue;
-            DWORD rc = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
-            bool ok = (rc == ERROR_SUCCESS);
-            if (!ok) allOk = false;
-            if (ok) {
-                g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
-                                AccessTag(entry.access), entry.path.c_str(),
-                                AccessMask(entry.access));
+        for (const auto& e : pipeline) {
+            bool underDeny = false;
+            if (!e.isDeny) {
+                for (const auto& dp : preDenyPaths) {
+                    if (IsPathUnder(e.path, dp)) { underDeny = true; break; }
+                }
+            }
+            if (e.isDeny) {
+                g_logger.LogFmt(L"    DENY  [%-7s] %s",
+                    AccessTag(e.access), e.path.c_str());
+            } else if (underDeny && e.access == AccessLevel::Peek) {
+                g_logger.LogFmt(L"    ALLOW [%-7s] %s  <- strip deny (dir only)",
+                    AccessTag(e.access), e.path.c_str());
+            } else if (underDeny) {
+                g_logger.LogFmt(L"    ALLOW [%-7s] %s  <- strip deny (subtree)",
+                    AccessTag(e.access), e.path.c_str());
             } else {
-                g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
-                                AccessTag(entry.access), entry.path.c_str(),
-                                rc, GetSystemErrorMessage(rc).c_str());
+                g_logger.LogFmt(L"    ALLOW [%-7s] %s",
+                    AccessTag(e.access), e.path.c_str());
+            }
+        }
+
+        // 4. Execute pipeline
+        bool allOk = true;
+        std::vector<std::wstring> activeDenyPaths;
+        // Convert SID to string once (for RemoveSidFromDacl calls)
+        std::wstring sidStr;
+        {
+            LPWSTR s = nullptr;
+            if (ConvertSidToStringSidW(pSid, &s)) {
+                sidStr = s;
+                LocalFree(s);
+            }
+        }
+
+        for (const auto& e : pipeline) {
+            if (e.isDeny) {
+                // Apply deny
+                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, isAppContainer, RecordGrantCallback);
+                bool ok = (rc == ERROR_SUCCESS);
+                if (!ok) allOk = false;
+                if (ok) {
+                    g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
+                        AccessTag(e.access), e.path.c_str(), AccessMask(e.access));
+                    activeDenyPaths.push_back(e.path);
+                } else {
+                    g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
+                        AccessTag(e.access), e.path.c_str(),
+                        rc, GetSystemErrorMessage(rc).c_str());
+                }
+            } else {
+                // Check if this allow is under an active deny
+                bool underDeny = false;
+                for (const auto& dp : activeDenyPaths) {
+                    if (IsPathUnder(e.path, dp)) { underDeny = true; break; }
+                }
+
+                // Strip deny ACEs if needed
+                if (underDeny && !sidStr.empty()) {
+                    bool isPeek = (e.access == AccessLevel::Peek);
+                    g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
+                        e.path.c_str(), isPeek ? L"dir only" : L"subtree");
+                    RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
+                                     true, L"", isPeek);
+                }
+
+                // Apply allow
+                DWORD rc = GrantObjectAccess(pSid, e.path, e.access, RecordGrantCallback);
+                bool ok = (rc == ERROR_SUCCESS);
+                if (!ok) allOk = false;
+                if (ok) {
+                    g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
+                        AccessTag(e.access), e.path.c_str(), AccessMask(e.access));
+                } else {
+                    g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
+                        AccessTag(e.access), e.path.c_str(),
+                        rc, GetSystemErrorMessage(rc).c_str());
+                }
             }
         }
         return allOk;
@@ -368,12 +468,8 @@ namespace Sandbox {
             guard.Add([]() { RevokeDesktopAccess(); });
         }
 
-        // Step 2c: Grant configured folder access
-        bool grantFailed = !GrantConfiguredAccess(pSid, config);
-
-        // Step 2d: Apply deny rules (always after allows — deny takes precedence)
-        if (!ApplyDenyRules(pSid, config, isAppContainer))
-            grantFailed = true;
+        // Step 2c: Apply depth-sorted access pipeline (allow + deny, most specific wins)
+        bool grantFailed = !ApplyAccessPipeline(pSid, config, isAppContainer);
 
         // Step 2e: [RT] Grant registry access
         if (isRestricted) {
@@ -435,15 +531,9 @@ namespace Sandbox {
         bool crashDumpsEnabled = false;
         SetupCrashDumps(auditLogPath, dumpPath, exePath, crashExeName, crashDumpsEnabled);
 
-        // Step 3e: Create output pipe and stdin handle
-        HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-        if (!SetupOutputPipe(hReadPipe, hWritePipe)) {
-            g_logger.Log(L"ERROR: pipe creation failed");
-            return SandyExit::SetupError;
-        }
+        // Step 3e: Setup stdin handle
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
         if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
-            CloseHandle(hReadPipe); CloseHandle(hWritePipe);
             return SandyExit::SetupError;
         }
 
@@ -475,7 +565,6 @@ namespace Sandbox {
                     if (actualIL != expectedIL) {
                         g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
                                         expectedIL, actualIL);
-                        CloseHandle(hReadPipe); CloseHandle(hWritePipe);
                         if (hStdinFile) CloseHandle(hStdinFile);
                         guard.RunAll();
                         DeleteCleanupTask(g_instanceId);
@@ -487,23 +576,21 @@ namespace Sandbox {
             }
         }
 
-        // Step 4a: Launch the child process (suspended)
+        // Step 4a: Launch the child process (suspended, console passthrough)
         PROCESS_INFORMATION pi{};
         bool launched = LaunchChildProcess(
             isRestricted,
             isRestricted ? hRestrictedToken : nullptr,
             attrs.pAttrList, envBlock, exeFolder, exePath, exeArgs,
-            hStdin, hWritePipe, pi);
+            hStdin, pi);
 
-        // Close write end (parent doesn't need it) and stdin file
-        CloseHandle(hWritePipe);
+        // Close stdin file handle (parent doesn't need it)
         if (hStdinFile) CloseHandle(hStdinFile);
 
         if (!launched) {
             DWORD launchErr = GetLastError();
             g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
             g_logger.LogSummary(launchErr, false, 0);
-            CloseHandle(hReadPipe);
             // [AC] Delete profile on launch failure
             if (isAppContainer)
                 DeleteAppContainerProfile(containerName.c_str());
@@ -543,10 +630,11 @@ namespace Sandbox {
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
         HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
 
-        // Step 4d: Relay output and wait for exit
-        DWORD exitCode = RelayOutputAndWait(pi.hProcess, hReadPipe,
-                                             hTimeoutThread, timeoutCtx,
-                                             config.timeoutSeconds);
+        // Step 4d: Wait for child exit (console passthrough — no pipe relay)
+        DWORD exitCode = WaitForChildExit(pi.hProcess,
+                                           hTimeoutThread, timeoutCtx,
+                                           config.timeoutSeconds);
+
 
         // =================================================================
         // PHASE 5: CLEANUP (guard handles grants, SID, token, caps, attrs)

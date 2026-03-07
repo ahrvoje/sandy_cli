@@ -14,6 +14,7 @@ token = 'appcontainer'
 workdir = 'inherit'
 
 [allow]
+peek    = []
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_diabolical\scripts']
 write = []

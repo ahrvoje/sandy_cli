@@ -23,6 +23,7 @@ workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
 # Use single quotes for Windows paths (no backslash escaping needed).
 
 [allow]
+peek    = []              # non-recursive: list dir + stat only (path traversal)
 read = []
 # read = [
 #     'C:\data\config.json',          # single file
