@@ -43,6 +43,6 @@ inherit = true
 pass = []
 
 [limit]
-timeout = 0
+timeout = 30
 memory = 0
 processes = 0

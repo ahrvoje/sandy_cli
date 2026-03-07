@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM =====================================================================
 REM test_phantom_rt.bat -- Phantom test suite (Restricted Token mode)

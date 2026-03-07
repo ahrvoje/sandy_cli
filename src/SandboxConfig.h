@@ -445,7 +445,10 @@ namespace Sandbox {
                     }
                     // Detect duplicates within same section
                     if (!seen.insert(e.path).second) {
-                        fprintf(stderr, "Warning: Duplicate path in [%ls]: %ls\n", section, e.path.c_str());
+                        if (g_logger.IsActive())
+                            g_logger.LogFmt(L"CONFIG_WARN: Duplicate path in [%s]: %s", section, e.path.c_str());
+                        else
+                            fprintf(stderr, "Warning: Duplicate path in [%ls]: %ls\n", section, e.path.c_str());
                     }
                 }
             };

@@ -146,6 +146,7 @@ namespace Sandbox {
                 std::wstring delArgs = L"/Delete /TN \"" + taskName + L"\" /F";
                 if (RunSchtasks(delArgs) == 0) {
                     g_logger.Log((L"SCHTASK_STALE: deleted " + taskName).c_str());
+                    printf("  [TASK] %ls -> deleted\n", taskName.c_str());
                 }
             }
         }
@@ -214,6 +215,7 @@ namespace Sandbox {
         for (const auto& name : containerNames) {
             std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + name;
             RunHiddenProcess(cmd);
+            printf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
         }
         if (!containerNames.empty())
             g_logger.LogFmt(L"LOOPBACK: force-disabled %zu stale exemption(s)", containerNames.size());

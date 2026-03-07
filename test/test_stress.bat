@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM =====================================================================
 REM Sandy Concurrent Stress Test
@@ -23,6 +24,7 @@ set PROBE=%~dp0stress_probe.py
 set DIR_A=%USERPROFILE%\test_stress_A
 set DIR_B=%USERPROFILE%\test_stress_B
 set DIR_C=%USERPROFILE%\test_stress_C
+set SCRIPTS=%USERPROFILE%\test_stress_scripts
 set PASS=0
 set FAIL=0
 
@@ -34,22 +36,21 @@ echo.
 
 REM --- Pre-cleanup: ensure pristine state ---
 "!SANDY!" --cleanup >nul 2>nul
-reg delete "HKCU\Software\Sandy" /f >nul 2>nul
 
 REM --- Create clean test folders (delete first to reset ACLs from prior runs) ---
 echo [Setup] Creating clean test folders...
 if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
 if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 if exist "!DIR_C!" rmdir /s /q "!DIR_C!"
+if exist "!SCRIPTS!" rmdir /s /q "!SCRIPTS!"
 mkdir "!DIR_A!"
 mkdir "!DIR_B!"
 mkdir "!DIR_C!"
+mkdir "!SCRIPTS!"
 echo seed> "!DIR_A!\seed.txt"
 echo seed> "!DIR_B!\seed.txt"
 echo seed> "!DIR_C!\seed.txt"
-copy /y "%~dp0stress_probe.py" "!DIR_A!\stress_probe.py" >nul
-copy /y "%~dp0stress_probe.py" "!DIR_B!\stress_probe.py" >nul
-copy /y "%~dp0stress_probe.py" "!DIR_C!\stress_probe.py" >nul
+copy /y "%~dp0stress_probe.py" "!SCRIPTS!\stress_probe.py" >nul
 
 REM --- Clean previous probe results ---
 del "!DIR_A!\sandy_stress_*.json" 2>nul
@@ -63,21 +64,21 @@ REM Phase 1: Inject stale registry entries from fake dead PIDs
 REM =====================================================================
 echo.
 echo === Phase 1: Inject stale entries ===
-reg add "HKCU\Software\Sandy\Grants\dead-0001-0001-0001-000000000001" /v _pid /t REG_DWORD /d 99901 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0001-0001-0001-000000000001" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0001-0001-0001-000000000001" /v _container /t REG_SZ /d "Sandy_dead-0001" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0001-0001-0001-000000000001" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _pid /t REG_DWORD /d 99901 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _container /t REG_SZ /d "Sandy_dead-0001" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path|D:(A;;FA;;;WD)" /f >nul 2>nul
 
-reg add "HKCU\Software\Sandy\Grants\dead-0002-0002-0002-000000000002" /v _pid /t REG_DWORD /d 99902 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0002-0002-0002-000000000002" /v _ctime /t REG_QWORD /d 2 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0002-0002-0002-000000000002" /v _container /t REG_SZ /d "Sandy_dead-0002" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\dead-0002-0002-0002-000000000002" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path2|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _pid /t REG_DWORD /d 99902 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _ctime /t REG_QWORD /d 2 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _container /t REG_SZ /d "Sandy_dead-0002" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path2|D:(A;;FA;;;WD)" /f >nul 2>nul
 
-reg add "HKCU\Software\Sandy\WER" /v 99901 /t REG_SZ /d "fake_stale.exe" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\WER" /v 99901 /t REG_SZ /d "fake_stale.exe" /f >nul 2>nul
 
 echo   Injected 2 stale Grants entries + 1 stale WER entry
 
-reg query "HKCU\Software\Sandy\Grants\dead-0001-0001-0001-000000000001" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale entry 1 injected
     set /a PASS+=1
@@ -86,7 +87,7 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\Grants\dead-0002-0002-0002-000000000002" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale entry 2 injected
     set /a PASS+=1
@@ -98,45 +99,35 @@ if !ERRORLEVEL! EQU 0 (
 REM =====================================================================
 REM Phase 2: Launch 5 instances with staggered start times
 REM
-REM Durations: I1(3s) I2(6s) I3(10s) I4(5s) I5(8s)
-REM Stagger: 3s between launches
-REM Overlap matrix (approximate):
-REM   t+0:  I1 starts
-REM   t+3:  I1 ends,  I2 starts       (I1 and I2 barely overlap)
-REM   t+6:  I3 starts                  (I2 running)
-REM   t+9:  I2 ends,  I4 starts       (I3 running, I2+I4 overlap)
-REM   t+12: I5 starts                  (I3, I4 running)
-REM   t+14: I4 ends                    (I3, I5 running)
-REM   t+16: I3 ends                    (I5 running alone)
-REM   t+20: I5 ends                    (all done)
-REM
+REM Durations: I1(3s) I2(6s) I3(10s) I4(15s) I5(8s)
+REM Stagger: 15s between launches (ensures previous instance fully set up)
 REM Each instance has different folder subsets:
 REM   I1: A+B   I2: A+C   I3: B+C   I4: A+B+C   I5: A+B+C
 REM This means folders A, B, C are each shared by 3-4 instances.
 REM =====================================================================
 echo.
 echo === Phase 2: Launch 5 concurrent instances ===
-echo   (staggered 10s apart to avoid TreeSetNamedSecurityInfoW races)
+echo   (staggered 15s apart to avoid TreeSetNamedSecurityInfoW races)
 echo.
 
 echo [2.1] Launching I1 (3s, folders A+B)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I1 3 "!DIR_A!" "!DIR_B!"
-ping -n 11 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I1 3 "!DIR_A!" "!DIR_B!"
+ping -n 16 127.0.0.1 >nul
 
 echo [2.2] Launching I2 (6s, folders A+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I2 6 "!DIR_A!" "!DIR_C!"
-ping -n 11 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I2 6 "!DIR_A!" "!DIR_C!"
+ping -n 16 127.0.0.1 >nul
 
 echo [2.3] Launching I3 (10s, folders B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_B!\stress_probe.py" I3 10 "!DIR_B!" "!DIR_C!"
-ping -n 11 127.0.0.1 >nul
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I3 10 "!DIR_B!" "!DIR_C!"
+ping -n 16 127.0.0.1 >nul
 
-echo [2.4] Launching I4 (5s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I4 5 "!DIR_A!" "!DIR_B!" "!DIR_C!"
-ping -n 11 127.0.0.1 >nul
+echo [2.4] Launching I4 (15s, folders A+B+C)...
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I4 15 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+ping -n 16 127.0.0.1 >nul
 
 echo [2.5] Launching I5 (8s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!DIR_A!\stress_probe.py" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
 
 REM =====================================================================
 REM Phase 3: Mid-flight status check
@@ -178,8 +169,8 @@ REM Phase 4: Wait for all instances to exit
 REM =====================================================================
 echo.
 echo === Phase 4: Waiting for all instances to exit ===
-REM I5 launched at ~t+40, runs 8s -> exits ~t+48.  Add generous buffer.
-ping -n 60 127.0.0.1 >nul
+REM I5 launched at ~t+45, runs 8s -> exits ~t+53.  Add generous buffer.
+ping -n 65 127.0.0.1 >nul
 echo   All instances should have exited.
 
 REM =====================================================================
@@ -192,18 +183,18 @@ REM Run --cleanup to handle any stale entries that remain
 "!SANDY!" --cleanup >nul 2>nul
 
 REM 5.1: No Grants registry entries should remain
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] All Grants registry entries cleaned
     set /a PASS+=1
 ) else (
     echo   [FAIL] Grants registry entries still exist:
-    reg query "HKCU\Software\Sandy\Grants" /s 2>nul
+    reg query "HKCU\Software\Sandy\Test\Grants" /s 2>nul
     set /a FAIL+=1
 )
 
 REM 5.2: No WER entries should remain
-reg query "HKCU\Software\Sandy\WER" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] All WER entries cleaned
     set /a PASS+=1
@@ -342,6 +333,7 @@ if !FAIL! GTR 0 (
 if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
 if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 if exist "!DIR_C!" rmdir /s /q "!DIR_C!"
+if exist "!SCRIPTS!" rmdir /s /q "!SCRIPTS!"
 del "%TEMP%\sandy_stress_*.txt" 2>nul
 if !FAIL! GTR 0 exit /b 1
 exit /b 0

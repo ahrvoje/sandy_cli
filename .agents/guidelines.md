@@ -111,6 +111,48 @@ path, STOP. You are about to write dead code that will pass no test.**
 - Not all three are always needed, but **never inline TOML or Python into
   the `.bat` file**. Keep them as separate files.
 
+## Test Header — MANDATORY
+
+Every test `.bat` must start with this header (after `@echo off` / `setlocal`):
+
+```batch
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
+```
+
+Do **not** set window titles in tests. Audit tests (`test_audit.bat`,
+`test_audit_rt.bat`) require admin elevation and Procmon — they are excluded
+from `run_all_tests.bat` and must be run standalone.
+
+## Test Safety — Zero Side-Effects
+
+Tests **must not** produce any side-effect on Sandy production data, other
+running processes, or the host platform. Every rule below is mandatory.
+
+### Registry
+
+- **Never read, write, or delete** production keys under `HKCU\Software\Sandy`
+  or `HKCU\Software\Sandy\Grants`.
+- All test-specific registry entries go under **`HKCU\Software\Sandy\Test`**.
+- Cleanup of test keys is handled by `sandy --cleanup`
+  (which calls `RegDeleteTreeW` on `Software\Sandy\Test`).
+
+### Process Management
+
+- **Never run blanket `taskkill /f /im sandy.exe`** or
+  `taskkill /f /im python.exe` — this kills production instances and
+  unrelated Python processes.
+- All process termination **must target a precise PID** obtained during the
+  test run (e.g. `taskkill /f /pid %SANDY_PID%`).
+- If a test needs to confirm a process is gone, check by PID, not by image
+  name.
+
+### General
+
+- Tests must not create, modify, or delete files outside the test's own
+  working directory (`test\`) and the system `%TEMP%` folder.
+- Tests must clean up all temporary files and directories they create.
+- Scheduled tasks created by tests must be deleted by the same test on exit.
+
 # Architecture — Pipeline Structure
 
 `Sandbox.h` implements a **single linear pipeline** (`RunPipeline`) in 5 phases:

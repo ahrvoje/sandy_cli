@@ -185,6 +185,12 @@ inline int HandleCleanup()
         else
             fprintf(stderr, "  [PROFILE] %ls -> FAILED\n", m.c_str());
     }
+
+    // Remove test registry tree (tests use Software\Sandy\Test\ instead of
+    // production keys so they never interfere with real sandbox state)
+    if (RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Sandy\\Test") == ERROR_SUCCESS)
+        printf("  [TEST]    Software\\Sandy\\Test -> cleaned\n");
+
     printf("Sandy - cleanup complete.\n");
     return 0;
 }

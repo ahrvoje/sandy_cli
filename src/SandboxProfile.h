@@ -496,7 +496,8 @@ namespace Sandbox {
         std::wstring exeBase = (exeSlash != std::wstring::npos) ? exePath.substr(exeSlash + 1) : exePath;
 
         // Start Procmon with include filter for target process
-        if (!StartProcmonProfile(procmonExe, exeBase)) {
+        std::wstring pmlPath;
+        if (!StartProcmonProfile(procmonExe, exeBase, pmlPath)) {
             fprintf(stderr, "[Profile] Failed to start Procmon capture.\n");
             return 1;
         }
@@ -525,8 +526,11 @@ namespace Sandbox {
         fprintf(stderr, "[Profile] Process exited with code %lu (0x%08lX). Analyzing...\n", exitCode, exitCode);
 
         // Stop Procmon and convert PML → CSV
-        std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
-        std::wstring csvPath = AuditTempPath(L"sandy_audit.csv");
+        // Derive CSV path from PML path (same unique suffix, different extension)
+        std::wstring csvPath = pmlPath;
+        auto csvDot = csvPath.rfind(L'.');
+        if (csvDot != std::wstring::npos) csvPath = csvPath.substr(0, csvDot);
+        csvPath += L".csv";
 
         if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Profile"))
             return 1;

@@ -209,7 +209,7 @@ except OSError as e:
 
 # Try writing a fake entry
 try:
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Grants\FAKE_POISON")
+    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Test\Grants\FAKE_POISON")
     winreg.SetValueEx(key, "poison", 0, winreg.REG_SZ, "owned")
     winreg.CloseKey(key)
     print("  [FAIL] registry WRITE: created poisoned key!")

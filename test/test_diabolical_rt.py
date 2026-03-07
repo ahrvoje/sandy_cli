@@ -168,14 +168,14 @@ except OSError as e:
 
 # Try writing — also expected accessible at medium integrity
 try:
-    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Grants\FAKE_POISON_RT")
+    key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Test\Grants\FAKE_POISON_RT")
     winreg.SetValueEx(key, "poison", 0, winreg.REG_SZ, "rt_test")
     winreg.CloseKey(key)
     print("  [INFO] registry WRITE: created test key (expected for RT)")
     results.append(('INFO', 'registry: write accessible (expected for RT)'))
     # Clean up our test key
     try:
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Grants\FAKE_POISON_RT")
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, r"Software\Sandy\Test\Grants\FAKE_POISON_RT")
         print("  [INFO] cleaned up test registry key")
     except Exception:
         pass

@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 REM ============================================================
 REM Concurrent Sandy Container Test Battery
 REM Launches 3 containers with different grants on the same folder
@@ -26,8 +27,7 @@ echo  (staggered 5s apart to avoid ACL grant races)
 echo ============================================================
 echo.
 
-REM Kill stragglers & cleanup
-taskkill /f /im sandy.exe >nul 2>nul
+REM Cleanup stale state
 "%SANDY%" --cleanup >nul 2>nul
 
 REM Create test folder structure

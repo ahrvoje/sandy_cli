@@ -122,13 +122,16 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Helper: get temp file path
+    // Helper: get unique temp file path (PID + tick suffix avoids collisions)
     // -----------------------------------------------------------------------
-    inline std::wstring AuditTempPath(const wchar_t* name)
+    inline std::wstring AuditTempPath(const wchar_t* prefix, const wchar_t* ext)
     {
         wchar_t tmp[MAX_PATH];
         GetTempPathW(MAX_PATH, tmp);
-        return std::wstring(tmp) + name;
+        wchar_t buf[96];
+        swprintf(buf, 96, L"%ls_%lu_%llu%ls", prefix,
+                 GetCurrentProcessId(), GetTickCount64(), ext);
+        return std::wstring(tmp) + buf;
     }
 
 
@@ -395,32 +398,37 @@ namespace Sandbox {
     // Launch Procmon for capture — shared by audit and profile modes.
     // Terminates any existing instance, starts a new one with the given
     // backing file, and waits for the PML file to appear.
+    // pmlPathOut receives the unique PML path for later stop/convert.
     // -----------------------------------------------------------------------
     inline bool LaunchProcmon(const std::wstring& procmonPath,
-                              const wchar_t* tag, DWORD startupSleepMs = 0)
+                              const wchar_t* tag, std::wstring& pmlPathOut,
+                              DWORD startupSleepMs = 0)
     {
-        std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
-        DeleteFileW(pmlPath.c_str());
+        pmlPathOut = AuditTempPath(L"sandy_audit", L".pml");
+        DeleteFileW(pmlPathOut.c_str());
 
         // Kill any existing Procmon instance and wait for it to fully exit
         RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 5000);
         WaitForProcmonExit(10000);
 
-        // Start Procmon headless with backing file
+        // Start Procmon headless with backing file — CREATE_NO_WINDOW + SW_HIDE
+        // ensures no UI appears even momentarily.
         std::wstring cmd = L"\"" + procmonPath + L"\" /Quiet /Minimized /AcceptEula "
-                           L"/BackingFile \"" + pmlPath + L"\"";
+                           L"/BackingFile \"" + pmlPathOut + L"\"";
 
         STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
         if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
-                           0, nullptr, nullptr, &si, &pi)) {
+                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
             fprintf(stderr, "[%ls] Failed to start Procmon (error %lu).\n", tag, GetLastError());
             return false;
         }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
 
-        if (!WaitForFile(pmlPath, 10000)) {
+        if (!WaitForFile(pmlPathOut, 10000)) {
             fprintf(stderr, "[%ls] Procmon did not start capturing.\n", tag);
             return false;
         }
@@ -431,7 +439,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Start Procmon for profile mode with include filter for target process
     // -----------------------------------------------------------------------
-    inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName)
+    inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName,
+                                     std::wstring& pmlPathOut)
     {
         // Write FilterRules to registry: include only the target process name.
         // Procmon reads this at startup, so it must be set before launch.
@@ -440,15 +449,16 @@ namespace Sandbox {
             return false;
         }
         // 3s sleep lets the kernel driver fully initialize before profiling
-        return LaunchProcmon(procmonPath, L"Profile", 3000);
+        return LaunchProcmon(procmonPath, L"Profile", pmlPathOut, 3000);
     }
 
     // -----------------------------------------------------------------------
     // Start Procmon audit (call BEFORE launching child process)
+    // pmlPathOut receives the unique PML path for StopProcmonAudit.
     // -----------------------------------------------------------------------
-    inline bool StartProcmonAudit(const std::wstring& procmonPath)
+    inline bool StartProcmonAudit(const std::wstring& procmonPath, std::wstring& pmlPathOut)
     {
-        return LaunchProcmon(procmonPath, L"Audit");
+        return LaunchProcmon(procmonPath, L"Audit", pmlPathOut);
     }
 
     // -----------------------------------------------------------------------
@@ -489,13 +499,18 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // Stop Procmon audit and generate audit log (call AFTER child exits).
+    // pmlPath must be the path returned by StartProcmonAudit.
     // Returns process tree text for session log. Empty string on failure.
     // -----------------------------------------------------------------------
     inline std::string StopProcmonAudit(const std::wstring& procmonPath,
-                                 const std::wstring& auditLogPath, DWORD childPid)
+                                 const std::wstring& auditLogPath,
+                                 const std::wstring& pmlPath, DWORD childPid)
     {
-        std::wstring pmlPath = AuditTempPath(L"sandy_audit.pml");
-        std::wstring csvPath = AuditTempPath(L"sandy_audit.csv");
+        // Derive CSV path from PML path (same unique suffix, different extension)
+        std::wstring csvPath = pmlPath;
+        auto dot = csvPath.rfind(L'.');
+        if (dot != std::wstring::npos) csvPath = csvPath.substr(0, dot);
+        csvPath += L".csv";
 
         if (!StopAndConvertProcmon(procmonPath, pmlPath, csvPath, L"Audit"))
             return "";

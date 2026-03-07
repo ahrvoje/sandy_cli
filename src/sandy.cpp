@@ -192,6 +192,33 @@ static int RunMain(int argc, wchar_t* argv[])
         return SandyExit::InternalError;
     }
 
+    // (config-only modes handled after config loading below)
+
+    // --- Apply timestamp + UID prefix to log filenames if --log-stamp ---
+    if (logStamp) {
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        DWORD uid = (GetTickCount() ^ GetCurrentProcessId()) & 0xFFFF;
+        wchar_t prefix[32];
+        swprintf(prefix, 32, L"%04d%02d%02d_%02d%02d%02d_%04x_",
+                 st.wYear, st.wMonth, st.wDay,
+                 st.wHour, st.wMinute, st.wSecond, uid);
+        auto stampPath = [&](const std::wstring& path) -> std::wstring {
+            if (path.empty()) return path;
+            auto slash = path.find_last_of(L"\\/");
+            if (slash != std::wstring::npos)
+                return path.substr(0, slash + 1) + prefix + path.substr(slash + 1);
+            return std::wstring(prefix) + path;
+        };
+        logPath = stampPath(logPath);
+        auditLogPath = stampPath(auditLogPath);
+        dumpPath = stampPath(dumpPath);
+    }
+
+    // --- Start logger early so config parser warnings go to log ---
+    if (!logPath.empty())
+        g_logger.Start(logPath);
+
     // --- Load configuration ---
     SandboxConfig config;
     if (!configString.empty()) {
@@ -214,27 +241,6 @@ static int RunMain(int argc, wchar_t* argv[])
         return HandlePrintConfig(config);
     if (dryRun)
         return HandleDryRun(config, exePath, exeArgs);
-
-    // --- Apply timestamp + UID prefix to log filenames if --log-stamp ---
-    if (logStamp) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        DWORD uid = (GetTickCount() ^ GetCurrentProcessId()) & 0xFFFF;
-        wchar_t prefix[32];
-        swprintf(prefix, 32, L"%04d%02d%02d_%02d%02d%02d_%04x_",
-                 st.wYear, st.wMonth, st.wDay,
-                 st.wHour, st.wMinute, st.wSecond, uid);
-        auto stampPath = [&](const std::wstring& path) -> std::wstring {
-            if (path.empty()) return path;
-            auto slash = path.find_last_of(L"\\/");
-            if (slash != std::wstring::npos)
-                return path.substr(0, slash + 1) + prefix + path.substr(slash + 1);
-            return std::wstring(prefix) + path;
-        };
-        logPath = stampPath(logPath);
-        auditLogPath = stampPath(auditLogPath);
-        dumpPath = stampPath(dumpPath);
-    }
 
     config.logPath = logPath;
     config.quiet = quiet;

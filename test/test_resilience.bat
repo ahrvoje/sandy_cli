@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM ===================================================================
 REM Sandy Resilience Test Battery
@@ -39,7 +40,7 @@ echo.
 echo --- Test 2: Clean run leaves no stale registry ---
 "!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "print('clean')" >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No stale Grants key after clean run
     set /a PASS+=1
@@ -48,7 +49,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\WER" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No stale WER key after clean run
     set /a PASS+=1
@@ -62,7 +63,7 @@ REM Test 3: Stale Grants entry detected by --status
 REM ===================================================================
 echo.
 echo --- Test 3: Stale grant detection ---
-reg add "HKCU\Software\Sandy\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
 "!SANDY!" --status >"%TEMP%\sandy_status_warn.txt" 2>nul
 
 findstr /C:"STALE" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
@@ -89,7 +90,7 @@ REM Test 4: --cleanup clears stale Grants
 REM ===================================================================
 echo.
 echo --- Test 4: --cleanup clears stale grants ---
-reg query "HKCU\Software\Sandy\Grants\99999" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants\99999" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale grants key exists before cleanup
     set /a PASS+=1
@@ -100,7 +101,7 @@ if !ERRORLEVEL! EQU 0 (
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Grants key removed after --cleanup
     set /a PASS+=1
@@ -114,7 +115,7 @@ REM Test 5: Stale WER entry detected and --cleanup clears it
 REM ===================================================================
 echo.
 echo --- Test 5: Stale WER detection and cleanup ---
-reg add "HKCU\Software\Sandy\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
 "!SANDY!" --status >"%TEMP%\sandy_wer_status.txt" 2>nul
 
 findstr /C:"WER" "%TEMP%\sandy_wer_status.txt" >nul 2>nul
@@ -129,7 +130,7 @@ del "%TEMP%\sandy_wer_status.txt" 2>nul
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\WER" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] WER key removed after --cleanup
     set /a PASS+=1
@@ -181,15 +182,15 @@ REM Test 8: Multiple stale PIDs are all cleaned
 REM ===================================================================
 echo.
 echo --- Test 8: Multiple stale PIDs cleaned ---
-reg add "HKCU\Software\Sandy\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-11111" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-22222" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|S-1-5-21-0-0-0-33333" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\WER" /v 11111 /t REG_SZ /d "a.exe" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\WER" /v 22222 /t REG_SZ /d "b.exe" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-11111" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-22222" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|S-1-5-21-0-0-0-33333" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\WER" /v 11111 /t REG_SZ /d "a.exe" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\WER" /v 22222 /t REG_SZ /d "b.exe" /f >nul 2>nul
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] All 3 stale grant PIDs cleaned
     set /a PASS+=1
@@ -198,7 +199,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\WER" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] All 2 stale WER PIDs cleaned
     set /a PASS+=1
@@ -212,10 +213,10 @@ REM Test 9: Normal run does NOT touch other instances' stale entries
 REM ===================================================================
 echo.
 echo --- Test 9: Normal run preserves other PIDs ---
-reg add "HKCU\Software\Sandy\Grants\77777" /v 0 /t REG_SZ /d "FILE|C:\other|S-1-5-21-0-0-0-77777" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\77777" /v 0 /t REG_SZ /d "FILE|C:\other|S-1-5-21-0-0-0-77777" /f >nul 2>nul
 "!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Grants\77777" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants\77777" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Other PID's grants preserved during normal run
     set /a PASS+=1
@@ -232,10 +233,8 @@ REM Test 10: Scheduled task created during run, deleted on clean exit
 REM ===================================================================
 echo.
 echo --- Test 10: Scheduled task lifecycle ---
-REM Clean up any pre-existing SandyCleanup_ tasks (per-instance naming)
-for /f "tokens=2 delims=\" %%t in ('schtasks /Query /FO LIST 2^>nul ^| findstr /C:"SandyCleanup_"') do (
-    schtasks /Delete /TN "%%t" /F >nul 2>nul
-)
+REM Clean up any pre-existing SandyCleanup_ tasks via --cleanup (not direct schtasks)
+"!SANDY!" --cleanup >nul 2>nul
 
 "!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
 
@@ -298,9 +297,9 @@ REM Test 13: Malformed persisted records are skipped, cleanup still succeeds
 REM ===================================================================
 echo.
 echo --- Test 13: Malformed persisted record handling ---
-reg add "HKCU\Software\Sandy\Grants\44444" /v _pid /t REG_DWORD /d 44444 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\44444" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\44444" /v 0 /t REG_SZ /d "BOGUS|relative|notsid|WHAT:1" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\44444" /v _pid /t REG_DWORD /d 44444 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\44444" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Test\Grants\44444" /v 0 /t REG_SZ /d "BOGUS|relative|notsid|WHAT:1" /f >nul 2>nul
 "!SANDY!" --cleanup >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Cleanup tolerates malformed persisted record
@@ -309,7 +308,7 @@ if !ERRORLEVEL! EQU 0 (
     echo   [FAIL] Cleanup failed on malformed persisted record
     set /a FAIL+=1
 )
-reg query "HKCU\Software\Sandy\Grants\44444" >nul 2>nul
+reg query "HKCU\Software\Sandy\Test\Grants\44444" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Malformed stale key removed during cleanup
     set /a PASS+=1

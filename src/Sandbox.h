@@ -134,10 +134,12 @@ namespace Sandbox {
     // SetupAudit — start Procmon audit capture if requested.
     // -----------------------------------------------------------------------
     inline void SetupAudit(const std::wstring& auditLogPath,
-                           std::wstring& procmonExe, bool& auditActive)
+                           std::wstring& procmonExe, bool& auditActive,
+                           std::wstring& auditPmlPath)
     {
         procmonExe.clear();
         auditActive = false;
+        auditPmlPath.clear();
         if (auditLogPath.empty()) return;
 
         procmonExe = FindProcmon();
@@ -145,7 +147,7 @@ namespace Sandbox {
             g_logger.Log(L"AUDIT: Procmon not found on PATH, audit disabled");
             return;
         }
-        auditActive = StartProcmonAudit(procmonExe);
+        auditActive = StartProcmonAudit(procmonExe, auditPmlPath);
         if (auditActive)
             g_logger.Log(L"AUDIT: active (Procmon)");
     }
@@ -177,13 +179,14 @@ namespace Sandbox {
     inline void FinalizeAuditAndDumps(bool auditActive,
                                        const std::wstring& procmonExe,
                                        const std::wstring& auditLogPath,
+                                       const std::wstring& auditPmlPath,
                                        const std::wstring& dumpPath,
                                        bool crashDumpsEnabled,
                                        const std::wstring& crashExeName,
                                        DWORD childPid, DWORD exitCode)
     {
         if (auditActive) {
-            std::string processTree = StopProcmonAudit(procmonExe, auditLogPath, childPid);
+            std::string processTree = StopProcmonAudit(procmonExe, auditLogPath, auditPmlPath, childPid);
             if (!processTree.empty()) {
                 g_logger.Log(L"--- Process Tree ---");
                 int len = MultiByteToWideChar(CP_ACP, 0, processTree.c_str(), -1, nullptr, 0);
@@ -425,7 +428,8 @@ namespace Sandbox {
         // Step 3d: Setup audit and crash dumps
         std::wstring procmonExe;
         bool auditActive = false;
-        SetupAudit(auditLogPath, procmonExe, auditActive);
+        std::wstring auditPmlPath;
+        SetupAudit(auditLogPath, procmonExe, auditActive, auditPmlPath);
 
         std::wstring crashExeName;
         bool crashDumpsEnabled = false;
@@ -558,7 +562,7 @@ namespace Sandbox {
             g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
         else
             g_logger.Log(L"EXIT_CLASS: CLEAN");
-        FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, dumpPath,
+        FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, auditPmlPath, dumpPath,
                               crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
 
         // Step 5b: Close process and job handles
@@ -620,9 +624,7 @@ namespace Sandbox {
         if (exeFolder.empty())
             return SandyExit::SetupError;
 
-        // --- Start logger early for forensic logging ---
-        if (!config.logPath.empty())
-            g_logger.Start(config.logPath);
+        // --- Logger is already started by sandy.cpp (early init) ---
 
         // --- Common startup: clean stale state, warn, create safety net ---
         CleanupStaleStartupState(exePath);

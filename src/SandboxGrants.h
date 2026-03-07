@@ -643,6 +643,7 @@ namespace Sandbox {
 
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
             RemoveSidFromDacl(rec.path, rec.sidString, objType, rec.wasDenied, rec.trappedSids);
+            printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
         }
     }
 
@@ -699,14 +700,14 @@ namespace Sandbox {
 
         // Separate live vs stale
         std::set<std::wstring> livePaths;
-        std::vector<std::wstring> staleKeys;
+        std::vector<std::pair<std::wstring, DWORD>> staleKeys; // {subKey, pid}
 
         for (const auto& subKey : subKeys) {
             std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + subKey;
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS) {
-                staleKeys.push_back(subKey);
+                staleKeys.push_back({ subKey, 0 });
                 continue;
             }
 
@@ -716,14 +717,16 @@ namespace Sandbox {
                 collectPaths(hKey, livePaths);
                 g_logger.Log((L"STALE_CHECK: " + subKey + L" -> ALIVE (PID=" + std::to_wstring(pid) + L")").c_str());
             } else {
-                staleKeys.push_back(subKey);
+                staleKeys.push_back({ subKey, pid });
                 g_logger.Log((L"STALE_CHECK: " + subKey + L" -> DEAD (PID=" + std::to_wstring(pid) + L")").c_str());
             }
             RegCloseKey(hKey);
         }
 
         // Remove stale ACEs and delete registry subkeys
-        for (const auto& subKey : staleKeys) {
+        for (const auto& stale : staleKeys) {
+            const auto& subKey = stale.first;
+            DWORD stalePid = stale.second;
             std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + subKey;
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
@@ -733,6 +736,8 @@ namespace Sandbox {
                     HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
                     g_logger.Log((L"PROFILE_DELETE: " + containerName +
                         (SUCCEEDED(hr) ? L" -> OK" : L" -> FAILED")).c_str());
+                    printf("  [PROFILE] %ls -> %s\n", containerName.c_str(),
+                           SUCCEEDED(hr) ? "deleted" : "FAILED");
                 }
                 RestoreGrantsFromKey(hKey, livePaths);
                 RegCloseKey(hKey);
@@ -745,6 +750,8 @@ namespace Sandbox {
                     g_logger.LogFmt(L"REG_DELETE_FALLBACK_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
             }
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
+            printf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
+                   subKey.c_str(), (unsigned long)stalePid);
         }
 
         TryDeleteEmptyParentKeys();

@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 REM ---------------------------------------------------------------
 REM test_audit_rt.bat — Audit crash test (Restricted Token mode)
 REM Requires: Procmon on PATH, Release build
@@ -9,9 +10,8 @@ REM === Auto-elevate to admin if needed ===
 net session >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo [ELEVATE] Requesting administrator privileges...
-    REM Create a temporary VBScript to trigger UAC elevation
     echo Set UAC = CreateObject^("Shell.Application"^) > "%TEMP%\sandy_elevate.vbs"
-    echo UAC.ShellExecute "cmd.exe", "/k ""%~f0"" %*", "%~dp0", "runas", 1 >> "%TEMP%\sandy_elevate.vbs"
+    echo UAC.ShellExecute "cmd.exe", "/c ""%~f0"" %*", "%~dp0", "runas", 0 >> "%TEMP%\sandy_elevate.vbs"
     cscript //nologo "%TEMP%\sandy_elevate.vbs"
     del "%TEMP%\sandy_elevate.vbs" >nul 2>&1
     exit /b 0

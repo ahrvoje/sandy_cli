@@ -161,6 +161,10 @@ passed = sum(1 for r in results if r[0] == 'PASS')
 failed = sum(1 for r in results if r[0] == 'FAIL')
 info = sum(1 for r in results if r[0] == 'INFO')
 
+# Signal Bob is done (used by batch script for completion detection)
+with open(os.path.join(SIGNALS, 'bob_done'), 'w') as f:
+    f.write('exit')
+
 print(f"\n  BOB: {passed} pass, {failed} fail, {info} info")
 
 sys.exit(0 if failed == 0 else 1)

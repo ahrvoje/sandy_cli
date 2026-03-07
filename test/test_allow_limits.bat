@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM ---------------------------------------------------------------
 REM test_allow_limits.bat — Test [privileges] and [limit] settings
@@ -13,8 +14,7 @@ set ROOT=%USERPROFILE%\test_limits
 echo === Sandy Allow ^& Limits Test Runner ===
 echo.
 
-REM === Kill stragglers & cleanup ===
-taskkill /f /im sandy.exe >nul 2>nul
+REM === Cleanup stale state ===
 "%SANDY%" --cleanup >nul 2>nul
 
 REM === Create test folder with scripts ===

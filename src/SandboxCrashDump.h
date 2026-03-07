@@ -119,6 +119,8 @@ namespace Sandbox {
             if (!entry.second.empty()) {
                 DisableCrashDumps(entry.second);
                 g_logger.Log((L"WER_RESTORE: " + entry.second).c_str());
+                printf("  [WER]  PID %ls crash dumps for %ls -> cleaned\n",
+                       entry.first.c_str(), entry.second.c_str());
             }
         }
 

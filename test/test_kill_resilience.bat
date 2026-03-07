@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM =====================================================================
 REM Sandy Kill-Resilience Test Battery
@@ -37,12 +38,7 @@ echo =====================================================================
 echo.
 
 REM === ONE-TIME pristine baseline (only manual cleanup in the entire test) ===
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
-reg delete "HKCU\Software\Sandy" /f >nul 2>nul
 if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
 if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 mkdir "!DIR_A!"
@@ -60,6 +56,8 @@ echo === Scenario 1: Kill during active run ===
 echo.
 
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S1 30 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S1_PID=%%P"
 
 set READY=0
 for /l %%W in (1,1,30) do (
@@ -73,10 +71,8 @@ if !READY! EQU 0 (
 )
 echo   [OK] S1 probe running
 
-taskkill /f /im sandy.exe >nul 2>nul
+taskkill /f /pid !S1_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
 
 REM 1a: Registry grants MUST exist (proving persistence works)
 reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
@@ -137,6 +133,8 @@ echo.
 
 echo   Starting S2a (30s, folders A+B)...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S2a 30 "!DIR_A!" "!DIR_B!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S2A_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S2a_ready.signal" set READY=1
@@ -147,12 +145,14 @@ if !READY! EQU 0 (
     set /a FAIL+=1
     goto :S2_END
 )
-echo   [OK] S2a running
+echo   [OK] S2a running (PID !S2A_PID!)
 
 ping -n 4 127.0.0.1 >nul
 
 echo   Starting S2b (15s, folder A — overlapping)...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S2b 15 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S2B_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S2b_ready.signal" set READY=1
@@ -163,15 +163,11 @@ if !READY! EQU 0 (
     set /a FAIL+=1
     goto :S2_END
 )
-echo   [OK] S2b running (overlapping on folder A)
+echo   [OK] S2b running (PID !S2B_PID!, overlapping on folder A)
 
-REM Kill the first sandy PID (S2a) — second (S2b) must survive
-for /f "tokens=2" %%P in ('tasklist /fi "imagename eq sandy.exe" /fo table /nh 2^>nul ^| findstr /r "[0-9]"') do (
-    echo   Killing sandy PID %%P (should be S2a^)
-    taskkill /f /pid %%P >nul 2>nul
-    goto :S2_KILLED
-)
-:S2_KILLED
+REM Kill S2a by captured PID — S2b must survive
+echo   Killing S2a PID !S2A_PID!
+taskkill /f /pid !S2A_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM Wait for S2b to finish (15s + buffer)
@@ -204,9 +200,9 @@ if exist "!DIR_A!\kill_probe_S2a_result.json" (
     set /a PASS+=1
 )
 
-REM 2c: Kill stragglers, then --cleanup ALONE must recover
-taskkill /f /im sandy.exe >nul 2>nul
-taskkill /f /im python.exe >nul 2>nul
+REM 2c: Kill stragglers by PID, then --cleanup ALONE must recover
+if defined S2A_PID taskkill /f /pid !S2A_PID! >nul 2>nul
+if defined S2B_PID taskkill /f /pid !S2B_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
@@ -233,6 +229,8 @@ echo.
 
 echo   Starting S3a (30s)...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S3a 30 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S3A_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S3a_ready.signal" set READY=1
@@ -243,10 +241,8 @@ if !READY! EQU 0 (
     set /a FAIL+=1
     goto :S3_END
 )
-echo   [OK] S3a running — killing now
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+echo   [OK] S3a running (PID !S3A_PID!) — killing now
+taskkill /f /pid !S3A_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM 3a: Stale grants MUST exist (proves kill left state behind)
@@ -262,6 +258,8 @@ if !ERRORLEVEL! EQU 0 (
 REM 3b: Start new instance — MUST work despite stale state
 echo   Starting S3b (8s) on same folder...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S3b 8 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S3B_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S3b_ready.signal" set READY=1
@@ -293,8 +291,8 @@ if exist "!DIR_A!\kill_probe_S3b_result.json" (
 REM 3c: After S3b's clean exit, its own grants should be gone.
 REM     S3a's stale grants should still exist (only --cleanup removes them).
 REM     Just verify --cleanup works.
-taskkill /f /im sandy.exe >nul 2>nul
-taskkill /f /im python.exe >nul 2>nul
+if defined S3A_PID taskkill /f /pid !S3A_PID! >nul 2>nul
+if defined S3B_PID taskkill /f /pid !S3B_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
@@ -323,38 +321,38 @@ echo   Rapid-fire: start+kill, start+kill, start+kill
 
 REM S4a
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4a 60 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S4A_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S4a_ready.signal" set READY=1
     if !READY! EQU 0 ping -n 2 127.0.0.1 >nul
 )
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+taskkill /f /pid !S4A_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
 REM S4b
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4b 60 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S4B_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S4b_ready.signal" set READY=1
     if !READY! EQU 0 ping -n 2 127.0.0.1 >nul
 )
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+taskkill /f /pid !S4B_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
 REM S4c
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4c 60 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S4C_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S4c_ready.signal" set READY=1
     if !READY! EQU 0 ping -n 2 127.0.0.1 >nul
 )
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+taskkill /f /pid !S4C_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM 4a: All 3 stale entries MUST exist
@@ -392,6 +390,8 @@ echo.
 
 echo   Starting S5a (30s, folders A+B)...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S5a 30 "!DIR_A!" "!DIR_B!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S5A_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S5a_ready.signal" set READY=1
@@ -402,12 +402,14 @@ if !READY! EQU 0 (
     set /a FAIL+=1
     goto :S5_END
 )
-echo   [OK] S5a running
+echo   [OK] S5a running (PID !S5A_PID!)
 
 ping -n 4 127.0.0.1 >nul
 
 echo   Starting S5b (30s, folder A — overlapping)...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S5b 30 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S5B_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S5b_ready.signal" set READY=1
@@ -418,11 +420,10 @@ if !READY! EQU 0 (
     set /a FAIL+=1
     goto :S5_END
 )
-echo   [OK] S5b running — killing BOTH now
+echo   [OK] S5b running (PID !S5B_PID!) — killing BOTH now
 
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+taskkill /f /pid !S5A_PID! >nul 2>nul
+taskkill /f /pid !S5B_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM 5a: Both stale entries MUST exist
@@ -498,14 +499,14 @@ if !ERRORLEVEL! EQU 0 (
 REM Start and kill one more (to guarantee stale entries exist)
 echo   Starting and killing S6a...
 start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S6a 30 "!DIR_A!"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "S6A_PID=%%P"
 set READY=0
 for /l %%W in (1,1,30) do (
     if exist "!DIR_A!\kill_probe_S6a_ready.signal" set READY=1
     if !READY! EQU 0 ping -n 2 127.0.0.1 >nul
 )
-taskkill /f /im sandy.exe >nul 2>nul
-ping -n 2 127.0.0.1 >nul
-taskkill /f /im python.exe >nul 2>nul
+taskkill /f /pid !S6A_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM 6a: Run clean instance synchronously — MUST warn about stale entries

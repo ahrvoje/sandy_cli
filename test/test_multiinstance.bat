@@ -1,4 +1,5 @@
 @echo off
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM =====================================================================
 REM Multi-Instance ACL Safety Test Battery
@@ -27,8 +28,7 @@ echo  Overlapping grants, concurrent instances
 echo =====================================================================
 echo.
 
-REM === Kill stragglers & cleanup ===
-taskkill /f /im sandy.exe >nul 2>nul
+REM === Cleanup stale state ===
 "%SANDY%" --cleanup >nul 2>nul
 
 REM === Create test folder structure ===
@@ -145,10 +145,12 @@ icacls "%ROOT%\shared" > "%ROOT%\dacl_before_kill.txt" 2>nul
 
 echo   Starting instance to kill...
 start "" /b "%SANDY%" -c "%TEST%multiinstance_a.toml" -l "%ROOT%\log_kill.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" a 60 "%ROOT%\shared"
+ping -n 2 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "KILL_PID=%%P"
 ping -n 6 127.0.0.1 >nul
 
-echo   Killing instance...
-taskkill /f /im sandy.exe >nul 2>nul
+echo   Killing instance (PID !KILL_PID!)...
+taskkill /f /pid !KILL_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
 echo   Running cleanup...
@@ -181,5 +183,8 @@ echo =====================================================================
 echo.
 echo Logs and DACL snapshots in: %ROOT%
 echo   log_a.txt, log_b.txt, dacl_before.txt, dacl_after.txt
+
+REM Cleanup test folder
+if exist "%ROOT%" rmdir /s /q "%ROOT%"
 
 exit /b !ERRORS!
