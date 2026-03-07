@@ -60,6 +60,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Grant access to a file/folder or registry key
     //
+    // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
     // Steps:
     //   1. Read current DACL
     //   2. Build new DACL with the ALLOW ACE added
@@ -67,7 +68,7 @@ namespace Sandbox {
     //   4. Apply the new DACL (TreeSet for directories)
     //   5. Log resulting SDDL
     // -----------------------------------------------------------------------
-    inline bool GrantObjectAccess(PSID pSid, const std::wstring& path,
+    inline DWORD GrantObjectAccess(PSID pSid, const std::wstring& path,
                                   AccessLevel level,
                                   RecordGrantFn recordFn = nullptr,
                                   SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
@@ -88,12 +89,12 @@ namespace Sandbox {
         DWORD rc = GetNamedSecurityInfoW(
             path.c_str(), objType, DACL_SECURITY_INFORMATION,
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
-        if (rc != ERROR_SUCCESS) return false;
+        if (rc != ERROR_SUCCESS) return rc;
 
         // 2. Build new DACL
         PACL pNewDacl = nullptr;
         rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
-        if (rc != ERROR_SUCCESS) { LocalFree(pSD); return false; }
+        if (rc != ERROR_SUCCESS) { LocalFree(pSD); return rc; }
         LocalFree(pSD);
 
         // 3. Record the grant (path + SID string for ACE-level removal)
@@ -138,18 +139,19 @@ namespace Sandbox {
                 LocalFree(pResultSD);
             }
         }
-        return rc == ERROR_SUCCESS;
+        return rc;
     }
 
     // -----------------------------------------------------------------------
     // Deny access to a file/folder
     //
+    // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
     // Strategy depends on SID type:
     // - Restricted: real DENY_ACCESS ACEs (kernel enforces them)
     // - AppContainer: DENY ACEs are IGNORED by kernel.  Instead, revoke
     //   the existing ALLOW ACE and re-add a narrower one.
     // -----------------------------------------------------------------------
-    inline bool DenyObjectAccess(PSID pSid, const std::wstring& path,
+    inline DWORD DenyObjectAccess(PSID pSid, const std::wstring& path,
                                   AccessLevel level, bool isAppContainer,
                                   RecordGrantFn recordFn = nullptr,
                                   SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
@@ -162,7 +164,7 @@ namespace Sandbox {
         DWORD rc = GetNamedSecurityInfoW(
             path.c_str(), objType, DACL_SECURITY_INFORMATION,
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
-        if (rc != ERROR_SUCCESS) return false;
+        if (rc != ERROR_SUCCESS) return rc;
 
         // Before PROTECTED_DACL — scan for inherited AppContainer SIDs
         // that will become trapped as explicit ACEs.  We record them so
@@ -266,7 +268,7 @@ namespace Sandbox {
             pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
             if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
                 LocalFree(pSD);
-                return false;
+                return ERROR_NOT_ENOUGH_MEMORY;
             }
 
             // Copy non-SID ACEs
@@ -314,7 +316,7 @@ namespace Sandbox {
         }
 
         LocalFree(pSD);
-        if (rc != ERROR_SUCCESS || !pNewDacl) return false;
+        if (rc != ERROR_SUCCESS || !pNewDacl) return (rc != ERROR_SUCCESS) ? rc : ERROR_NOT_ENOUGH_MEMORY;
 
         // Apply with PROTECTED_DACL to break inheritance from parent grants
         DWORD siFlags = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
@@ -350,7 +352,7 @@ namespace Sandbox {
                 LocalFree(pResultSD);
             }
         }
-        return rc == ERROR_SUCCESS;
+        return rc;
     }
     // -----------------------------------------------------------------------
     // RemoveSidFromDacl — remove all ACEs for a specific SID from an object.

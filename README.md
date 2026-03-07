@@ -101,6 +101,11 @@ Sandy follows the POSIX high-code convention used by `bash`, `env`, `timeout`, a
 
 All sandbox behavior is controlled by a TOML config. Every config **must** include a `[sandbox]` section declaring the token mode. Use `-c` or `-s` (mutually exclusive). Mode-specific settings are validated — using a flag meant for the other mode is an error. All paths must be absolute and must exist on disk (non-existent paths are rejected as config errors).
 
+**Config limits (defense-in-depth):**
+- Config file size: max **1 MB**
+- Path length: max **32,768 characters** per path (Win32 extended limit)
+- Rules per section: max **256** entries in `[allow]`, `[deny]`, or `[registry]`
+
 See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_config_appcontainer.toml`](sandy_config_appcontainer.toml) and [`sandy_config_restricted.toml`](sandy_config_restricted.toml) for mode-specific templates.
 
 ### `[sandbox]` — Mode selection
@@ -384,6 +389,7 @@ pass = ['PATH']
 [limit]
 timeout = 300
 memory = 2048
+processes = 0
 ```
 
 ```
@@ -424,6 +430,8 @@ write = ['HKCU\Software\MyApp\Settings']
 
 [limit]
 timeout = 300
+memory = 0
+processes = 0
 ```
 
 ---
@@ -447,6 +455,10 @@ sandy.exe -L -l session.log -a audit.log -x myapp.exe
 ```
 
 All log timestamps use **local time with ISO 8601 UTC offset** (e.g. `2026-03-05T10:54:26.123+01:00`).
+
+**Error diagnostics:** When ACL operations fail, Sandy logs the exact Win32 error code and its human-readable description — e.g. `FAILED (0x00000005: Access is denied)`. This applies to file grants, deny rules, and registry grants.
+
+**Pre-launch token validation (Restricted Token mode):** Before launching the child process, Sandy verifies the restricted token's integrity level matches the configured value (`low` = `0x1000`, `medium` = `0x2000`). If the check fails, Sandy aborts with exit code 129 and logs `TOKEN_VALIDATE: FAILED`.
 
 ---
 

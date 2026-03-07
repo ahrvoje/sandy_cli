@@ -467,6 +467,38 @@ namespace Sandbox {
                     config.parseError = true;
                 }
             }
+
+            // --- Sanity limits (defense-in-depth against crafted configs) ---
+            constexpr size_t kMaxPathLength = 32768;   // Win32 MAX_PATH extended limit
+            constexpr size_t kMaxRulesPerSection = 256; // reasonable upper bound
+
+            auto checkPathLengths = [&](const std::vector<FolderEntry>& entries, const wchar_t* section) {
+                for (const auto& e : entries) {
+                    if (e.path.size() > kMaxPathLength) {
+                        fprintf(stderr, "Error: Path in [%ls] exceeds %zu character limit (%zu chars).\n",
+                                section, kMaxPathLength, e.path.size());
+                        config.parseError = true;
+                    }
+                }
+            };
+            checkPathLengths(config.folders, L"allow");
+            checkPathLengths(config.denyFolders, L"deny");
+
+            if (config.folders.size() > kMaxRulesPerSection) {
+                fprintf(stderr, "Error: [allow] has %zu rules (max %zu). Reduce configuration complexity.\n",
+                        config.folders.size(), kMaxRulesPerSection);
+                config.parseError = true;
+            }
+            if (config.denyFolders.size() > kMaxRulesPerSection) {
+                fprintf(stderr, "Error: [deny] has %zu rules (max %zu). Reduce configuration complexity.\n",
+                        config.denyFolders.size(), kMaxRulesPerSection);
+                config.parseError = true;
+            }
+            if (config.registryRead.size() + config.registryWrite.size() > kMaxRulesPerSection) {
+                fprintf(stderr, "Error: [registry] has %zu keys (max %zu). Reduce configuration complexity.\n",
+                        config.registryRead.size() + config.registryWrite.size(), kMaxRulesPerSection);
+                config.parseError = true;
+            }
         }
 
         return config;
@@ -494,6 +526,13 @@ namespace Sandbox {
         DWORD fileSize = GetFileSize(hFile, nullptr);
         if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
             CloseHandle(hFile);
+            SandboxConfig cfg; cfg.parseError = true; return cfg;
+        }
+        // Defense-in-depth: reject unreasonably large config files (>1 MB)
+        constexpr DWORD kMaxConfigFileSize = 1024 * 1024;
+        if (fileSize > kMaxConfigFileSize) {
+            CloseHandle(hFile);
+            fprintf(stderr, "Error: Config file exceeds 1 MB size limit (%lu bytes).\n", fileSize);
             SandboxConfig cfg; cfg.parseError = true; return cfg;
         }
 

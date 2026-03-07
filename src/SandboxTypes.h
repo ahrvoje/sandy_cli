@@ -85,6 +85,33 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Win32 error code → human-readable string (via FormatMessageW)
+    //
+    // Returns e.g. "Access is denied" for ERROR_ACCESS_DENIED (5).
+    // Falls back to "Unknown error" if FormatMessage fails.
+    // -----------------------------------------------------------------------
+    inline std::wstring GetSystemErrorMessage(DWORD errCode)
+    {
+        wchar_t* pMsg = nullptr;
+        DWORD len = FormatMessageW(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+            FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_MAX_WIDTH_MASK,
+            nullptr, errCode, MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+            reinterpret_cast<LPWSTR>(&pMsg), 0, nullptr);
+        if (len > 0 && pMsg) {
+            // Trim trailing whitespace/period
+            while (len > 0 && (pMsg[len - 1] == L' ' || pMsg[len - 1] == L'.'
+                            || pMsg[len - 1] == L'\r' || pMsg[len - 1] == L'\n'))
+                len--;
+            std::wstring result(pMsg, len);
+            LocalFree(pMsg);
+            return result;
+        }
+        if (pMsg) LocalFree(pMsg);
+        return L"Unknown error";
+    }
+
+    // -----------------------------------------------------------------------
     // Sandbox token mode
     // -----------------------------------------------------------------------
     enum class TokenMode { AppContainer, Restricted };

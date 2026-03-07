@@ -41,11 +41,18 @@ namespace Sandbox {
     {
         bool allOk = true;
         for (const auto& entry : config.folders) {
-            bool ok = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
+            DWORD rc = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback);
+            bool ok = (rc == ERROR_SUCCESS);
             if (!ok) allOk = false;
-            g_logger.LogFmt(L"GRANT: [%s] %s -> %s (mask=0x%08X)",
-                            AccessTag(entry.access), entry.path.c_str(),
-                            ok ? L"OK" : L"FAILED", AccessMask(entry.access));
+            if (ok) {
+                g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
+                                AccessTag(entry.access), entry.path.c_str(),
+                                AccessMask(entry.access));
+            } else {
+                g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
+                                AccessTag(entry.access), entry.path.c_str(),
+                                rc, GetSystemErrorMessage(rc).c_str());
+            }
         }
         return allOk;
     }
@@ -58,11 +65,18 @@ namespace Sandbox {
         bool allOk = true;
         for (const auto& entry : config.denyFolders) {
             if (entry.path.empty()) continue;
-            bool ok = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
+            DWORD rc = DenyObjectAccess(pSid, entry.path, entry.access, isAppContainer, RecordGrantCallback);
+            bool ok = (rc == ERROR_SUCCESS);
             if (!ok) allOk = false;
-            g_logger.LogFmt(L"DENY: [%s] %s -> %s (mask=0x%08X)",
-                            AccessTag(entry.access), entry.path.c_str(),
-                            ok ? L"OK" : L"FAILED", AccessMask(entry.access));
+            if (ok) {
+                g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
+                                AccessTag(entry.access), entry.path.c_str(),
+                                AccessMask(entry.access));
+            } else {
+                g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
+                                AccessTag(entry.access), entry.path.c_str(),
+                                rc, GetSystemErrorMessage(rc).c_str());
+            }
         }
         return allOk;
     }
@@ -78,9 +92,15 @@ namespace Sandbox {
                           RegGrant{config.registryWrite, AccessLevel::Write, L"W"} }) {
             for (const auto& key : rg.keys) {
                 std::wstring win32Path = RegistryToWin32Path(key);
-                bool ok = GrantObjectAccess(pSid, win32Path, rg.level, RecordGrantCallback, SE_REGISTRY_KEY);
+                DWORD rc = GrantObjectAccess(pSid, win32Path, rg.level, RecordGrantCallback, SE_REGISTRY_KEY);
+                bool ok = (rc == ERROR_SUCCESS);
                 if (!ok) allOk = false;
-                g_logger.LogFmt(L"GRANT_REG: [%s] %s -> %s", rg.tag, key.c_str(), ok ? L"OK" : L"FAILED");
+                if (ok) {
+                    g_logger.LogFmt(L"GRANT_REG: [%s] %s -> OK", rg.tag, key.c_str());
+                } else {
+                    g_logger.LogFmt(L"GRANT_REG: [%s] %s -> FAILED (0x%08X: %s)",
+                                    rg.tag, key.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+                }
             }
         }
         return allOk;
@@ -431,6 +451,37 @@ namespace Sandbox {
 
         // Log config before launch so it's always in the log even for instant failures
         g_logger.LogConfig(config, exePath, exeArgs);
+
+        // Step 3f: [RT] Pre-launch token integrity validation (defense-in-depth)
+        // Verify the restricted token's integrity level matches the configured
+        // value before handing it to CreateProcessAsUser.  Catches any subtle
+        // mutation that could have occurred during Phases 2-3.
+        if (isRestricted && hRestrictedToken) {
+            DWORD ilSize = 0;
+            GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, nullptr, 0, &ilSize);
+            if (ilSize > 0) {
+                std::vector<BYTE> ilBuf(ilSize);
+                auto* pTIL = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(ilBuf.data());
+                if (GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, pTIL, ilSize, &ilSize)) {
+                    DWORD actualIL = *GetSidSubAuthority(pTIL->Label.Sid,
+                                     *GetSidSubAuthorityCount(pTIL->Label.Sid) - 1);
+                    DWORD expectedIL = (config.integrity == IntegrityLevel::Low)
+                                       ? SECURITY_MANDATORY_LOW_RID
+                                       : SECURITY_MANDATORY_MEDIUM_RID;
+                    if (actualIL != expectedIL) {
+                        g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
+                                        expectedIL, actualIL);
+                        CloseHandle(hReadPipe); CloseHandle(hWritePipe);
+                        if (hStdinFile) CloseHandle(hStdinFile);
+                        guard.RunAll();
+                        DeleteCleanupTask(g_instanceId);
+                        g_logger.Stop();
+                        return SandyExit::SetupError;
+                    }
+                    g_logger.LogFmt(L"TOKEN_VALIDATE: OK (IL=0x%04X)", actualIL);
+                }
+            }
+        }
 
         // Step 4a: Launch the child process (suspended)
         PROCESS_INFORMATION pi{};
