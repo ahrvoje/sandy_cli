@@ -23,10 +23,22 @@ have already been discovered, debugged, and fixed.
   profiles, network rules) **must be logged via `g_logger.Log()` or `g_logger.LogFmt()`**.
 - **Use `g_logger.LogFmt(fmt, ...)` for formatted messages** — never the manual
   `{ wchar_t buf[N]; swprintf(...); g_logger.Log(buf); }` pattern.
-  `LogFmt` uses a 1024-char internal buffer and handles `va_list` automatically.
+  `LogFmt` uses a 1024-char stack buffer for the common case and automatically
+  switches to a dynamically-sized heap buffer for longer messages. A truncation
+  counter is reported at session close via `LOG_DIAG`.
 - **Never use stdout/stderr for operational logging** if `g_logger` can cover it.
   `printf`/`wprintf` is only for user-facing CLI output (banner, status, help).
   Everything else goes through the logger.
+
+# Encoding
+
+- **Never use UTF-16 for output.** No `_O_U16TEXT`, no `_setmode` to wide mode.
+  All user-facing CLI output (stdout/stderr) must be ASCII or UTF-8.
+- **Use `printf` with `%ls`** for user-facing output that includes wide strings.
+  MSVC `printf` handles `%ls` natively, producing clean ASCII/UTF-8 bytes that
+  work with cmd redirect, `findstr`, and piping.
+- **Internal logging** (`fwprintf` to log files opened by Sandy) is fine as-is —
+  the file handle encoding is controlled internally.
 
 # AppContainer vs Restricted Token
 
@@ -71,11 +83,13 @@ path, STOP. You are about to write dead code that will pass no test.**
 - **All user options and critical behavior must be documented.**
 - Documentation lives in **two places** — keep both in sync:
   1. **`README.md`** — full reference with examples, rationale, and edge cases.
-  2. **`--help` output** (in `sandy.cpp`) — concise but fully informative on
+  2. **`--help` output** (in `SandboxCLI.h`) — concise but fully informative on
      usage and critical side-effects. Users must be able to use Sandy correctly
      from `--help` alone without reading the README.
-- When adding or changing any user-facing option, config key, or behavior,
-  update **both** README and `--help` in the same change.
+  - Help text separates **guaranteed** cleanup (ACE removal, profile deletion,
+    loopback, instance registry key) from **best-effort** (parent key cascade,
+    stale tasks, desktop/WinSta ACL). Documents **mode trust boundaries**
+    (AC vs RT-low vs RT-medium).
 
 # TOML Configuration — Strict No-Defaults Rule
 

@@ -12,12 +12,14 @@
 
 namespace Sandbox {
 
-    // Track loopback state for cleanup
+    // -----------------------------------------------------------------------
+    // Loopback exemption — flag tracks runtime state
+    // -----------------------------------------------------------------------
     inline bool g_loopbackGranted = false;
+    inline std::wstring g_loopbackContainerName;  // the container name used for loopback
 
     // -----------------------------------------------------------------------
-    // Startup task — safety net for crash/power-loss scenarios.
-    // Each instance creates its own task: SandyCleanup_<uuid>.
+    // Per-instance scheduled task naming.
     // Deleted on clean exit; stale tasks cleaned by --cleanup.
     // -----------------------------------------------------------------------
     constexpr const wchar_t* kCleanupTaskPrefix = L"SandyCleanup_";
@@ -152,15 +154,16 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // EnableLoopback — add localhost exemption for AppContainer.
     //
-    // Inputs:  (none — uses SandySandbox moniker)
+    // Inputs:  containerName — the per-instance AppContainer name (Sandy_<uuid>)
     // Returns: true if exemption was added
-    // Verifiable: "CheckNetIsolation LoopbackExempt -s" lists SandySandbox
+    // Verifiable: "CheckNetIsolation LoopbackExempt -s" lists the container
     // -----------------------------------------------------------------------
-    inline bool EnableLoopback()
+    inline bool EnableLoopback(const std::wstring& containerName)
     {
-        DWORD exitCode = RunHiddenProcess(
-            L"CheckNetIsolation.exe LoopbackExempt -a -n=SandySandbox");
+        std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -a -n=" + containerName;
+        DWORD exitCode = RunHiddenProcess(cmd);
         g_loopbackGranted = (exitCode == 0);
+        if (g_loopbackGranted) g_loopbackContainerName = containerName;
         return g_loopbackGranted;
     }
 
@@ -168,27 +171,96 @@ namespace Sandbox {
     // DisableLoopback — remove localhost exemption (only if we granted it).
     //
     // Inputs:  (none — checks g_loopbackGranted flag)
-    // Effect:  removes SandySandbox from loopback exemption list
+    // Effect:  removes the per-instance exemption from loopback list
     // Verifiable: exemption no longer appears in CheckNetIsolation -s
     // -----------------------------------------------------------------------
     inline void DisableLoopback() {
-        if (!g_loopbackGranted) return;
-        g_logger.Log(L"LOOPBACK: disabling");
-        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
+        if (!g_loopbackGranted || g_loopbackContainerName.empty()) return;
+        g_logger.Log((L"LOOPBACK: disabling (" + g_loopbackContainerName + L")").c_str());
+        std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + g_loopbackContainerName;
+        RunHiddenProcess(cmd);
         g_loopbackGranted = false;
+        g_loopbackContainerName.clear();
     }
 
     // -----------------------------------------------------------------------
     // ForceDisableLoopback — unconditional exemption removal for startup.
     //
-    // Inputs:  (none)
-    // Effect:  removes SandySandbox regardless of g_loopbackGranted state
+    // Inputs:  containerName — the container name to remove (or empty to
+    //          remove the legacy "SandySandbox" moniker for compat)
+    // Effect:  removes the specified container from loopback exemption list
     // Verifiable: exemption is absent after call
     // -----------------------------------------------------------------------
-    inline void ForceDisableLoopback()
+    inline void ForceDisableLoopback(const std::wstring& containerName = L"")
+    {
+        // Remove legacy hardcoded moniker (from pre-fix builds)
+        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
+        // Remove per-instance moniker if provided
+        if (!containerName.empty()) {
+            std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + containerName;
+            RunHiddenProcess(cmd);
+        }
+        g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
+    }
+
+    // -----------------------------------------------------------------------
+    // ForceDisableLoopback (vector) — remove loopback exemptions for all
+    // provided container names.  Used by --cleanup to sweep stale
+    // per-instance exemptions discovered via EnumSandyProfiles().
+    // -----------------------------------------------------------------------
+    inline void ForceDisableLoopback(const std::vector<std::wstring>& containerNames)
     {
         RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
-        g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
+        for (const auto& name : containerNames) {
+            std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + name;
+            RunHiddenProcess(cmd);
+        }
+        if (!containerNames.empty())
+            g_logger.LogFmt(L"LOOPBACK: force-disabled %zu stale exemption(s)", containerNames.size());
+        else
+            g_logger.Log(L"LOOPBACK: force-disabled (legacy only)");
+    }
+
+    // -----------------------------------------------------------------------
+    // EnumSandyProfiles — enumerate Sandy AppContainer profiles.
+    //
+    // Scans the Windows AppContainer Mappings registry for monikers
+    // starting with "Sandy_".  Used by both startup cleanup and
+    // --cleanup to discover stale per-instance profiles/exemptions.
+    // -----------------------------------------------------------------------
+    inline std::vector<std::wstring> EnumSandyProfiles()
+    {
+        std::vector<std::wstring> profiles;
+        HKEY hMap = nullptr;
+        const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
+            L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
+                KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) != ERROR_SUCCESS)
+            return profiles;
+
+        DWORD subCount = 0;
+        RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        for (DWORD i = 0; i < subCount; i++) {
+            wchar_t sid[256];
+            DWORD sidLen = 256;
+            if (RegEnumKeyExW(hMap, i, sid, &sidLen,
+                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                continue;
+            HKEY hSub = nullptr;
+            if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                continue;
+            wchar_t moniker[256] = {};
+            DWORD mSize = sizeof(moniker);
+            if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
+                    reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
+                if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
+                    profiles.push_back(moniker);
+            }
+            RegCloseKey(hSub);
+        }
+        RegCloseKey(hMap);
+        return profiles;
     }
 
     // -----------------------------------------------------------------------
@@ -203,7 +275,9 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void CleanupStaleStartupState(const std::wstring& exePath)
     {
-        ForceDisableLoopback();
+        // Sweep stale per-instance loopback exemptions (not just legacy moniker)
+        auto staleProfiles = EnumSandyProfiles();
+        ForceDisableLoopback(staleProfiles);
 
         // Clean stale WER key for the current target exe if Sandy left it
         auto slash = exePath.find_last_of(L"\\/");

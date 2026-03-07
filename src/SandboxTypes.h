@@ -152,6 +152,7 @@ namespace Sandbox {
         std::wstring logFilePath;
         FILE* logFile = nullptr;
         bool active = false;
+        int truncatedCount = 0;  // LogFmt truncation counter (reported in Stop)
         SRWLOCK lock = SRWLOCK_INIT;
 
         // ISO 8601 timestamp with millisecond precision (local time + UTC offset)
@@ -218,10 +219,16 @@ namespace Sandbox {
         void Stop() {
             AcquireSRWLockExclusive(&lock);
             if (logFile) {
+                if (truncatedCount > 0) {
+                    fwprintf(logFile, L"[%s] LOG_DIAG: %d messages were truncated during this session\n",
+                             Timestamp().c_str(), truncatedCount);
+                    _commit(_fileno(logFile));
+                }
                 fclose(logFile);
                 logFile = nullptr;
             }
             active = false;
+            truncatedCount = 0;
             ReleaseSRWLockExclusive(&lock);
         }
 
@@ -297,15 +304,47 @@ namespace Sandbox {
             ReleaseSRWLockExclusive(&lock);
         }
 
-        // Formatted log — replaces { wchar_t buf[N]; swprintf(...); Log(buf); }
+        // Formatted log — dynamically sizes the buffer when needed.
+        // Falls back to a fixed stack buffer for the common case, but avoids
+        // silent detail loss for larger diagnostics.
         void LogFmt(const wchar_t* fmt, ...) {
             if (!active) return;
-            wchar_t buf[1024];
+
+            wchar_t stackBuf[1024];
             va_list args;
             va_start(args, fmt);
-            vswprintf(buf, 1024, fmt, args);
+            va_list argsCopy;
+            va_copy(argsCopy, args);
+
+            int needed = _vscwprintf(fmt, argsCopy);
+            va_end(argsCopy);
+
+            if (needed < 0) {
+                va_end(args);
+                truncatedCount++;
+                Log(L"LOG_DIAG: formatting failure in LogFmt");
+                return;
+            }
+
+            const size_t required = static_cast<size_t>(needed) + 1;
+            if (required <= _countof(stackBuf)) {
+                _vsnwprintf_s(stackBuf, _countof(stackBuf), _TRUNCATE, fmt, args);
+                stackBuf[_countof(stackBuf) - 1] = L'\0';
+                va_end(args);
+                Log(stackBuf);
+                return;
+            }
+
+            std::vector<wchar_t> dynamicBuf(required);
+            int written = _vsnwprintf_s(dynamicBuf.data(), dynamicBuf.size(), _TRUNCATE, fmt, args);
             va_end(args);
-            Log(buf);
+            if (written < 0) {
+                truncatedCount++;
+                Log(L"LOG_DIAG: dynamic formatting truncated unexpectedly");
+                return;
+            }
+            dynamicBuf.back() = L'\0';
+            Log(dynamicBuf.data());
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {

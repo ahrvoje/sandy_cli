@@ -14,44 +14,7 @@
 
 namespace Sandbox {
 
-// -----------------------------------------------------------------------
-// Enumerate Sandy AppContainer profiles from Windows Mappings registry.
-// Returns a vector of Sandy_ moniker names.
-// -----------------------------------------------------------------------
-inline std::vector<std::wstring> EnumSandyProfiles()
-{
-    std::vector<std::wstring> profiles;
-    HKEY hMap = nullptr;
-    const wchar_t* mapKey = L"Software\\Classes\\Local Settings\\Software\\"
-        L"Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings";
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, mapKey, 0,
-            KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) != ERROR_SUCCESS)
-        return profiles;
-
-    DWORD subCount = 0;
-    RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
-        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-    for (DWORD i = 0; i < subCount; i++) {
-        wchar_t sid[256];
-        DWORD sidLen = 256;
-        if (RegEnumKeyExW(hMap, i, sid, &sidLen,
-                nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-            continue;
-        HKEY hSub = nullptr;
-        if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
-            continue;
-        wchar_t moniker[256] = {};
-        DWORD mSize = sizeof(moniker);
-        if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
-                reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
-            if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
-                profiles.push_back(moniker);
-        }
-        RegCloseKey(hSub);
-    }
-    RegCloseKey(hMap);
-    return profiles;
-}
+// EnumSandyProfiles() is defined in SandboxCleanup.h (included above)
 
 // -----------------------------------------------------------------------
 // Show active instances and stale state (--status [--json])
@@ -65,6 +28,8 @@ inline int HandleStatus(bool json = false)
     std::vector<Wer>  wers;
     std::vector<std::wstring> tasks;
     std::vector<std::wstring> profiles;
+    int staleInstances = 0;
+    int staleWer = 0;
 
     // Grants registry
     HKEY hGrants = nullptr;
@@ -80,7 +45,9 @@ inline int HandleStatus(bool json = false)
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fk.c_str(), 0, KEY_READ, &hS) == ERROR_SUCCESS) {
                 Sandbox::ReadPidAndCtime(hS, pid, ct); RegCloseKey(hS);
             }
-            insts.push_back({ nm, pid, Sandbox::IsProcessAlive(pid, ct) });
+            bool alive = Sandbox::IsProcessAlive(pid, ct);
+            if (!alive) staleInstances++;
+            insts.push_back({ nm, pid, alive });
         }
         RegCloseKey(hGrants);
     }
@@ -100,6 +67,7 @@ inline int HandleStatus(bool json = false)
             RegEnumValueW(hWER, i, nm, &nl, 0, 0, (BYTE*)&exe[0], &ds);
             while (!exe.empty() && exe.back() == L'\0') exe.pop_back();
             bool alive = Sandbox::IsProcessAlive(pid, 0);
+            if (!alive) staleWer++;
             wers.push_back({ pid, exe, alive });
         }
         RegCloseKey(hWER);
@@ -166,7 +134,8 @@ inline int HandleStatus(bool json = false)
         printf("],\"profiles\":[");
         for (size_t i = 0; i < profiles.size(); i++)
             printf("%s\"%s\"", i ? "," : "", esc(profiles[i]).c_str());
-        printf("]}\n");
+        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"wer\":%zu,\"stale_wer\":%d,\"tasks\":%zu,\"profiles\":%zu}}\n",
+               insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size());
     } else {
         bool found = false;
         for (auto& x : insts) {
@@ -184,6 +153,8 @@ inline int HandleStatus(bool json = false)
         for (auto& t : tasks) { printf("  [TASK]    %ls scheduled task exists\n", t.c_str()); found = true; }
         for (auto& p : profiles) { printf("  [PROFILE] %ls\n", p.c_str()); found = true; }
         if (!found) printf("Sandy - no active instances or stale state.\n");
+        else printf("Summary: %zu instance(s), %d stale instance(s), %zu WER entry/entries, %d stale WER, %zu task(s), %zu profile(s).\n",
+                    insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size());
     }
     return 0;
 }
@@ -193,13 +164,17 @@ inline int HandleStatus(bool json = false)
 // -----------------------------------------------------------------------
 inline int HandleCleanup()
 {
-    Sandbox::ForceDisableLoopback();
+    // Enumerate all Sandy AppContainer profiles for comprehensive cleanup
+    auto orphans = EnumSandyProfiles();
+
+    // Remove loopback exemptions for ALL stale Sandy profiles (not just legacy)
+    Sandbox::ForceDisableLoopback(orphans);
+
     Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
     Sandbox::RestoreStaleWER();
     Sandbox::DeleteStaleCleanupTasks();
 
     // Clean orphaned Sandy AppContainer profiles from Windows Mappings
-    auto orphans = EnumSandyProfiles();
     if (!orphans.empty())
         printf("  Cleaning %zu orphaned AppContainer profile(s)...\n",
                 orphans.size());

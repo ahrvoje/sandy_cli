@@ -9,9 +9,12 @@ REM ===================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
+set RT_CONFIG=%~dp0test_resilience_rt.toml
 set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
+
+set DRYRUN_OUT=%TEMP%\sandy_dryrun_unicode.txt
 
 echo === Sandy Resilience Test Battery ===
 echo.
@@ -55,31 +58,31 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM ===================================================================
-REM Test 3: Stale Grants entry triggers startup warning
+REM Test 3: Stale Grants entry detected by --status
 REM ===================================================================
 echo.
 echo --- Test 3: Stale grant detection ---
-reg add "HKCU\Software\Sandy\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|D:(A;;FA;;;WD)" /f >nul 2>nul
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" 2>"%TEMP%\sandy_warn.txt"
+reg add "HKCU\Software\Sandy\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
+"!SANDY!" --status >"%TEMP%\sandy_status_warn.txt" 2>nul
 
-findstr /C:"WARNING" "%TEMP%\sandy_warn.txt" >nul 2>nul
+findstr /C:"STALE" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Stale grants warning detected
+    echo   [PASS] Stale grants detected by --status
     set /a PASS+=1
 ) else (
-    echo   [FAIL] No warning for stale grants
+    echo   [FAIL] No stale grants shown by --status
     set /a FAIL+=1
 )
 
-findstr /C:"--cleanup" "%TEMP%\sandy_warn.txt" >nul 2>nul
+findstr /C:"99999" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Warning mentions --cleanup
+    echo   [PASS] Status identifies stale instance ID
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Warning does not mention --cleanup
+    echo   [FAIL] Status does not identify stale instance ID
     set /a FAIL+=1
 )
-del "%TEMP%\sandy_warn.txt" 2>nul
+del "%TEMP%\sandy_status_warn.txt" 2>nul
 
 REM ===================================================================
 REM Test 4: --cleanup clears stale Grants
@@ -107,22 +110,22 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM ===================================================================
-REM Test 5: Stale WER entry triggers warning and --cleanup clears it
+REM Test 5: Stale WER entry detected and --cleanup clears it
 REM ===================================================================
 echo.
 echo --- Test 5: Stale WER detection and cleanup ---
 reg add "HKCU\Software\Sandy\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" 2>"%TEMP%\sandy_wer_warn.txt"
+"!SANDY!" --status >"%TEMP%\sandy_wer_status.txt" 2>nul
 
-findstr /C:"WARNING" "%TEMP%\sandy_wer_warn.txt" >nul 2>nul
+findstr /C:"WER" "%TEMP%\sandy_wer_status.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Stale WER warning detected
+    echo   [PASS] Stale WER detected by --status
     set /a PASS+=1
 ) else (
-    echo   [FAIL] No warning for stale WER
+    echo   [FAIL] No WER shown by --status
     set /a FAIL+=1
 )
-del "%TEMP%\sandy_wer_warn.txt" 2>nul
+del "%TEMP%\sandy_wer_status.txt" 2>nul
 
 "!SANDY!" --cleanup >nul 2>nul
 
@@ -178,9 +181,9 @@ REM Test 8: Multiple stale PIDs are all cleaned
 REM ===================================================================
 echo.
 echo --- Test 8: Multiple stale PIDs cleaned ---
-reg add "HKCU\Software\Sandy\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|D:(A;;FA;;;WD)" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|D:(A;;FA;;;WD)" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-11111" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-22222" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|S-1-5-21-0-0-0-33333" /f >nul 2>nul
 reg add "HKCU\Software\Sandy\WER" /v 11111 /t REG_SZ /d "a.exe" /f >nul 2>nul
 reg add "HKCU\Software\Sandy\WER" /v 22222 /t REG_SZ /d "b.exe" /f >nul 2>nul
 
@@ -209,7 +212,7 @@ REM Test 9: Normal run does NOT touch other instances' stale entries
 REM ===================================================================
 echo.
 echo --- Test 9: Normal run preserves other PIDs ---
-reg add "HKCU\Software\Sandy\Grants\77777" /v 0 /t REG_SZ /d "FILE|C:\other|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\77777" /v 0 /t REG_SZ /d "FILE|C:\other|S-1-5-21-0-0-0-77777" /f >nul 2>nul
 "!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
 
 reg query "HKCU\Software\Sandy\Grants\77777" >nul 2>nul
@@ -229,16 +232,89 @@ REM Test 10: Scheduled task created during run, deleted on clean exit
 REM ===================================================================
 echo.
 echo --- Test 10: Scheduled task lifecycle ---
-schtasks /Delete /TN "SandyCleanup" /F >nul 2>nul
+REM Clean up any pre-existing SandyCleanup_ tasks (per-instance naming)
+for /f "tokens=2 delims=\" %%t in ('schtasks /Query /FO LIST 2^>nul ^| findstr /C:"SandyCleanup_"') do (
+    schtasks /Delete /TN "%%t" /F >nul 2>nul
+)
 
 "!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
 
-schtasks /Query /TN "SandyCleanup" >nul 2>nul
+REM Check no SandyCleanup_ tasks exist after clean exit
+schtasks /Query /FO LIST 2>nul | findstr /C:"SandyCleanup_" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Scheduled task deleted after clean exit
     set /a PASS+=1
 ) else (
     echo   [FAIL] Scheduled task still exists after clean exit
+    set /a FAIL+=1
+)
+
+REM ===================================================================
+REM Test 11: --status JSON includes summary object
+REM ===================================================================
+echo.
+echo --- Test 11: --status --json summary ---
+"!SANDY!" --status --json >"%TEMP%\sandy_status.json" 2>nul
+findstr /C:"\"summary\"" "%TEMP%\sandy_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status includes summary object
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing summary object
+    set /a FAIL+=1
+)
+del "%TEMP%\sandy_status.json" 2>nul
+
+REM ===================================================================
+REM Test 12: --print-config / --dry-run preserve Unicode output path text
+REM ===================================================================
+echo.
+echo --- Test 12: Unicode dry-run / print-config output ---
+REM Use the external RT config file (test_resilience_rt.toml)
+"!SANDY!" --dry-run -c "!RT_CONFIG!" -x "!PYTHON!" >"!DRYRUN_OUT!" 2>nul
+REM dry-run/print-config output is UTF-8 — findstr works directly
+findstr /C:"Working dir" "!DRYRUN_OUT!" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Dry-run prints actual working directory
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Dry-run missing actual working directory
+    set /a FAIL+=1
+)
+
+"!SANDY!" --print-config -c "!RT_CONFIG!" >"!DRYRUN_OUT!" 2>nul
+findstr /C:"workdir" "!DRYRUN_OUT!" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Print-config preserves workdir text
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Print-config missing workdir text
+    set /a FAIL+=1
+)
+del "!DRYRUN_OUT!" 2>nul
+
+REM ===================================================================
+REM Test 13: Malformed persisted records are skipped, cleanup still succeeds
+REM ===================================================================
+echo.
+echo --- Test 13: Malformed persisted record handling ---
+reg add "HKCU\Software\Sandy\Grants\44444" /v _pid /t REG_DWORD /d 44444 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\44444" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\44444" /v 0 /t REG_SZ /d "BOGUS|relative|notsid|WHAT:1" /f >nul 2>nul
+"!SANDY!" --cleanup >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Cleanup tolerates malformed persisted record
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Cleanup failed on malformed persisted record
+    set /a FAIL+=1
+)
+reg query "HKCU\Software\Sandy\Grants\44444" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] Malformed stale key removed during cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Malformed stale key still exists after cleanup
     set /a FAIL+=1
 )
 

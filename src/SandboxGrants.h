@@ -69,6 +69,133 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Parsed grant record — output of ParseGrantRecord.
+    // -----------------------------------------------------------------------
+    struct GrantRecord {
+        std::wstring type;          // "FILE" or "REG"
+        std::wstring path;
+        std::wstring sidString;
+        std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
+        bool         wasDenied = false;
+    };
+
+    // -----------------------------------------------------------------------
+    // ValidateSidPrefix — lightweight SID structure check.
+    //
+    // A valid SID string has the form S-<revision>-<authority>-...
+    // We require at least S-<digit>-<digit> (e.g. "S-1-5").
+    // -----------------------------------------------------------------------
+    inline bool ValidateSidPrefix(const std::wstring& s)
+    {
+        // Minimum: "S-1-5" (5 chars)
+        if (s.size() < 5) return false;
+        if (s[0] != L'S' || s[1] != L'-') return false;
+        // Revision must start with a digit
+        if (!iswdigit(s[2])) return false;
+        // Find dash after revision
+        auto dash2 = s.find(L'-', 2);
+        if (dash2 == std::wstring::npos || dash2 + 1 >= s.size()) return false;
+        // Authority must start with a digit
+        if (!iswdigit(s[dash2 + 1])) return false;
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    // ParseGrantRecord — strict parser for persisted grant records.
+    //
+    // Expected format: TYPE|PATH|SID[|DENY:1][|TRAPPED:sid1;sid2]
+    //   TYPE:  "FILE" or "REG"
+    //   PATH:  non-empty, must be absolute (drive letter, UNC, or HKEY)
+    //   SID:   must match S-<revision>-<authority>-... structure
+    //   Flags: only DENY:1 and TRAPPED:<sids> are recognized;
+    //          any unknown |KEY:... suffix rejects the record.
+    //
+    // On failure, sets `reason` with a diagnostic string for logging.
+    // Returns false on malformed input; caller should skip + log.
+    // -----------------------------------------------------------------------
+    inline bool ParseGrantRecord(const std::wstring& data, GrantRecord& out,
+                                 const wchar_t** reason = nullptr)
+    {
+        auto reject = [&](const wchar_t* msg) -> bool {
+            if (reason) *reason = msg;
+            return false;
+        };
+
+        // --- Field 1: TYPE ---
+        auto sep1 = data.find(L'|');
+        if (sep1 == std::wstring::npos) return reject(L"missing TYPE|PATH separator");
+        out.type = data.substr(0, sep1);
+        if (out.type != L"FILE" && out.type != L"REG")
+            return reject(L"TYPE is not FILE or REG");
+
+        // --- Field 2: PATH ---
+        auto sep2 = data.find(L'|', sep1 + 1);
+        if (sep2 == std::wstring::npos) return reject(L"missing PATH|SID separator");
+        out.path = data.substr(sep1 + 1, sep2 - sep1 - 1);
+        if (out.path.empty()) return reject(L"empty PATH");
+        // Reject paths containing pipe (would indicate corrupt record)
+        if (out.path.find(L'|') != std::wstring::npos)
+            return reject(L"PATH contains pipe character");
+        // Require absolute path (drive letter, UNC, or HKEY for registry)
+        bool isAbsolute = (out.path.size() >= 2 && iswalpha(out.path[0]) && out.path[1] == L':') ||
+                          (out.path.size() >= 2 && out.path[0] == L'\\' && out.path[1] == L'\\') ||
+                          (out.path.compare(0, 4, L"HKEY") == 0);
+        if (!isAbsolute)
+            return reject(L"PATH is not absolute");
+
+        // --- Field 3+: SID and optional flags ---
+        std::wstring remaining = data.substr(sep2 + 1);
+        auto pipePos = remaining.find(L'|');
+        out.sidString = (pipePos != std::wstring::npos)
+                        ? remaining.substr(0, pipePos) : remaining;
+
+        // Validate SID: must match S-<revision>-<authority>-... structure
+        if (!ValidateSidPrefix(out.sidString))
+            return reject(L"SID does not match S-<rev>-<auth> format");
+
+        // Parse optional |KEY:VALUE suffixes
+        out.wasDenied = false;
+        out.trappedSids.clear();
+        if (pipePos != std::wstring::npos) {
+            remaining = remaining.substr(pipePos);
+            while (!remaining.empty() && remaining[0] == L'|') {
+                remaining = remaining.substr(1);
+                if (remaining.compare(0, 6, L"DENY:1") == 0) {
+                    out.wasDenied = true;
+                    remaining = remaining.substr(6);
+                } else if (remaining.compare(0, 8, L"TRAPPED:") == 0) {
+                    remaining = remaining.substr(8);
+                    auto nextPipe = remaining.find(L'|');
+                    out.trappedSids = (nextPipe != std::wstring::npos)
+                                     ? remaining.substr(0, nextPipe) : remaining;
+                    remaining = (nextPipe != std::wstring::npos)
+                                ? remaining.substr(nextPipe) : L"";
+                    // Validate each trapped SID substring
+                    if (!out.trappedSids.empty()) {
+                        std::wstring buf = out.trappedSids;
+                        size_t pos = 0;
+                        while (pos < buf.size()) {
+                            auto semi = buf.find(L';', pos);
+                            std::wstring one = (semi != std::wstring::npos)
+                                ? buf.substr(pos, semi - pos) : buf.substr(pos);
+                            if (!one.empty() && !ValidateSidPrefix(one))
+                                return reject(L"TRAPPED SID has invalid format");
+                            pos = (semi != std::wstring::npos) ? semi + 1 : buf.size();
+                        }
+                    }
+                    out.wasDenied = true; // backward compat: trapped always means deny
+                } else {
+                    return reject(L"unknown flag suffix");
+                }
+            }
+            // Reject trailing garbage after all known flags
+            if (!remaining.empty())
+                return reject(L"trailing garbage after flags");
+        }
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
     // Process liveness check — guards against PID reuse via creation time
     // -----------------------------------------------------------------------
     inline ULONGLONG GetCurrentProcessCreationTime()
@@ -128,7 +255,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
                             const std::wstring& sidString,
-                            const std::wstring& trappedSids = L"")
+                            const std::wstring& trappedSids = L"",
+                            bool isDeny = false)
     {
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
@@ -189,9 +317,13 @@ namespace Sandbox {
             RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
                              reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
 
-            // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|TRAPPED:sid1;sid2
+            // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|DENY:1|TRAPPED:sid1;sid2
             std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
             std::wstring data = typeStr + L"|" + path + L"|" + sidString;
+            // Persist deny flag explicitly
+            if (isDeny) {
+                data += L"|DENY:1";
+            }
             if (!trappedSids.empty()) {
                 data += L"|TRAPPED:" + trappedSids;
             }
@@ -212,10 +344,67 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { path, objType, sidString, trappedSids, !trappedSids.empty() };
+        ACLGrant grant = { path, objType, sidString, trappedSids, isDeny };
         g_aclGrants.push_back(std::move(grant));
 
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
+    }
+
+    // -----------------------------------------------------------------------
+    // TryDeleteEmptyParentKeys — cascade-delete empty registry parents.
+    // Deletes Software\Sandy\Grants if no subkeys or values remain, then
+    // Software\Sandy itself if both Grants and WER are gone.
+    //
+    // Best-effort: logs but does not propagate failures.  Registry races
+    // with other instances are benign — the key simply won't be empty.
+    // -----------------------------------------------------------------------
+    inline void TryDeleteEmptyParentKeys()
+    {
+        // Step 1: delete Grants parent if completely empty
+        HKEY hGrants = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                          KEY_READ, &hGrants) == ERROR_SUCCESS) {
+            DWORD subKeys = 0, values = 0;
+            LSTATUS qs = RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr,
+                             &subKeys, nullptr, nullptr, &values,
+                             nullptr, nullptr, nullptr, nullptr);
+            RegCloseKey(hGrants);
+            if (qs != ERROR_SUCCESS) {
+                g_logger.LogFmt(L"REG_CASCADE: RegQueryInfoKey(Grants) failed (error %lu)", qs);
+                return; // can't determine state — don't delete
+            }
+            if (subKeys == 0 && values == 0) {
+                LSTATUS ds = RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
+                if (ds == ERROR_SUCCESS)
+                    g_logger.Log(L"REG_CASCADE: deleted empty Grants key");
+                else
+                    g_logger.LogFmt(L"REG_CASCADE: RegDeleteKey(Grants) failed (error %lu)", ds);
+            } else {
+                return; // Grants still has children; don't touch parent
+            }
+        }
+
+        // Step 2: delete Software\Sandy if both Grants and WER are gone
+        HKEY hSandy = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Sandy", 0,
+                          KEY_READ, &hSandy) == ERROR_SUCCESS) {
+            DWORD subKeys = 0, values = 0;
+            LSTATUS qs = RegQueryInfoKeyW(hSandy, nullptr, nullptr, nullptr,
+                             &subKeys, nullptr, nullptr, &values,
+                             nullptr, nullptr, nullptr, nullptr);
+            RegCloseKey(hSandy);
+            if (qs != ERROR_SUCCESS) {
+                g_logger.LogFmt(L"REG_CASCADE: RegQueryInfoKey(Sandy) failed (error %lu)", qs);
+                return;
+            }
+            if (subKeys == 0 && values == 0) {
+                LSTATUS ds = RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Sandy");
+                if (ds == ERROR_SUCCESS)
+                    g_logger.Log(L"REG_CASCADE: deleted empty Sandy key");
+                else
+                    g_logger.LogFmt(L"REG_CASCADE: RegDeleteKey(Sandy) failed (error %lu)", ds);
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -224,9 +413,10 @@ namespace Sandbox {
     inline void ClearPersistedGrants()
     {
         std::wstring regKey = GetGrantsRegKey();
-        LSTATUS r = RegDeleteKeyW(HKEY_CURRENT_USER, regKey.c_str());
+        LSTATUS r = RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
-        RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
+
+        TryDeleteEmptyParentKeys();
     }
 
     // -----------------------------------------------------------------------
@@ -272,18 +462,9 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                // Format: TYPE|PATH|SID or TYPE|PATH|SID|TRAPPED:...
-                auto sep1 = data.find(L'|');
-                if (sep1 == std::wstring::npos) continue;
-                auto sep2 = data.find(L'|', sep1 + 1);
-                if (sep2 == std::wstring::npos) continue;
-                std::wstring path = data.substr(sep1 + 1, sep2 - sep1 - 1);
-                // SID ends at next pipe (if TRAPPED suffix) or end of string
-                std::wstring sidPart = data.substr(sep2 + 1);
-                auto sep3 = sidPart.find(L'|');
-                std::wstring sid = (sep3 != std::wstring::npos)
-                    ? sidPart.substr(0, sep3) : sidPart;
-                pathSids.insert(path + L"|" + sid);
+                GrantRecord rec;
+                if (!ParseGrantRecord(data, rec)) continue;
+                pathSids.insert(rec.path + L"|" + rec.sidString);
             }
             RegCloseKey(hKey);
         }
@@ -337,14 +518,10 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                // Only care about deny entries (have |TRAPPED: suffix)
-                if (data.find(L"|TRAPPED:") == std::wstring::npos) continue;
-                // Extract path
-                auto sep1 = data.find(L'|');
-                if (sep1 == std::wstring::npos) continue;
-                auto sep2 = data.find(L'|', sep1 + 1);
-                if (sep2 == std::wstring::npos) continue;
-                denyPaths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
+                GrantRecord rec;
+                if (!ParseGrantRecord(data, rec)) continue;
+                if (!rec.wasDenied) continue;
+                denyPaths.insert(rec.path);
             }
             RegCloseKey(hKey);
         }
@@ -390,13 +567,14 @@ namespace Sandbox {
             return false;
         };
 
-        // Deduplicate: same path may appear multiple times (grant + deny)
+        // Deduplicate: same path may appear for allow + deny — use composite key
         std::set<std::wstring> processed;
         int removed = 0, skipped = 0;
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
-            // Skip if already processed this path
-            if (processed.count(it->path)) continue;
-            processed.insert(it->path);
+            // Composite key: path + deny/allow type — allows both records to be processed
+            std::wstring dedupKey = it->path + L"|" + (it->wasDenied ? L"D" : L"A");
+            if (processed.count(dedupKey)) continue;
+            processed.insert(dedupKey);
 
             // Skip only when another instance uses the same SID on the same path
             std::wstring pathSidKey = it->path + L"|" + it->sidString;
@@ -445,40 +623,26 @@ namespace Sandbox {
             std::wstring vname, data;
             if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
 
-            auto sep1 = data.find(L'|');
-            if (sep1 == std::wstring::npos) continue;
-            std::wstring typeStr = data.substr(0, sep1);
-            std::wstring rest = data.substr(sep1 + 1);
-
-            // Find second pipe (separating path from SID)
-            auto sep2 = rest.find(L'|');
-            if (sep2 == std::wstring::npos) continue;
-            std::wstring path = rest.substr(0, sep2);
-            std::wstring sidAndTrapped = rest.substr(sep2 + 1);
-
-            // Check for TRAPPED: suffix (format: SID|TRAPPED:sid1;sid2)
-            std::wstring sidString;
-            std::wstring trappedSids;
-            bool wasDenied = false;
-            auto trapSep = sidAndTrapped.find(L"|TRAPPED:");
-            if (trapSep != std::wstring::npos) {
-                sidString = sidAndTrapped.substr(0, trapSep);
-                trappedSids = sidAndTrapped.substr(trapSep + 9); // skip "|TRAPPED:"
-                wasDenied = true;
-            } else {
-                sidString = sidAndTrapped;
-            }
-
-            if (processed.count(path)) continue;
-            processed.insert(path);
-
-            if (protectedPaths.count(path)) {
-                g_logger.Log((L"ACL_SKIP_STALE: " + path + L" (live instance active)").c_str());
+            GrantRecord rec;
+            const wchar_t* parseReason = nullptr;
+            if (!ParseGrantRecord(data, rec, &parseReason)) {
+                g_logger.LogFmt(L"GRANT_PARSE: malformed record (%ls), skipping: %ls",
+                                parseReason ? parseReason : L"unknown", data.c_str());
                 continue;
             }
 
-            SE_OBJECT_TYPE objType = (typeStr == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
-            RemoveSidFromDacl(path, sidString, objType, wasDenied, trappedSids);
+            // Composite dedup key: path + deny/allow type
+            std::wstring dedupKey = rec.path + L"|" + (rec.wasDenied ? L"D" : L"A");
+            if (processed.count(dedupKey)) continue;
+            processed.insert(dedupKey);
+
+            if (protectedPaths.count(rec.path)) {
+                g_logger.Log((L"ACL_SKIP_STALE: " + rec.path + L" (live instance active)").c_str());
+                continue;
+            }
+
+            SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
+            RemoveSidFromDacl(rec.path, rec.sidString, objType, rec.wasDenied, rec.trappedSids);
         }
     }
 
@@ -527,12 +691,9 @@ namespace Sandbox {
             for (DWORD vi = 0; vi < valueCount; vi++) {
                 std::wstring vname, data;
                 if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                // Format: TYPE|PATH|SID or TYPE|PATH|SID|TRAPPED:...
-                auto sep1 = data.find(L'|');
-                if (sep1 == std::wstring::npos) continue;
-                auto sep2 = data.find(L'|', sep1 + 1);
-                if (sep2 == std::wstring::npos) continue;
-                outPaths.insert(data.substr(sep1 + 1, sep2 - sep1 - 1));
+                GrantRecord rec;
+                if (!ParseGrantRecord(data, rec)) continue;
+                outPaths.insert(rec.path);
             }
         };
 
@@ -586,7 +747,7 @@ namespace Sandbox {
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
         }
 
-        RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
+        TryDeleteEmptyParentKeys();
     }
 
 } // namespace Sandbox

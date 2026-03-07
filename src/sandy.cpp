@@ -82,12 +82,21 @@ static int RunMain(int argc, wchar_t* argv[])
             }
         }
 
-        // --status [--json] — up to 2 args
+        // --status [--json] — exactly 2 or 3 args total
         if (arg == L"--status") {
-            bool json = (argc > 2 && std::wstring(argv[i == 1 ? 2 : 1]) == L"--json");
-            if (argc > (json ? 3 : 2)) {
+            if (argc > 3) {
                 fprintf(stderr, "Error: --status only accepts --json as companion.\n");
                 return SandyExit::InternalError;
+            }
+            bool json = false;
+            if (argc == 3) {
+                // The other arg (whichever position it's in) must be --json
+                int other = (i == 1) ? 2 : 1;
+                if (std::wstring(argv[other]) != L"--json") {
+                    fprintf(stderr, "Error: --status only accepts --json as companion.\n");
+                    return SandyExit::InternalError;
+                }
+                json = true;
             }
             return HandleStatus(json);
         }

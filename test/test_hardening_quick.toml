@@ -1,0 +1,43 @@
+# Sandy hardening test — minimal config for quick log marker tests.
+# Uses cmd.exe (instant startup) instead of Python.
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+workdir = 'C:\Windows\System32'
+
+[allow]
+read    = []
+write   = []
+execute = ['C:\Windows\System32']
+append  = []
+delete  = []
+all     = []
+
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
+named_pipes     = false
+stdin           = false
+clipboard_read  = false
+clipboard_write = false
+child_processes = true
+
+[registry]
+read  = []
+write = []
+
+[environment]
+inherit = true
+pass    = []
+
+[limit]
+timeout   = 10
+memory    = 0
+processes = 0

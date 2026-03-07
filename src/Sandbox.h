@@ -28,9 +28,10 @@ namespace Sandbox {
     inline void RecordGrantCallback(const std::wstring& path,
                                      SE_OBJECT_TYPE objType,
                                      const std::wstring& sidString,
-                                     const std::wstring& trappedSids)
+                                     const std::wstring& trappedSids,
+                                     bool isDeny)
     {
-        RecordGrant(path, objType, sidString, trappedSids);
+        RecordGrant(path, objType, sidString, trappedSids, isDeny);
     }
 
     // -----------------------------------------------------------------------
@@ -112,7 +113,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // SetupAudit — start Procmon audit capture if requested.
     // -----------------------------------------------------------------------
-    inline void SetupAudit(const std::wstring& auditLogPath, bool quiet,
+    inline void SetupAudit(const std::wstring& auditLogPath,
                            std::wstring& procmonExe, bool& auditActive)
     {
         procmonExe.clear();
@@ -359,7 +360,7 @@ namespace Sandbox {
 
         // Step 2f: [AC] Enable loopback if requested
         if (isAppContainer && config.allowLocalhost) {
-            bool ok = EnableLoopback();
+            bool ok = EnableLoopback(containerName);
             g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
             guard.Add([]() { DisableLoopback(); });
         }
@@ -404,7 +405,7 @@ namespace Sandbox {
         // Step 3d: Setup audit and crash dumps
         std::wstring procmonExe;
         bool auditActive = false;
-        SetupAudit(auditLogPath, config.quiet, procmonExe, auditActive);
+        SetupAudit(auditLogPath, procmonExe, auditActive);
 
         std::wstring crashExeName;
         bool crashDumpsEnabled = false;
@@ -463,6 +464,21 @@ namespace Sandbox {
 
         // Step 4b: Assign job object for resource limits
         HANDLE hJob = AssignJobObject(config, pi.hProcess);
+        bool jobNeeded = (config.memoryLimitMB > 0 || config.maxProcesses > 0 ||
+                          !config.allowClipboardRead || !config.allowClipboardWrite);
+        if (jobNeeded && !hJob) {
+            g_logger.Log(L"ERROR: job object assignment failed — aborting (limits NOT enforced)");
+            TerminateProcess(pi.hProcess, SandyExit::SetupError);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            if (isAppContainer)
+                DeleteAppContainerProfile(containerName.c_str());
+            guard.RunAll();
+            DeleteCleanupTask(g_instanceId);
+            g_logger.Log(L"CLEANUP: complete (job assignment failure)");
+            g_logger.Stop();
+            return SandyExit::SetupError;
+        }
 
         // Step 4c: Resume child and start timeout watchdog
         ResumeThread(pi.hThread);

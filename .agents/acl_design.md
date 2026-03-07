@@ -254,9 +254,9 @@ This is implemented in `RemoveSidFromDacl()` (`SandboxACL.h`):
 
 | Field | Before | After |
 |-------|--------|-------|
-| Grant record | `TYPE\|PATH\|SDDL` | `TYPE\|PATH\|SID` |
+| Grant record | `TYPE\|PATH\|SDDL` | `TYPE\|PATH\|SID[\|DENY:1][\|TRAPPED:sid1;sid2]` |
 | `ACLGrant` struct | `originalSDDL` + `objectId[16]` | `sidString` |
-| `RecordGrant` param | `PSECURITY_DESCRIPTOR` | `const std::wstring& sidString` |
+| `RecordGrant` param | `PSECURITY_DESCRIPTOR` | `const std::wstring& sidString, bool isDeny` |
 
 ## Mode-Specific Safety
 
@@ -276,3 +276,36 @@ only approach that is safe for concurrent multi-instance operation.
 
 Verified by `test_multiinstance.bat` — overlapping grants, instance exit,
 DACL restoration, and kill+cleanup scenarios.
+
+# Desktop/Window-Station ACL Management
+
+Restricted Token mode requires granting the instance SID access to the
+current window station and desktop. Without this, `CreateProcessAsUser`
+fails with `STATUS_ACCESS_DENIED`.
+
+## GrantDesktopAccess
+
+- Stores per-SID+object tracking in `g_desktopGrants`
+- Logs per-object success/failure: `DESKTOP_GRANT: Desktop -> OK (SID=...)`
+- Deduplicates: same SID+object pair stored at most once
+
+## RevokeDesktopAccess
+
+- Returns `bool` — tracks overall success via `allOk`
+- Delegates ACL rebuild to `BuildAclWithoutSidAces()` (testable helper)
+- Logs ACE removal count: `DESKTOP_REVOKE: Default -> OK (2 ACEs removed)`
+- **Defensive ACE-type audit**: warns if unexpected `DENY`/`AUDIT` ACEs
+  match our SID (would indicate logic error or external interference)
+
+## BuildAclWithoutSidAces (Testable Helper)
+
+Extracted from `RevokeDesktopAccess` to enable unit-style testing without
+mutating real desktop/window-station objects.
+
+- Walks DACL, removes `ACCESS_ALLOWED_ACE` entries matching target SID
+- Logs warnings for non-ALLOW ACE types matching our SID
+- Returns new DACL (caller-owned via `LocalAlloc`) and remove count
+- Handles all error logging internally (`GetAce`, `AddAce`, `InitializeAcl`)
+
+**Never** revert to snapshot-based desktop DACL restoration. ACE-level
+removal is the only approach safe for concurrent multi-instance operation.

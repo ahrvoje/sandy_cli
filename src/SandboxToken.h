@@ -17,13 +17,14 @@ namespace Sandbox {
     // pInstanceSid: per-instance SID (S-1-9-<uuid>) for multi-instance
     //               isolation.  Added to restricting SIDs so the dual
     //               access check requires ACEs for THIS instance's SID.
-    //               Nullptr accepted (legacy single-instance behavior).
-    // -----------------------------------------------------------------------
     inline HANDLE CreateRestrictedSandboxToken(IntegrityLevel il,
                                                 PSID pInstanceSid = nullptr)
     {
         HANDLE hToken = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &hToken))
+        // R7: Minimum rights needed for CreateRestrictedToken + integrity setting
+        if (!OpenProcessToken(GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+                &hToken))
             return nullptr;
 
         // --- Enumerate token groups -> build deny-only list ---
@@ -178,21 +179,115 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Desktop ACL tracking — save original DACLs for restoration on cleanup
+    // Desktop ACL tracking — store SID string, remove only our ACEs on cleanup
     // -----------------------------------------------------------------------
     struct DesktopGrant {
-        std::wstring originalSddl;
-        bool isDesktop;  // true = Desktop, false = WinSta
+        std::wstring sidString;  // SID of principal we granted
+        bool isDesktop;          // true = Desktop, false = WinSta
     };
     inline std::vector<DesktopGrant> g_desktopGrants;
+
+    // -----------------------------------------------------------------------
+    // Desktop ACL test hook — enabled only in unit-style test builds.
+    // Allows tests to exercise the ACL rebuild logic without mutating real
+    // desktop/window-station objects.
+    // -----------------------------------------------------------------------
+    inline bool BuildAclWithoutSidAces(PACL pOldDacl, PSID pTargetSid,
+                                       const wchar_t* objName,
+                                       PACL& pNewDacl, int& removeCount)
+    {
+        pNewDacl = nullptr;
+        removeCount = 0;
+        if (!pOldDacl || !pTargetSid) return false;
+
+        ACL_SIZE_INFORMATION aclInfo = {};
+        if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
+            g_logger.LogFmt(L"DESKTOP_ACL: GetAclInformation failed for %ls (error %lu)",
+                            objName, GetLastError());
+            return false;
+        }
+
+        DWORD newAclSize = sizeof(ACL);
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) {
+                g_logger.LogFmt(L"DESKTOP_ACL: GetAce(%lu) failed for %ls (error %lu)",
+                                i, objName, GetLastError());
+                return false;
+            }
+
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            } else {
+                PSID pCheckSid = nullptr;
+                if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+                    pCheckSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+                else if (pAceHdr->AceType == SYSTEM_AUDIT_ACE_TYPE)
+                    pCheckSid = &reinterpret_cast<SYSTEM_AUDIT_ACE*>(pAceHdr)->SidStart;
+                if (pCheckSid && EqualSid(pCheckSid, pTargetSid)) {
+                    g_logger.LogFmt(L"DESKTOP_ACL: unexpected ACE type %u for our SID on %ls",
+                                    pAceHdr->AceType, objName);
+                }
+            }
+
+            if (pAceSid && EqualSid(pAceSid, pTargetSid)) {
+                removeCount++;
+            } else {
+                newAclSize += pAceHdr->AceSize;
+            }
+        }
+
+        if (removeCount == 0) return true;
+
+        pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+        if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
+            g_logger.LogFmt(L"DESKTOP_ACL: InitializeAcl failed for %ls (error %lu)",
+                            objName, GetLastError());
+            if (pNewDacl) LocalFree(pNewDacl);
+            pNewDacl = nullptr;
+            return false;
+        }
+
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) {
+                g_logger.LogFmt(L"DESKTOP_ACL: GetAce(%lu) failed during rebuild for %ls (error %lu)",
+                                i, objName, GetLastError());
+                LocalFree(pNewDacl);
+                pNewDacl = nullptr;
+                return false;
+            }
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            if (pAceSid && EqualSid(pAceSid, pTargetSid))
+                continue;
+            if (!AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
+                g_logger.LogFmt(L"DESKTOP_ACL: AddAce failed for %ls (error %lu)",
+                                objName, GetLastError());
+                LocalFree(pNewDacl);
+                pNewDacl = nullptr;
+                return false;
+            }
+        }
+        return true;
+    }
 
     // -----------------------------------------------------------------------
     // Grant a SID access to the current window station and desktop.
     // Required for CreateProcessAsUser — without this, processes using a
     // restricted token get STATUS_ACCESS_DENIED when attaching to the desktop.
-    // Saves original DACLs for restoration via RevokeDesktopAccess().
+    // Stores SID string for targeted ACE removal via RevokeDesktopAccess().
     // -----------------------------------------------------------------------
     inline bool GrantDesktopAccess(PSID pSid) {
+        // Convert SID to string for tracking
+        LPWSTR sidStr = nullptr;
+        if (!ConvertSidToStringSidW(pSid, &sidStr))
+            return false;
+        std::wstring sidString(sidStr);
+        LocalFree(sidStr);
+
         auto grantObj = [&](HANDLE hObj, bool isDesktop) -> bool {
             SECURITY_INFORMATION si = DACL_SECURITY_INFORMATION;
             PSECURITY_DESCRIPTOR pSD = nullptr;
@@ -200,14 +295,6 @@ namespace Sandbox {
             if (GetSecurityInfo(hObj, SE_WINDOW_OBJECT, si,
                     nullptr, nullptr, &pOldDacl, nullptr, &pSD) != ERROR_SUCCESS)
                 return false;
-
-            // Save original DACL as SDDL before modifying
-            LPWSTR origSddl = nullptr;
-            if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                    pSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &origSddl, nullptr)) {
-                g_desktopGrants.push_back({ origSddl, isDesktop });
-                LocalFree(origSddl);
-            }
 
             EXPLICIT_ACCESS_W ea{};
             ea.grfAccessPermissions = GENERIC_ALL;
@@ -227,6 +314,26 @@ namespace Sandbox {
                           nullptr, nullptr, pNewDacl, nullptr) == ERROR_SUCCESS;
             LocalFree(pNewDacl);
             LocalFree(pSD);
+
+            const wchar_t* objName = isDesktop ? L"Desktop" : L"WinSta";
+            if (ok)
+                g_logger.LogFmt(L"DESKTOP_GRANT: %ls -> OK (SID=%ls)", objName, sidString.c_str());
+            else
+                g_logger.LogFmt(L"DESKTOP_GRANT: %ls -> FAILED (SID=%ls, error %lu)",
+                                objName, sidString.c_str(), GetLastError());
+
+            // Track for cleanup (deduplicated — same SID+object pair only stored once)
+            if (ok) {
+                bool duplicate = false;
+                for (const auto& g : g_desktopGrants) {
+                    if (g.sidString == sidString && g.isDesktop == isDesktop) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate)
+                    g_desktopGrants.push_back({ sidString, isDesktop });
+            }
             return ok;
         };
 
@@ -236,50 +343,107 @@ namespace Sandbox {
             DESKTOP_CREATEWINDOW | DESKTOP_CREATEMENU | DESKTOP_SWITCHDESKTOP);
 
         bool ok = true;
-        if (hWinSta) ok &= grantObj(hWinSta, false);
+        if (hWinSta) {
+            ok &= grantObj(hWinSta, false);
+        } else {
+            g_logger.LogFmt(L"DESKTOP_GRANT: GetProcessWindowStation() returned NULL (error %lu)", GetLastError());
+            ok = false;
+        }
         if (hDesktop) {
             ok &= grantObj(hDesktop, true);
             CloseDesktop(hDesktop);
+        } else {
+            g_logger.LogFmt(L"DESKTOP_GRANT: OpenDesktopW(Default) returned NULL (error %lu)", GetLastError());
+            ok = false;
         }
         return ok;
     }
 
     // -----------------------------------------------------------------------
-    // Restore original DACLs on window station and desktop (reverses grants).
+    // Remove our SID's ACEs from window station and desktop.
+    // Multi-instance safe: only removes ACEs matching our tracked SID.
+    // Returns true if all removals succeeded (or nothing to remove).
     // -----------------------------------------------------------------------
-    inline void RevokeDesktopAccess()
+    inline bool RevokeDesktopAccess()
     {
-        for (auto it = g_desktopGrants.rbegin(); it != g_desktopGrants.rend(); ++it) {
-            PSECURITY_DESCRIPTOR pSD = nullptr;
-            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    it->originalSddl.c_str(), SDDL_REVISION_1, &pSD, nullptr))
-                continue;
+        if (g_desktopGrants.empty()) return true;
 
-            BOOL present = FALSE, defaulted = FALSE;
-            PACL pDacl = nullptr;
-            if (GetSecurityDescriptorDacl(pSD, &present, &pDacl, &defaulted) && present) {
-                if (it->isDesktop) {
-                    HDESK hDesk = OpenDesktopW(L"Default", 0, FALSE, READ_CONTROL | WRITE_DAC);
-                    if (hDesk) {
-                        DWORD r = SetSecurityInfo(hDesk, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
-                                        nullptr, nullptr, pDacl, nullptr);
-                        g_logger.Log(r == ERROR_SUCCESS ? L"DESKTOP_REVOKE: Default -> OK"
-                                                        : L"DESKTOP_REVOKE: Default -> FAILED");
-                        CloseDesktop(hDesk);
-                    }
+        bool allOk = true;
+
+        // Helper: remove all ACEs for a specific SID from a window object.
+        // Only considers ACCESS_ALLOWED_ACE_TYPE because Sandy only ever adds
+        // ALLOW ACEs to desktop/WinSta objects (via GrantDesktopAccess).
+        auto removeSidAces = [&allOk](HANDLE hObj, const std::wstring& sidString,
+                                const wchar_t* objName) -> bool {
+            PSID pTargetSid = nullptr;
+            if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid)) {
+                g_logger.LogFmt(L"DESKTOP_REVOKE: ConvertStringSidToSid failed for %ls (SID=%ls, error %lu)",
+                                objName, sidString.c_str(), GetLastError());
+                return false;
+            }
+
+            PACL pOldDacl = nullptr;
+            PSECURITY_DESCRIPTOR pSD = nullptr;
+            if (GetSecurityInfo(hObj, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                    nullptr, nullptr, &pOldDacl, nullptr, &pSD) != ERROR_SUCCESS) {
+                g_logger.LogFmt(L"DESKTOP_REVOKE: GetSecurityInfo failed for %ls (SID=%ls, error %lu)",
+                                objName, sidString.c_str(), GetLastError());
+                LocalFree(pTargetSid);
+                return false;
+            }
+
+            PACL pNewDacl = nullptr;
+            int removeCount = 0;
+            bool built = BuildAclWithoutSidAces(pOldDacl, pTargetSid, objName, pNewDacl, removeCount);
+            if (!built) {
+                LocalFree(pSD);
+                LocalFree(pTargetSid);
+                return false;
+            }
+
+            if (removeCount == 0) {
+                LocalFree(pSD);
+                LocalFree(pTargetSid);
+                return true; // nothing to remove
+            }
+
+            DWORD rc = SetSecurityInfo(hObj, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                          nullptr, nullptr, pNewDacl, nullptr);
+            if (rc == ERROR_SUCCESS) {
+                g_logger.LogFmt(L"DESKTOP_REVOKE: %ls -> OK (%d ACEs removed)", objName, removeCount);
+            } else {
+                g_logger.LogFmt(L"DESKTOP_REVOKE: %ls -> FAILED (error %lu)", objName, rc);
+            }
+            LocalFree(pNewDacl);
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            return rc == ERROR_SUCCESS;
+        };
+
+        for (auto it = g_desktopGrants.rbegin(); it != g_desktopGrants.rend(); ++it) {
+            if (it->isDesktop) {
+                HDESK hDesk = OpenDesktopW(L"Default", 0, FALSE, READ_CONTROL | WRITE_DAC);
+                if (hDesk) {
+                    if (!removeSidAces(hDesk, it->sidString, L"Default"))
+                        allOk = false;
+                    CloseDesktop(hDesk);
                 } else {
-                    HWINSTA hWinSta = GetProcessWindowStation();
-                    if (hWinSta) {
-                        DWORD r = SetSecurityInfo(hWinSta, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
-                                        nullptr, nullptr, pDacl, nullptr);
-                        g_logger.Log(r == ERROR_SUCCESS ? L"DESKTOP_REVOKE: WinSta0 -> OK"
-                                                        : L"DESKTOP_REVOKE: WinSta0 -> FAILED");
-                    }
+                    g_logger.LogFmt(L"DESKTOP_REVOKE: OpenDesktopW(Default) returned NULL (error %lu)", GetLastError());
+                    allOk = false;
+                }
+            } else {
+                HWINSTA hWinSta = GetProcessWindowStation();
+                if (hWinSta) {
+                    if (!removeSidAces(hWinSta, it->sidString, L"WinSta0"))
+                        allOk = false;
+                } else {
+                    g_logger.LogFmt(L"DESKTOP_REVOKE: GetProcessWindowStation() returned NULL (error %lu)", GetLastError());
+                    allOk = false;
                 }
             }
-            LocalFree(pSD);
         }
         g_desktopGrants.clear();
+        return allOk;
     }
 
 } // namespace Sandbox

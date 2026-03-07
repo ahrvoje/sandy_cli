@@ -12,10 +12,29 @@ Sandy persists grants in `HKCU\Software\Sandy\Grants\<UUID>` with per-instance s
 - `_ctime` (QWORD): process creation time (FILETIME)
 - `_container` (REG_SZ): AppContainer profile moniker
 - `_nextIdx` (DWORD): next grant index counter
-- Numbered values: `TYPE|PATH|SID` or `TYPE|PATH|SID|TRAPPED:sid1;sid2` for each granted/denied path
+- Numbered values: `TYPE|PATH|SID[|DENY:1][|TRAPPED:sid1;sid2]` for each granted/denied path
 
 On clean exit, the instance removes its own ACEs via `RemoveSidFromDacl()`, deletes its subkey, and removes its per-instance scheduled task.
 On crash/kill, the subkey persists as a stale entry for `--cleanup` to handle.
+
+---
+
+## Grant Record Parsing — Validation Rigor
+
+`ParseGrantRecord()` (`SandboxGrants.h`) parses persisted registry values with strict validation:
+
+| Field | Validation |
+|-------|------------|
+| TYPE | Must be `FILE` or `REG` |
+| PATH | Non-empty, must be absolute (drive letter, UNC, or `HKEY`), no embedded `\|` |
+| SID | Must match `S-<digit>-<digit>-...` via `ValidateSidPrefix()` |
+| TRAPPED SIDs | Each semicolon-separated SID validated individually |
+| Flags | Only `DENY:1` and `TRAPPED:` recognized; unknown flags reject the record |
+| Trailing data | Any content after known flags rejects the record |
+
+- Returns `false` + sets a diagnostic `reason` string (e.g. `"SID does not match S-<rev>-<auth> format"`)
+- Caller logs rejection with the specific reason: `GRANT_PARSE: malformed record (reason), skipping: data`
+- **Never** silently accept malformed records — all rejections are logged
 
 ---
 
@@ -74,6 +93,23 @@ Each instance creates its own scheduled task: `SandyCleanup_<uuid>`. On clean ex
 
 ### Key design constraint
 `RestoreStaleGrants` skips paths used by other live instances (the `livePaths` set). If any live instance still needs a path, its ACEs are preserved.
+
+### Parent Key Cleanup Robustness
+`TryDeleteEmptyParentKeys()` cascade-deletes `Software\Sandy\Grants` and `Software\Sandy` when empty:
+- Checks `RegQueryInfoKeyW` return value — if query fails, does **not** attempt deletion
+- Checks both subkeys **and** values (not just subkeys) before deleting
+- Logs `RegDeleteKeyW` failures with error codes
+- Best-effort and race-safe: concurrent instances won't cause issues (key won't be empty)
+
+---
+
+## Logger Diagnostics
+
+`SandyLogger::LogFmt()` formats messages using a stack buffer (1024 chars) for common
+cases and dynamically-allocated heap buffer for larger messages. Truncation counter
+and `LOG_DIAG` summary emitted at session close via `Stop()`.
+
+**Never** revert to fixed-size-only formatting — large paths and SIDs can exceed 1024 chars.
 
 ---
 

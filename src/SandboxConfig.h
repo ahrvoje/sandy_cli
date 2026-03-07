@@ -2,7 +2,7 @@
 // SandboxConfig.h — Configuration loading and validation
 //
 // Maps TOML documents to SandboxConfig, loads config from files/strings.
-// Also provides utility functions: IsRunningInAppContainer, GetExeFolder.
+// Also provides utility function: GetExeFolder.
 // =========================================================================
 #pragma once
 
@@ -11,23 +11,6 @@
 #include <set>
 
 namespace Sandbox {
-
-    // -----------------------------------------------------------------------
-    // Check if the current process is already running inside an AppContainer
-    // -----------------------------------------------------------------------
-    inline bool IsRunningInAppContainer()
-    {
-        HANDLE hToken = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
-            return false;
-
-        DWORD isAppContainer = 0;
-        DWORD size = sizeof(isAppContainer);
-        BOOL ok = GetTokenInformation(hToken, TokenIsAppContainer, &isAppContainer, size, &size);
-        CloseHandle(hToken);
-
-        return ok && isAppContainer != 0;
-    }
 
     // -----------------------------------------------------------------------
     // Get the folder that contains the running exe
@@ -454,10 +437,11 @@ namespace Sandbox {
                                 e.path.c_str(), section);
                         config.parseError = true;
                     }
-                    // Warn on non-existent path
+                    // Non-existent paths are a config error (R9: fail-safe)
                     if (GetFileAttributesW(e.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-                        fprintf(stderr, "Warning: Path does not exist: %ls (in [%ls])\n",
+                        fprintf(stderr, "Error: Path does not exist: %ls (in [%ls])\n",
                                 e.path.c_str(), section);
+                        config.parseError = true;
                     }
                     // Detect duplicates within same section
                     if (!seen.insert(e.path).second) {

@@ -3,6 +3,9 @@
 //
 // Implements --dry-run and --print-config CLI commands.
 // Extracted from sandy.cpp for readability.
+//
+// All output uses printf with %ls for wide strings — plain ASCII/UTF-8
+// on stdout, compatible with cmd redirect, findstr, and piping.
 // =========================================================================
 #pragma once
 
@@ -11,35 +14,35 @@
 namespace Sandbox {
 
 // -----------------------------------------------------------------------
-// Human-readable access level name (narrow string for printf output)
+// Human-readable access level name (wide string for %ls output)
 // -----------------------------------------------------------------------
-inline const char* AccessLevelName(AccessLevel a)
+inline const wchar_t* AccessLevelNameW(AccessLevel a)
 {
     switch (a) {
-        case AccessLevel::Read:    return "read";
-        case AccessLevel::Write:   return "write";
-        case AccessLevel::Execute: return "execute";
-        case AccessLevel::Append:  return "append";
-        case AccessLevel::Delete:  return "delete";
-        case AccessLevel::All:     return "all";
+        case AccessLevel::Read:    return L"read";
+        case AccessLevel::Write:   return L"write";
+        case AccessLevel::Execute: return L"execute";
+        case AccessLevel::Append:  return L"append";
+        case AccessLevel::Delete:  return L"delete";
+        case AccessLevel::All:     return L"all";
     }
-    return "?";
+    return L"?";
 }
 
 // -----------------------------------------------------------------------
 // Print folder entries grouped by access level (for dry-run display)
 // -----------------------------------------------------------------------
-inline void PrintFolderEntries(const char* section,
+inline void PrintFolderEntries(const wchar_t* section,
                                const std::vector<FolderEntry>& entries)
 {
-    printf("[%s]\n", section);
+    printf("[%ls]\n", section);
     if (entries.empty()) { printf("  (none)\n"); return; }
     for (int a = 0; a <= 5; a++) {
         auto lvl = static_cast<AccessLevel>(a);
         bool first = true;
         for (auto& e : entries) {
             if (e.access != lvl) continue;
-            if (first) { printf("  %s:\n", AccessLevelName(lvl)); first = false; }
+            if (first) { printf("  %ls:\n", AccessLevelNameW(lvl)); first = false; }
             printf("    %ls\n", e.path.c_str());
         }
     }
@@ -48,23 +51,24 @@ inline void PrintFolderEntries(const char* section,
 // -----------------------------------------------------------------------
 // Print folder entries as TOML (for --print-config)
 // -----------------------------------------------------------------------
-inline void PrintFolderToml(const char* section,
+inline void PrintFolderToml(const wchar_t* section,
                             const std::vector<FolderEntry>& entries)
 {
-    printf("[%s]\n", section);
+    printf("[%ls]\n", section);
     for (int a = 0; a <= 5; a++) {
         auto lvl = static_cast<AccessLevel>(a);
-        std::string paths;
+        bool first = true;
         for (auto& e : entries) {
             if (e.access != lvl) continue;
-            if (!paths.empty()) paths += ", ";
-            // Convert wstring path to narrow for printf
-            paths += "'";
-            for (wchar_t c : e.path) paths += (c < 128) ? (char)c : '?';
-            paths += "'";
+            if (first) {
+                printf("%ls = [", AccessLevelNameW(lvl));
+                first = false;
+            } else {
+                printf(", ");
+            }
+            printf("'%ls'", e.path.c_str());
         }
-        if (!paths.empty())
-            printf("%s = [%s]\n", AccessLevelName(lvl), paths.c_str());
+        if (!first) printf("]\n");
     }
 }
 
@@ -78,32 +82,34 @@ inline int HandleDryRun(const SandboxConfig& config,
     bool isRestricted = (config.tokenMode == TokenMode::Restricted);
     printf("=== Sandy Dry Run ===\n\n");
 
-    printf("Mode: %s\n", isRestricted ? "restricted" : "appcontainer");
+    printf("Mode: %ls\n", isRestricted ? L"restricted" : L"appcontainer");
     if (isRestricted)
-        printf("Integrity: %s\n",
-               config.integrity == IntegrityLevel::Low ? "low" : "medium");
+        printf("Integrity: %ls\n",
+               config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
     if (!exePath.empty()) printf("Executable: %ls\n", exePath.c_str());
     if (!exeArgs.empty()) printf("Arguments: %ls\n", exeArgs.c_str());
-    printf("Working dir: %s\n\n",
-           config.workdir.empty() ? "(sandy.exe folder)" : "custom");
+    if (config.workdir.empty())
+        printf("Working dir: (sandy.exe folder)\n\n");
+    else
+        printf("Working dir: %ls\n\n", config.workdir.c_str());
 
-    PrintFolderEntries("allow", config.folders);
+    PrintFolderEntries(L"allow", config.folders);
     printf("\n");
-    PrintFolderEntries("deny", config.denyFolders);
+    PrintFolderEntries(L"deny", config.denyFolders);
 
     printf("\n[privileges]\n");
     if (!isRestricted) {
-        printf("  system_dirs:     %s\n", config.allowSystemDirs ? "true" : "false");
-        printf("  network:         %s\n", config.allowNetwork ? "true" : "false");
-        printf("  localhost:       %s\n", config.allowLocalhost ? "true" : "false");
-        printf("  lan:             %s\n", config.allowLan ? "true" : "false");
+        printf("  system_dirs:     %ls\n", config.allowSystemDirs ? L"true" : L"false");
+        printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
+        printf("  localhost:       %ls\n", config.allowLocalhost ? L"true" : L"false");
+        printf("  lan:             %ls\n", config.allowLan ? L"true" : L"false");
     } else {
-        printf("  named_pipes:     %s\n", config.allowNamedPipes ? "true" : "false");
+        printf("  named_pipes:     %ls\n", config.allowNamedPipes ? L"true" : L"false");
     }
     printf("  stdin:           %ls\n", config.stdinMode.c_str());
-    printf("  clipboard_read:  %s\n", config.allowClipboardRead ? "true" : "false");
-    printf("  clipboard_write: %s\n", config.allowClipboardWrite ? "true" : "false");
-    printf("  child_processes: %s\n", config.allowChildProcesses ? "true" : "false");
+    printf("  clipboard_read:  %ls\n", config.allowClipboardRead ? L"true" : L"false");
+    printf("  clipboard_write: %ls\n", config.allowClipboardWrite ? L"true" : L"false");
+    printf("  child_processes: %ls\n", config.allowChildProcesses ? L"true" : L"false");
 
     if (isRestricted) {
         printf("\n[registry]\n");
@@ -120,15 +126,15 @@ inline int HandleDryRun(const SandboxConfig& config,
     }
 
     printf("\n[limit]\n");
-    printf("  timeout:   %lu%s\n", config.timeoutSeconds,
-           config.timeoutSeconds == 0 ? " (unlimited)" : "s");
-    printf("  memory:    %zuMB%s\n", config.memoryLimitMB,
-           config.memoryLimitMB == 0 ? " (unlimited)" : "");
-    printf("  processes: %lu%s\n", config.maxProcesses,
-           config.maxProcesses == 0 ? " (unlimited)" : "");
+    printf("  timeout:   %lu%ls\n", config.timeoutSeconds,
+           config.timeoutSeconds == 0 ? L" (unlimited)" : L"s");
+    printf("  memory:    %zuMB%ls\n", config.memoryLimitMB,
+           config.memoryLimitMB == 0 ? L" (unlimited)" : L"");
+    printf("  processes: %lu%ls\n", config.maxProcesses,
+           config.maxProcesses == 0 ? L" (unlimited)" : L"");
 
     printf("\n[environment]\n");
-    printf("  inherit: %s\n", config.envInherit ? "true" : "false");
+    printf("  inherit: %ls\n", config.envInherit ? L"true" : L"false");
     if (!config.envPass.empty()) {
         printf("  pass:");
         for (auto& v : config.envPass) printf(" %ls", v.c_str());
@@ -147,47 +153,47 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     bool isRT = (config.tokenMode == TokenMode::Restricted);
 
     printf("[sandbox]\n");
-    printf("token = '%s'\n", isRT ? "restricted" : "appcontainer");
+    printf("token = '%ls'\n", isRT ? L"restricted" : L"appcontainer");
     if (isRT)
-        printf("integrity = '%s'\n",
-               config.integrity == IntegrityLevel::Low ? "low" : "medium");
+        printf("integrity = '%ls'\n",
+               config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
     printf("workdir = '%ls'\n\n",
            config.workdir.empty() ? L"inherit" : config.workdir.c_str());
 
-    PrintFolderToml("allow", config.folders);
+    PrintFolderToml(L"allow", config.folders);
     printf("\n");
-    PrintFolderToml("deny", config.denyFolders);
+    PrintFolderToml(L"deny", config.denyFolders);
 
     printf("\n[privileges]\n");
     if (!isRT) {
-        printf("system_dirs     = %s\n", config.allowSystemDirs ? "true" : "false");
-        printf("network         = %s\n", config.allowNetwork ? "true" : "false");
-        printf("localhost       = %s\n", config.allowLocalhost ? "true" : "false");
-        printf("lan             = %s\n", config.allowLan ? "true" : "false");
+        printf("system_dirs     = %ls\n", config.allowSystemDirs ? L"true" : L"false");
+        printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
+        printf("localhost       = %ls\n", config.allowLocalhost ? L"true" : L"false");
+        printf("lan             = %ls\n", config.allowLan ? L"true" : L"false");
     } else {
-        printf("named_pipes     = %s\n", config.allowNamedPipes ? "true" : "false");
+        printf("named_pipes     = %ls\n", config.allowNamedPipes ? L"true" : L"false");
     }
     printf("stdin           = %ls\n", config.stdinMode.c_str());
-    printf("clipboard_read  = %s\n", config.allowClipboardRead ? "true" : "false");
-    printf("clipboard_write = %s\n", config.allowClipboardWrite ? "true" : "false");
-    printf("child_processes = %s\n", config.allowChildProcesses ? "true" : "false");
+    printf("clipboard_read  = %ls\n", config.allowClipboardRead ? L"true" : L"false");
+    printf("clipboard_write = %ls\n", config.allowClipboardWrite ? L"true" : L"false");
+    printf("child_processes = %ls\n", config.allowChildProcesses ? L"true" : L"false");
 
     if (isRT) {
         printf("\n[registry]\n");
-        auto printKeys = [](const char* k, const std::vector<std::wstring>& v) {
-            printf("%s = [", k);
+        auto printKeys = [](const wchar_t* k, const std::vector<std::wstring>& v) {
+            printf("%ls = [", k);
             for (size_t i = 0; i < v.size(); i++) {
                 if (i) printf(", ");
                 printf("'%ls'", v[i].c_str());
             }
             printf("]\n");
         };
-        printKeys("read",  config.registryRead);
-        printKeys("write", config.registryWrite);
+        printKeys(L"read",  config.registryRead);
+        printKeys(L"write", config.registryWrite);
     }
 
     printf("\n[environment]\n");
-    printf("inherit = %s\n", config.envInherit ? "true" : "false");
+    printf("inherit = %ls\n", config.envInherit ? L"true" : L"false");
     printf("pass = [");
     for (size_t i = 0; i < config.envPass.size(); i++) {
         if (i) printf(", ");

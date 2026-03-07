@@ -237,8 +237,11 @@ namespace Sandbox {
             g_logger.Log(L"CLIPBOARD: restricted via job UI limits");
         }
 
-        if (!AssignProcessToJobObject(hJob, hProcess))
-        g_logger.Log(L"JOB_ASSIGN: FAILED (limits NOT enforced)");
+        if (!AssignProcessToJobObject(hJob, hProcess)) {
+            g_logger.Log(L"JOB_ASSIGN: FAILED (limits NOT enforced)");
+            CloseHandle(hJob);
+            return nullptr;
+        }
 
         g_logger.LogFmt(L"JOB: memory=%zuMB, processes=%lu, ui_flags=0x%X",
                         config.memoryLimitMB, config.maxProcesses, uiFlags);

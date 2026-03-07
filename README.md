@@ -69,7 +69,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--print-container-toml` | Print default AppContainer config to stdout |
 | `--print-restricted-toml` | Print default Restricted Token config to stdout |
 | `--cleanup` | Restore stale state from crashed runs (loopback, ACLs, WER, scheduled task) |
-| `--status [--json]` | Show active sandy instances, stale grants, and scheduled tasks |
+| `--status [--json]` | Show active sandy instances, stale grants, scheduled tasks, and a summary count |
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
 | `--dry-run`, `--check` | Validate config + show planned changes (no system modifications) |
 | `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
@@ -99,7 +99,7 @@ Sandy follows the POSIX high-code convention used by `bash`, `env`, `timeout`, a
 
 ## Config File
 
-All sandbox behavior is controlled by a TOML config. Every config **must** include a `[sandbox]` section declaring the token mode. Use `-c` or `-s` (mutually exclusive). Mode-specific settings are validated — using a flag meant for the other mode is an error. All paths must be absolute.
+All sandbox behavior is controlled by a TOML config. Every config **must** include a `[sandbox]` section declaring the token mode. Use `-c` or `-s` (mutually exclusive). Mode-specific settings are validated — using a flag meant for the other mode is an error. All paths must be absolute and must exist on disk (non-existent paths are rejected as config errors).
 
 See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_config_appcontainer.toml`](sandy_config_appcontainer.toml) and [`sandy_config_restricted.toml`](sandy_config_restricted.toml) for mode-specific templates.
 
@@ -266,6 +266,12 @@ timeout = 300       # kill process after N seconds (exit code 1)
 memory = 4096       # job-wide memory cap in MB (all processes combined)
 processes = 10      # max total active processes (including main)
 ```
+
+> [!IMPORTANT]
+> **Resource limits are strictly enforced.** If a resource limit (memory, process count, or clipboard restriction) is configured but the job object cannot be assigned to the child process, Sandy will terminate the child and exit with code 129 (setup error). This fail-closed behavior ensures the sandbox never runs with unenforced limits.
+
+> [!NOTE]
+> **Effective enforcement visibility.** `--status` reports active and stale instances, WER entries, scheduled tasks, and AppContainer profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.
 
 ### Config availability summary
 
@@ -496,7 +502,7 @@ system_dirs = true
 > **AppContainer: strict isolation.** Sandy blocks access to system folders (`C:\Windows`, `C:\Program Files`) unless `system_dirs = true` is set in `[privileges]`. Most executables need system DLLs to run, so the sample config ships with `system_dirs` enabled. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
-> **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage the loopback exemption. If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
+> **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
 
 > [!NOTE]
 > **Sandy stderr banner.** Sandy prints a config summary to stderr before running. Use `-q` to suppress it in automation pipelines where stderr is captured.
@@ -531,7 +537,7 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 ### How it works
 
-1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
+1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID[|DENY:1][|TRAPPED:sids]` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
 
 2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
 
@@ -548,6 +554,33 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
    ```
 
 5. **Explicit cleanup only:** Stale state restoration (ACL reverts, WER key removal, AppContainer profile deletion) is performed exclusively by `sandy.exe --cleanup` — never during normal startup. Cleanup only processes entries from dead PIDs, preserving live instances' grants.
+
+### Cleanup guarantees
+
+| Guarantee | Mechanism |
+|-----------|-----------|
+| **ACL grants restored** on clean exit | RAII guard (`SandboxGuard::RunAll`) + `RemoveSidFromDacl` per SID |
+| **Registry grants cleared** on clean exit | `RegDeleteTreeW` on instance subkey |
+| **Loopback exemption removed** on clean exit | `CheckNetIsolation.exe LoopbackExempt -d` |
+| **Scheduled task deleted** on clean exit | `schtasks /Delete` |
+| **Stale ACLs restored** after crash | `--cleanup` parses persisted `TYPE|PATH|SID` records, removes SID's ACEs |
+| **Parent registry key cascade** | `Software\Sandy\Grants` and `Software\Sandy` are deleted when empty |
+
+**Best-effort behaviors** (not guaranteed):
+- **Desktop/window-station ACL cleanup** depends on `GetProcessWindowStation()` and `OpenDesktopW()` succeeding — these may fail in service or headless contexts. Failures are logged with error codes.
+- **Loopback cleanup** depends on `CheckNetIsolation.exe` being available and the process running with sufficient privileges.
+- **Persisted grant records** that are malformed (invalid TYPE, empty PATH, non-SID strings, or unknown flags) are skipped and logged — they will not cause cleanup to fail or corrupt system state.
+- **Parent registry cascade cleanup** (`Software\Sandy\Grants`, `Software\Sandy`) is opportunistic and may be skipped if keys are not empty or registry inspection fails.
+
+### Validation notes
+
+- Desktop/window-station ACL cleanup is now SID-targeted rather than snapshot-based, which is much safer for multi-instance use.
+- This area remains operationally sensitive because it rebuilds ACLs on real host window objects; targeted repeated-grant, overlapping-instance, and crash-cleanup validation remains recommended.
+
+### Status output notes
+
+- `--status` prints both active and stale state for persisted grants, WER entries, scheduled tasks, and Sandy AppContainer profiles.
+- `--status --json` includes a top-level `summary` object with counts for instances, stale instances, WER entries, stale WER entries, scheduled tasks, and profiles.
 
 > [!IMPORTANT]
 > If Sandy is killed via `taskkill /F` or power is lost, run `sandy.exe --cleanup` manually or wait for the next logon (the scheduled task handles it automatically).

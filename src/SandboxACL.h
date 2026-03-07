@@ -12,9 +12,8 @@
 namespace Sandbox {
 
     // Callback type for recording grants (defined in SandboxGrants.h)
-    // Receives: path, object type, SID string of the principal granted/denied,
-    //           trapped SIDs (semicolon-separated, empty for non-deny)
-    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&);
+    // Receives: path, object type, SID string, trapped SIDs, isDeny flag
+    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool);
 
     // -----------------------------------------------------------------------
     // Convert user-friendly registry path to Win32 object path
@@ -101,7 +100,7 @@ namespace Sandbox {
         if (recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"");
+                recordFn(path, objType, sidStr, L"", false);
                 LocalFree(sidStr);
             }
         }
@@ -215,7 +214,7 @@ namespace Sandbox {
         if (recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, trappedSids);
+                recordFn(path, objType, sidStr, trappedSids, true);
                 LocalFree(sidStr);
             }
         }
