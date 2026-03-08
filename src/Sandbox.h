@@ -367,25 +367,8 @@ namespace Sandbox {
         SetupResult r;
 
         // Generate per-instance grant SID (S-1-9-<uuid>)
-        //
-        // Uses SECURITY_RESOURCE_MANAGER_AUTHORITY — the Microsoft-
-        // designated authority for third-party resource managers.
-        // Each instance gets a unique SID derived from a GUID, so:
-        //   - ACEs are distinguishable per instance
-        //   - Cleanup removes only THIS instance's ACEs
-        //   - No multi-instance DACL race conditions
-        GUID sidGuid{};
-        CoCreateGuid(&sidGuid);
-        SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };
-        PSID pGrantSid = nullptr;
-        if (!AllocateAndInitializeSid(&rmAuth, 4,
-                sidGuid.Data1,
-                static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
-                static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
-                                   (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
-                static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
-                                   (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
-                0, 0, 0, 0, &pGrantSid)) {
+        PSID pGrantSid = AllocateInstanceSid();
+        if (!pGrantSid) {
             g_logger.LogFmt(L"ERROR: SID allocation failed (error %lu)", GetLastError());
             return r;
         }
@@ -414,6 +397,22 @@ namespace Sandbox {
         return r;
     }
 
+    // -----------------------------------------------------------------------
+    // PipelineContext — carries pre-created state for profile mode.
+    //
+    // Normal mode:  pSid=nullptr, hToken=nullptr, profileMode=false
+    //               → RunPipeline creates SID/token in Phase 1.
+    // Profile mode: pSid=<profile SID>, hToken=<restricted token or nullptr>,
+    //               profileMode=true
+    //               → RunPipeline skips SID creation, skips grants, skips
+    //                 grant revocation on cleanup.
+    // -----------------------------------------------------------------------
+    struct PipelineContext {
+        PSID   pSid = nullptr;           // pre-created SID (profile mode)
+        HANDLE hToken = nullptr;         // pre-created restricted token (profile RT mode)
+        bool   profileMode = false;      // skip grants + revocation
+    };
+
     // =====================================================================
     // RunPipeline — single unified sandbox pipeline
     //
@@ -425,6 +424,7 @@ namespace Sandbox {
     //   5. CLEANUP  — revoke grants, delete profile, free resources
     //
     // Mode-specific steps are marked with [AC] or [RT] comments.
+    // Profile mode skips grant application (Phase 2) and revocation (Phase 5).
     // =====================================================================
     inline int RunPipeline(const SandboxConfig& config,
                             const std::wstring& exePath,
@@ -432,7 +432,8 @@ namespace Sandbox {
                             const std::wstring& containerName,
                             const std::wstring& exeFolder,
                             const std::wstring& auditLogPath,
-                            const std::wstring& dumpPath)
+                            const std::wstring& dumpPath,
+                            const PipelineContext& ctx = {})
     {
         bool isRestricted = (config.tokenMode == TokenMode::Restricted);
         bool isAppContainer = !isRestricted;
@@ -443,55 +444,72 @@ namespace Sandbox {
         // PHASE 1: SETUP — create token/SID, log mode
         // =================================================================
 
-        auto setup = isAppContainer
-            ? SetupAppContainer(containerName, guard)
-            : SetupRestrictedToken(config, guard);
-        if (!setup.ok) return SandyExit::SetupError;
+        PSID pSid = nullptr;
+        HANDLE hRestrictedToken = nullptr;
 
-        PSID pSid = setup.pSid;
-        HANDLE hRestrictedToken = setup.hRestrictedToken;
+        if (ctx.pSid) {
+            // Profile mode: SID and token are pre-created by caller
+            pSid = ctx.pSid;
+            hRestrictedToken = ctx.hToken;
+        } else {
+            // Normal mode: create fresh SID/token
+            auto setup = isAppContainer
+                ? SetupAppContainer(containerName, guard)
+                : SetupRestrictedToken(config, guard);
+            if (!setup.ok) return SandyExit::SetupError;
+            pSid = setup.pSid;
+            hRestrictedToken = setup.hRestrictedToken;
+        }
 
         g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
 
         // =================================================================
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
         // =================================================================
-        ULONGLONG tGrantStart = GetTickCount64();
 
-        // Step 2a: Auto-grant read access to exe folders
-        AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
+        if (ctx.profileMode) {
+            // Profile mode: ACLs are persistent from --create-profile
+            g_logger.Log(L"GRANTS: skipped (persistent profile)");
+        } else {
+            ULONGLONG tGrantStart = GetTickCount64();
 
-        // Step 2b: [RT] Grant desktop access for the restricted token
+            // Step 2a: Auto-grant read access to exe folders
+            AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
+
+            // Step 2b: Apply depth-sorted access pipeline (allow + deny, most specific wins)
+            bool grantFailed = !ApplyAccessPipeline(pSid, config, isAppContainer);
+
+            // Step 2c: [RT] Grant registry access
+            if (isRestricted) {
+                if (!GrantRegistryAccess(pSid, config))
+                    grantFailed = true;
+            }
+
+            if (grantFailed) {
+                g_logger.Log(L"WARNING: some grants failed (need Administrator)");
+            }
+
+            // Register grant revocation in guard (runs on any exit)
+            guard.Add([]() { RevokeAllGrants(); });
+
+            g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
+        }
+
+        // Desktop and loopback are per-run (even in profile mode)
+
+        // [RT] Grant desktop access for the restricted token
         if (isRestricted) {
             GrantDesktopAccess(pSid);
             g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
             guard.Add([]() { RevokeDesktopAccess(); });
         }
 
-        // Step 2c: Apply depth-sorted access pipeline (allow + deny, most specific wins)
-        bool grantFailed = !ApplyAccessPipeline(pSid, config, isAppContainer);
-
-        // Step 2e: [RT] Grant registry access
-        if (isRestricted) {
-            if (!GrantRegistryAccess(pSid, config))
-                grantFailed = true;
-        }
-
-        // Step 2f: [AC] Enable loopback if requested
+        // [AC] Enable loopback if requested
         if (isAppContainer && config.allowLocalhost) {
             bool ok = EnableLoopback(containerName);
             g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
             guard.Add([]() { DisableLoopback(); });
         }
-
-        if (grantFailed) {
-            g_logger.Log(L"WARNING: some grants failed (need Administrator)");
-        }
-
-        // Register grant revocation in guard (runs on any exit)
-        guard.Add([]() { RevokeAllGrants(); });
-
-        g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
 
         // =================================================================
         // PHASE 3: PREPARE — capabilities, env, pipes
@@ -537,8 +555,6 @@ namespace Sandbox {
             return SandyExit::SetupError;
         }
 
-        g_logger.LogFmt(L"TIMING: total setup %llums (ready to launch)", GetTickCount64() - tGrantStart);
-
         // =================================================================
         // PHASE 4: LAUNCH & RUN
         // =================================================================
@@ -567,7 +583,7 @@ namespace Sandbox {
                                         expectedIL, actualIL);
                         if (hStdinFile) CloseHandle(hStdinFile);
                         guard.RunAll();
-                        DeleteCleanupTask(g_instanceId);
+                        if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
                         g_logger.Stop();
                         return SandyExit::SetupError;
                     }
@@ -591,11 +607,11 @@ namespace Sandbox {
             DWORD launchErr = GetLastError();
             g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
             g_logger.LogSummary(launchErr, false, 0);
-            // [AC] Delete profile on launch failure
-            if (isAppContainer)
+            // [AC] Delete profile on launch failure (normal mode only)
+            if (isAppContainer && !ctx.profileMode)
                 DeleteAppContainerProfile(containerName.c_str());
             guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
+            if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (launch failure)");
             g_logger.Stop();
             // POSIX convention: 127 = not found, 126 = cannot execute
@@ -613,10 +629,10 @@ namespace Sandbox {
             TerminateProcess(pi.hProcess, SandyExit::SetupError);
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
-            if (isAppContainer)
+            if (isAppContainer && !ctx.profileMode)
                 DeleteAppContainerProfile(containerName.c_str());
             guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
+            if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (job assignment failure)");
             g_logger.Stop();
             return SandyExit::SetupError;
@@ -658,11 +674,14 @@ namespace Sandbox {
         if (hJob) CloseHandle(hJob);
 
         // Step 5c: Mode-specific cleanup
-        g_logger.Log(L"CLEANUP: starting");
+        if (ctx.profileMode)
+            g_logger.Log(L"CLEANUP: starting (profile — grants preserved)");
+        else
+            g_logger.Log(L"CLEANUP: starting");
         DWORD cleanupStart = GetTickCount();
 
-        // [AC] Delete AppContainer profile
-        if (isAppContainer) {
+        // [AC] Delete AppContainer profile (normal mode only)
+        if (isAppContainer && !ctx.profileMode) {
             HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
             g_logger.Log((L"PROFILE_DELETE: " + containerName +
                 (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
@@ -673,7 +692,7 @@ namespace Sandbox {
         // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
         guard.RunAll();
 
-        DeleteCleanupTask(g_instanceId);
+        if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
         g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
         g_logger.Stop();
 

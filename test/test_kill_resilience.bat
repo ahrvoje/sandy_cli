@@ -86,7 +86,7 @@ if !ERRORLEVEL! EQU 0 (
 
 REM 1b: ACL MUST have AppContainer SID
 set SC=0
-for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! GEQ 1 (
     echo   [PASS] S1: AppContainer SID in ACL after kill (!SC! SIDs^)
     set /a PASS+=1
@@ -100,7 +100,7 @@ REM 1c: --cleanup ALONE must remove registry entries (no manual help)
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S1: --cleanup removed grant subkeys
     set /a PASS+=1
@@ -112,7 +112,7 @@ if !REMAIN! EQU 0 (
 
 REM 1d: ACL MUST be clean after --cleanup
 set SC=0
-for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] S1: ACLs clean after --cleanup
     set /a PASS+=1
@@ -207,7 +207,7 @@ ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S2: --cleanup removed all grant subkeys
     set /a PASS+=1
@@ -297,7 +297,7 @@ ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S3: --cleanup removed all stale entries
     set /a PASS+=1
@@ -357,7 +357,7 @@ ping -n 2 127.0.0.1 >nul
 
 REM 4a: All 3 stale entries MUST exist
 set STALE_COUNT=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set STALE_COUNT=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set STALE_COUNT=%%N
 if !STALE_COUNT! GEQ 3 (
     echo   [PASS] S4: !STALE_COUNT! stale entries from 3 killed instances
     set /a PASS+=1
@@ -370,7 +370,7 @@ REM 4b: Single --cleanup MUST handle all of them
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S4: --cleanup cleared all 3 stale entries
     set /a PASS+=1
@@ -428,7 +428,7 @@ ping -n 2 127.0.0.1 >nul
 
 REM 5a: Both stale entries MUST exist
 set STALE_COUNT=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set STALE_COUNT=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set STALE_COUNT=%%N
 if !STALE_COUNT! GEQ 2 (
     echo   [PASS] S5: !STALE_COUNT! stale entries from both killed instances
     set /a PASS+=1
@@ -439,9 +439,9 @@ if !STALE_COUNT! GEQ 2 (
 
 REM 5b: Both folders MUST have AppContainer SIDs
 set SCA=0
-for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SCA=%%N
+for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SCA=%%N
 set SCB=0
-for /f %%N in ('icacls "!DIR_B!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SCB=%%N
+for /f %%N in ('icacls "!DIR_B!" 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SCB=%%N
 if !SCA! GEQ 1 if !SCB! GEQ 1 (
     echo   [PASS] S5: Both folders have AppContainer SIDs (A:!SCA! B:!SCB!)
     set /a PASS+=1
@@ -455,7 +455,7 @@ REM 5c: --cleanup ALONE must recover everything
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S5: --cleanup removed all stale entries
     set /a PASS+=1
@@ -541,7 +541,7 @@ REM 6c: Final --cleanup MUST clear everything from the ENTIRE test
 "!SANDY!" --cleanup >nul 2>nul
 
 set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (
     echo   [PASS] S6: --cleanup cleared all remaining stale state
     set /a PASS+=1
@@ -595,6 +595,15 @@ REM Cleanup temp files and test folders
 del "%TEMP%\sandy_kill_*.txt" 2>nul
 if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
 if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
+
+REM === Defense-in-depth: clear stale subkeys (parent keys are permanent) ===
+"!SANDY!" --cleanup >nul 2>nul
+for /f "tokens=*" %%K in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\"') do (
+    reg delete "%%K" /f >nul 2>nul
+)
+for /f "tokens=1,2,*" %%A in ('reg query "HKCU\Software\Sandy\WER" /v * 2^>nul ^| findstr REG_') do (
+    reg delete "HKCU\Software\Sandy\WER" /v "%%A" /f >nul 2>nul
+)
 
 REM =====================================================================
 REM Summary

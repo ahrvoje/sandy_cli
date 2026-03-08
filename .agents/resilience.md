@@ -95,12 +95,21 @@ Each instance creates its own scheduled task: `SandyCleanup_<uuid>`. On clean ex
 `RestoreStaleGrants` skips paths used by other live instances (the `livePaths` set). If any live instance still needs a path, its ACEs are preserved.
 
 ### Parent Registry Key Policy
-Parent registry keys (`Software\Sandy`, `Grants`, `WER`) are **permanent** — they are never deleted,
-even when empty. This ensures the Sandy registry structure is always visible for tracking and is safe
-against accidental or cascade deletion. Only individual instance subkeys (under `Grants\<UUID>`) and
-individual PID values (under `WER`) are deleted during cleanup. The `Software\Sandy\Test` subtree is
-the only key that gets fully deleted (by `--cleanup`).
+Parent registry keys (`Software\Sandy`, `Grants`, `Profiles`, `WER`) are **permanent** — they are
+never deleted, even when empty. `--cleanup` removes only:
+- Individual instance subkeys under `Grants\<UUID>`
+- Individual PID values under `WER`
+- The entire `Software\Sandy\Test` subtree (test-only)
 
+**`--cleanup` MUST NEVER delete:**
+- `HKCU\Software\Sandy`
+- `HKCU\Software\Sandy\Grants`
+- `HKCU\Software\Sandy\Profiles`
+- `HKCU\Software\Sandy\WER`
+
+**Test validation:** Tests checking for stale grants must count **subkeys only** using
+`findstr /c:"Grants\\"` — not `findstr /c:"HKEY_"` which also matches the parent key header.
+An empty parent key with zero subkeys is the expected clean state.
 ---
 
 ## Logger Diagnostics

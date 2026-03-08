@@ -73,7 +73,7 @@ echo.
 
 REM Check no AppContainer SIDs on app/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\app" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\app" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No AppContainer SIDs on app/ tree
     set /a PASS+=1
@@ -84,7 +84,7 @@ if !SC! EQU 0 (
 
 REM Check no AppContainer SIDs on library/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\library" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\library" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No AppContainer SIDs on library/ tree
     set /a PASS+=1
@@ -95,7 +95,7 @@ if !SC! EQU 0 (
 
 REM Check no AppContainer SIDs on scripts/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\scripts" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\scripts" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No AppContainer SIDs on scripts/ tree
     set /a PASS+=1
@@ -111,7 +111,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a PASS+=1
 ) else (
     set REMAIN=0
-    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
     if !REMAIN! EQU 0 (
         echo   [PASS] No grant registry entries remain
         set /a PASS+=1

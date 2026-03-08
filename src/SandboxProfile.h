@@ -76,10 +76,10 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Count path depth (number of components below drive root)
+    // Count path components below drive root
     // e.g. "C:\" = 0, "C:\Users" = 1, "C:\Users\H\AppData" = 3
     // -----------------------------------------------------------------------
-    inline int PathDepth(const std::string& p)
+    inline int PathComponentCount(const std::string& p)
     {
         int depth = 0;
         for (size_t i = 0; i < p.size(); i++)
@@ -116,7 +116,7 @@ namespace Sandbox {
 
             // Depth-1 paths under C:\ (e.g. "C:\Users" bare) are almost always
             // probe artifacts unless they are real app directories
-            else if (PathDepth(lower) == 0 && lower.find("c:\\") == 0) {
+            else if (PathComponentCount(lower) == 0 && lower.find("c:\\") == 0) {
                 // Keep known useful depth-1 dirs (repos, Python installations)
                 // but filter out broad directories that are clearly probes
                 if (lower == "c:\\users" || lower == "c:\\programdata")

@@ -59,31 +59,6 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Helper: write a REG_SZ value
-    // -----------------------------------------------------------------------
-    inline void WriteRegSz(HKEY hKey, const wchar_t* name, const std::wstring& val)
-    {
-        RegSetValueExW(hKey, name, 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(val.c_str()),
-                       static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
-    }
-
-    // -----------------------------------------------------------------------
-    // Helper: read a REG_SZ value
-    // -----------------------------------------------------------------------
-    inline std::wstring ReadRegSz(HKEY hKey, const wchar_t* name)
-    {
-        DWORD size = 0;
-        if (RegQueryValueExW(hKey, name, nullptr, nullptr, nullptr, &size) != ERROR_SUCCESS)
-            return {};
-        std::wstring val(size / sizeof(wchar_t), L'\0');
-        RegQueryValueExW(hKey, name, nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&val[0]), &size);
-        while (!val.empty() && val.back() == L'\0') val.pop_back();
-        return val;
-    }
-
-    // -----------------------------------------------------------------------
     // ProfileExists — check if a named profile exists in the registry.
     // -----------------------------------------------------------------------
     inline bool ProfileExists(const std::wstring& name)
@@ -98,13 +73,215 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // WriteConfigToRegistry — persist every SandboxConfig field as discrete
+    // registry values under an open HKEY.  Each value maps 1:1 to a config
+    // field so the profile is fully inspectable in regedit and does not
+    // depend on the TOML parser at load time.
+    //
+    // Layout:
+    //   _token_mode         REG_SZ   "appcontainer" | "restricted"
+    //   _cfg_integrity      REG_SZ   "low" | "medium"
+    //   _workdir            REG_SZ   path (may be empty)
+    //   _allow_network      REG_DWORD  0 | 1
+    //   _allow_localhost     REG_DWORD  0 | 1
+    //   _allow_lan           REG_DWORD  0 | 1
+    //   _allow_system_dirs   REG_DWORD  0 | 1
+    //   _allow_named_pipes   REG_DWORD  0 | 1
+    //   _allow_clipboard_r   REG_DWORD  0 | 1
+    //   _allow_clipboard_w   REG_DWORD  0 | 1
+    //   _allow_child_procs   REG_DWORD  0 | 1
+    //   _stdin_mode          REG_SZ   "NUL" | "" | path
+    //   _env_inherit         REG_DWORD  0 | 1
+    //   _timeout             REG_DWORD  seconds (0 = none)
+    //   _memory_limit_mb     REG_DWORD  MB (0 = none)
+    //   _max_processes       REG_DWORD  count (0 = none)
+    //   _allow_count         REG_DWORD  number of allow entries
+    //   _allow_0 .. _allow_N REG_SZ   "access|path"
+    //   _deny_count          REG_DWORD  number of deny entries
+    //   _deny_0  .. _deny_N  REG_SZ   "access|path"
+    //   _reg_read_count      REG_DWORD  count
+    //   _reg_read_0 ..       REG_SZ   registry path
+    //   _reg_write_count     REG_DWORD  count
+    //   _reg_write_0 ..      REG_SZ   registry path
+    //   _env_pass_count      REG_DWORD  count
+    //   _env_pass_0 ..       REG_SZ   variable name
+    // -----------------------------------------------------------------------
+    inline void WriteConfigToRegistry(HKEY hKey, const SandboxConfig& cfg)
+    {
+        // --- Enums ---
+        WriteRegSz(hKey, L"_token_mode",
+            (cfg.tokenMode == TokenMode::AppContainer) ? L"appcontainer" : L"restricted");
+        WriteRegSz(hKey, L"_cfg_integrity",
+            (cfg.integrity == IntegrityLevel::Low) ? L"low" : L"medium");
+
+        // --- Strings ---
+        WriteRegSz(hKey, L"_workdir", cfg.workdir);
+        WriteRegSz(hKey, L"_stdin_mode", cfg.stdinMode);
+
+        // --- Booleans (REG_DWORD 0/1) ---
+        WriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_localhost",     cfg.allowLocalhost   ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_lan",           cfg.allowLan         ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_system_dirs",   cfg.allowSystemDirs  ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_clipboard_r",   cfg.allowClipboardRead  ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_clipboard_w",   cfg.allowClipboardWrite ? 1 : 0);
+        WriteRegDword(hKey, L"_allow_child_procs",   cfg.allowChildProcesses ? 1 : 0);
+        WriteRegDword(hKey, L"_env_inherit",         cfg.envInherit       ? 1 : 0);
+
+        // --- Integers ---
+        WriteRegDword(hKey, L"_timeout",         cfg.timeoutSeconds);
+        WriteRegDword(hKey, L"_memory_limit_mb", static_cast<DWORD>(cfg.memoryLimitMB));
+        WriteRegDword(hKey, L"_max_processes",   cfg.maxProcesses);
+
+        // --- Allow folders: _allow_count + _allow_0, _allow_1, ... ---
+        WriteRegDword(hKey, L"_allow_count", static_cast<DWORD>(cfg.folders.size()));
+        for (DWORD i = 0; i < cfg.folders.size(); i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_allow_%lu", i);
+            WriteRegSz(hKey, name,
+                std::wstring(AccessLevelName(cfg.folders[i].access)) + L"|" + cfg.folders[i].path);
+        }
+
+        // --- Deny folders: _deny_count + _deny_0, _deny_1, ... ---
+        WriteRegDword(hKey, L"_deny_count", static_cast<DWORD>(cfg.denyFolders.size()));
+        for (DWORD i = 0; i < cfg.denyFolders.size(); i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_deny_%lu", i);
+            WriteRegSz(hKey, name,
+                std::wstring(AccessLevelName(cfg.denyFolders[i].access)) + L"|" + cfg.denyFolders[i].path);
+        }
+
+        // --- Registry read keys ---
+        WriteRegDword(hKey, L"_reg_read_count", static_cast<DWORD>(cfg.registryRead.size()));
+        for (DWORD i = 0; i < cfg.registryRead.size(); i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_reg_read_%lu", i);
+            WriteRegSz(hKey, name, cfg.registryRead[i]);
+        }
+
+        // --- Registry write keys ---
+        WriteRegDword(hKey, L"_reg_write_count", static_cast<DWORD>(cfg.registryWrite.size()));
+        for (DWORD i = 0; i < cfg.registryWrite.size(); i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_reg_write_%lu", i);
+            WriteRegSz(hKey, name, cfg.registryWrite[i]);
+        }
+
+        // --- Environment pass-through vars ---
+        WriteRegDword(hKey, L"_env_pass_count", static_cast<DWORD>(cfg.envPass.size()));
+        for (DWORD i = 0; i < cfg.envPass.size(); i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_env_pass_%lu", i);
+            WriteRegSz(hKey, name, cfg.envPass[i]);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ReadConfigFromRegistry — reconstruct SandboxConfig from discrete
+    // registry values.  No TOML parsing involved.
+    // -----------------------------------------------------------------------
+    inline SandboxConfig ReadConfigFromRegistry(HKEY hKey)
+    {
+        SandboxConfig cfg;
+
+        // --- Enums ---
+        std::wstring mode = ReadRegSz(hKey, L"_token_mode");
+        cfg.tokenMode = (mode == L"restricted") ? TokenMode::Restricted : TokenMode::AppContainer;
+
+        std::wstring integ = ReadRegSz(hKey, L"_cfg_integrity");
+        cfg.integrity = (integ == L"medium") ? IntegrityLevel::Medium : IntegrityLevel::Low;
+
+        // --- Strings ---
+        cfg.workdir   = ReadRegSz(hKey, L"_workdir");
+        cfg.stdinMode = ReadRegSz(hKey, L"_stdin_mode");
+        if (cfg.stdinMode.empty()) cfg.stdinMode = L"NUL";  // default
+
+        // --- Booleans ---
+        cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
+        cfg.allowLocalhost      = ReadRegDword(hKey, L"_allow_localhost")  != 0;
+        cfg.allowLan            = ReadRegDword(hKey, L"_allow_lan")        != 0;
+        cfg.allowSystemDirs     = ReadRegDword(hKey, L"_allow_system_dirs") != 0;
+        cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
+        cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
+        cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
+        cfg.allowChildProcesses = ReadRegDword(hKey, L"_allow_child_procs") != 0;
+        cfg.envInherit          = ReadRegDword(hKey, L"_env_inherit")       != 0;
+
+        // --- Integers ---
+        cfg.timeoutSeconds = ReadRegDword(hKey, L"_timeout");
+        cfg.memoryLimitMB  = ReadRegDword(hKey, L"_memory_limit_mb");
+        cfg.maxProcesses   = ReadRegDword(hKey, L"_max_processes");
+
+        // --- Allow folders ---
+        DWORD allowCount = ReadRegDword(hKey, L"_allow_count");
+        for (DWORD i = 0; i < allowCount; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_allow_%lu", i);
+            std::wstring val = ReadRegSz(hKey, name);
+            // Format: "access|path"
+            size_t sep = val.find(L'|');
+            if (sep != std::wstring::npos) {
+                FolderEntry entry;
+                entry.access = ParseAccessTag(val.substr(0, sep));
+                entry.path = val.substr(sep + 1);
+                cfg.folders.push_back(std::move(entry));
+            }
+        }
+
+        // --- Deny folders ---
+        DWORD denyCount = ReadRegDword(hKey, L"_deny_count");
+        for (DWORD i = 0; i < denyCount; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_deny_%lu", i);
+            std::wstring val = ReadRegSz(hKey, name);
+            size_t sep = val.find(L'|');
+            if (sep != std::wstring::npos) {
+                FolderEntry entry;
+                entry.access = ParseAccessTag(val.substr(0, sep));
+                entry.path = val.substr(sep + 1);
+                cfg.denyFolders.push_back(std::move(entry));
+            }
+        }
+
+        // --- Registry read keys ---
+        DWORD regReadCount = ReadRegDword(hKey, L"_reg_read_count");
+        for (DWORD i = 0; i < regReadCount; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_reg_read_%lu", i);
+            std::wstring val = ReadRegSz(hKey, name);
+            if (!val.empty()) cfg.registryRead.push_back(std::move(val));
+        }
+
+        // --- Registry write keys ---
+        DWORD regWriteCount = ReadRegDword(hKey, L"_reg_write_count");
+        for (DWORD i = 0; i < regWriteCount; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_reg_write_%lu", i);
+            std::wstring val = ReadRegSz(hKey, name);
+            if (!val.empty()) cfg.registryWrite.push_back(std::move(val));
+        }
+
+        // --- Environment pass-through ---
+        DWORD envPassCount = ReadRegDword(hKey, L"_env_pass_count");
+        for (DWORD i = 0; i < envPassCount; i++) {
+            wchar_t name[32];
+            swprintf(name, 32, L"_env_pass_%lu", i);
+            std::wstring val = ReadRegSz(hKey, name);
+            if (!val.empty()) cfg.envPass.push_back(std::move(val));
+        }
+
+        return cfg;
+    }
+
+    // -----------------------------------------------------------------------
     // CreateSavedProfile — create a named profile with persistent SID + ACLs.
     //
     // Steps:
     //   1. Parse TOML config
     //   2. Generate SID (AC: CreateAppContainerProfile, RT: AllocateAndInitializeSid)
     //   3. Apply grants via ApplyAccessPipeline (ACLs stay on disk)
-    //   4. Persist metadata + grant records to registry
+    //   4. Persist metadata + config + grant records to registry
     // -----------------------------------------------------------------------
     inline int HandleCreateProfile(const std::wstring& name, const std::wstring& configPath)
     {
@@ -167,17 +344,8 @@ namespace Sandbox {
             pSid = pContainerSid;
         } else {
             // Restricted Token: generate unique SID from GUID
-            GUID sidGuid{};
-            CoCreateGuid(&sidGuid);
-            SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };
-            if (!AllocateAndInitializeSid(&rmAuth, 4,
-                    sidGuid.Data1,
-                    static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
-                    static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
-                                       (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
-                    static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
-                                       (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
-                    0, 0, 0, 0, &pSid)) {
+            pSid = AllocateInstanceSid();
+            if (!pSid) {
                 fprintf(stderr, "Error: SID allocation failed (error %lu).\n", GetLastError());
                 return SandyExit::SetupError;
             }
@@ -194,15 +362,19 @@ namespace Sandbox {
             return SandyExit::SetupError;
         }
 
-        // --- Apply grants (persistent — remain on disk) ---
-        // Set a temporary instance ID so RecordGrant can work.
-        // Profile grants are stored under Profiles\<name>, not Grants\<uuid>.
-        // We apply ACLs directly without using the RecordGrant mechanism.
+        // --- Apply grants (persistent — remain on filesystem) ---
+        //
+        // Suppress RecordGrant's registry writes — we persist grant records
+        // to Sandy\Profiles\<name> below, not Sandy\Grants\<instanceId>.
+        g_grantPersistence = false;
+
         printf("Applying grants for profile '%ls'...\n", name.c_str());
         bool grantOk = ApplyAccessPipeline(pSid, config, isAppContainer);
         if (!grantOk) {
             printf("  Warning: some grants failed (may need Administrator).\n");
         }
+
+        g_grantPersistence = true;  // restore for any subsequent operations
 
         // --- Persist profile metadata to registry ---
         std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
@@ -220,9 +392,10 @@ namespace Sandbox {
         if (!containerName.empty())
             WriteRegSz(hKey, L"_container", containerName);
         WriteRegSz(hKey, L"_created", SandyLogger::Timestamp());
-        WriteRegSz(hKey, L"_toml", tomlText);
+        WriteRegSz(hKey, L"_toml", tomlText);  // reference only
+        WriteConfigToRegistry(hKey, config);
 
-        // Store grant records (same format as instance grants, for --delete-profile cleanup)
+        // Copy grant records to profile key (for --delete-profile cleanup)
         DWORD grantIdx = 0;
         AcquireSRWLockShared(&g_aclGrantsLock);
         for (const auto& g : g_aclGrants) {
@@ -241,7 +414,7 @@ namespace Sandbox {
         RegCloseKey(hKey);
         FreeSid(pSid);
 
-        // Clear in-memory grant list (don't revoke on exit — they're persistent)
+        // Clear in-memory grant list (ACLs stay on disk, records are in Profiles)
         AcquireSRWLockExclusive(&g_aclGrantsLock);
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -276,12 +449,10 @@ namespace Sandbox {
         out.containerName = ReadRegSz(hKey, L"_container");
         out.created = ReadRegSz(hKey, L"_created");
         out.tomlText = ReadRegSz(hKey, L"_toml");
-        RegCloseKey(hKey);
 
-        // Parse embedded TOML
-        if (!out.tomlText.empty()) {
-            out.config = ParseConfig(out.tomlText);
-        }
+        // Read config from discrete registry values (no TOML parsing)
+        out.config = ReadConfigFromRegistry(hKey);
+        RegCloseKey(hKey);
         return !out.sidString.empty();
     }
 
@@ -436,12 +607,9 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // RunWithProfile — run a process using a saved profile's SID + config.
     //
-    // Key differences from RunSandboxed/RunPipeline:
-    //   - SID is reconstructed from stored profile (not freshly generated)
-    //   - Grant application is SKIPPED (ACLs are persistent from --create-profile)
-    //   - Grant cleanup is SKIPPED on exit (grants stay for next run)
-    //   - Desktop access is granted/revoked per-run (not persistent)
-    //   - Loopback is enabled/disabled per-run (not persistent)
+    // Reconstructs SID from stored profile, builds a PipelineContext, and
+    // delegates to RunPipeline.  Profile mode skips grant application and
+    // revocation; desktop and loopback are handled per-run by the pipeline.
     // -----------------------------------------------------------------------
     inline int RunWithProfile(const SavedProfile& prof,
                                const std::wstring& exePath,
@@ -469,16 +637,15 @@ namespace Sandbox {
         g_logger.Log((L"PROFILE_SID: " + prof.sidString).c_str());
         g_logger.Log((L"CONFIG_SOURCE: profile:" + prof.name).c_str());
 
-        SandboxGuard guard;
+        // Reconstruct SID from stored profile
+        PipelineContext ctx;
+        ctx.profileMode = true;
 
-        // =================================================================
-        // PHASE 1: SETUP — reconstruct SID from stored profile
-        // =================================================================
+        // SID + token cleanup guard — these must outlive RunPipeline
         PSID pSid = nullptr;
         HANDLE hRestrictedToken = nullptr;
 
         if (isAppContainer) {
-            // Derive SID from stored container name
             PSID pContainerSid = nullptr;
             HRESULT hr = DeriveAppContainerSidFromAppContainerName(
                 prof.containerName.c_str(), &pContainerSid);
@@ -490,10 +657,8 @@ namespace Sandbox {
                 return SandyExit::SetupError;
             }
             pSid = pContainerSid;
-            guard.Add([pContainerSid]() { FreeSid(pContainerSid); });
             g_logger.Log(L"MODE: appcontainer (profile)");
         } else {
-            // Convert stored SID string back to binary
             PSID pGrantSid = nullptr;
             if (!ConvertStringSidToSidW(prof.sidString.c_str(), &pGrantSid)) {
                 g_logger.LogFmt(L"ERROR: cannot convert SID '%s' (error %lu)",
@@ -503,166 +668,35 @@ namespace Sandbox {
                 return SandyExit::SetupError;
             }
             pSid = pGrantSid;
-            guard.Add([pGrantSid]() { LocalFree(pGrantSid); });
 
-            // Create restricted token with the profile's SID
             hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
             if (!hRestrictedToken) {
                 g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)",
                                 GetLastError());
+                LocalFree(pGrantSid);
                 return SandyExit::SetupError;
             }
-            guard.Add([&hRestrictedToken]() { if (hRestrictedToken) CloseHandle(hRestrictedToken); });
             g_logger.Log(config.integrity == IntegrityLevel::Low
                          ? L"MODE: restricted token (Low integrity, profile)"
                          : L"MODE: restricted token (Medium integrity, profile)");
         }
 
-        g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
+        ctx.pSid = pSid;
+        ctx.hToken = hRestrictedToken;
 
-        // =================================================================
-        // PHASE 2: SKIP GRANTS (ACLs are persistent from --create-profile)
-        // =================================================================
-        g_logger.Log(L"GRANTS: skipped (persistent profile)");
-
-        // [RT] Grant desktop access (per-run, not persistent)
-        if (isRestricted) {
-            GrantDesktopAccess(pSid);
-            g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
-            guard.Add([]() { RevokeDesktopAccess(); });
-        }
-
-        // [AC] Enable loopback if requested (per-run, not persistent)
         std::wstring containerName = prof.containerName;
-        if (isAppContainer && config.allowLocalhost) {
-            bool ok = EnableLoopback(containerName);
-            g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
-            guard.Add([]() { DisableLoopback(); });
-        }
 
-        // =================================================================
-        // PHASE 3: PREPARE — capabilities, env, pipes
-        // =================================================================
-        CapabilityState caps = {};
-        SECURITY_CAPABILITIES sc{};
-        if (isAppContainer) {
-            caps = BuildCapabilities(config);
-            sc.AppContainerSid = pSid;
-            sc.Capabilities = caps.capCount > 0 ? caps.caps : nullptr;
-            sc.CapabilityCount = caps.capCount;
-            guard.Add([&caps]() { FreeCapabilities(caps); });
-        }
+        int result = RunPipeline(config, exePath, exeArgs, containerName,
+                                  exeFolder, auditLogPath, dumpPath, ctx);
 
-        AttributeListState attrs = BuildAttributeList(config,
-            isAppContainer ? &sc : nullptr, isRestricted);
-        if (!attrs.valid) return SandyExit::SetupError;
-        guard.Add([&attrs]() { FreeAttributeList(attrs); });
-
-        LogStdinMode(config.stdinMode);
-        std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
-        LogEnvironmentState(config);
-        if (!g_logger.IsActive())
-            PrintConfigSummary(config, exePath, exeArgs, isRestricted);
-
-        // Audit and crash dumps
-        std::wstring procmonExe;
-        bool auditActive = false;
-        std::wstring auditPmlPath;
-        SetupAudit(auditLogPath, procmonExe, auditActive, auditPmlPath);
-
-        std::wstring crashExeName;
-        bool crashDumpsEnabled = false;
-        SetupCrashDumps(auditLogPath, dumpPath, exePath, crashExeName, crashDumpsEnabled);
-
-        // Stdin
-        HANDLE hStdin = nullptr, hStdinFile = nullptr;
-        if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile))
-            return SandyExit::SetupError;
-
-        // Log config
-        g_logger.LogConfig(config, exePath, exeArgs);
-
-        // =================================================================
-        // PHASE 4: LAUNCH & RUN
-        // =================================================================
-        PROCESS_INFORMATION pi{};
-        bool launched = LaunchChildProcess(
-            isRestricted,
-            isRestricted ? hRestrictedToken : nullptr,
-            attrs.pAttrList, envBlock, exeFolder, exePath, exeArgs,
-            hStdin, pi);
-
-        if (hStdinFile) CloseHandle(hStdinFile);
-
-        if (!launched) {
-            DWORD launchErr = GetLastError();
-            g_logger.Log(L"LAUNCH: FAILED (profile mode)");
-            g_logger.LogSummary(launchErr, false, 0);
-            // Do NOT delete AppContainer profile — it's persistent
-            guard.RunAll();
-            g_logger.Log(L"CLEANUP: complete (launch failure, profile mode)");
-            bool notFound = (launchErr == ERROR_FILE_NOT_FOUND ||
-                             launchErr == ERROR_PATH_NOT_FOUND);
-            return notFound ? SandyExit::NotFound : SandyExit::CannotExec;
-        }
-
-        // Job object for resource limits
-        HANDLE hJob = AssignJobObject(config, pi.hProcess);
-        bool jobNeeded = (config.memoryLimitMB > 0 || config.maxProcesses > 0 ||
-                          !config.allowClipboardRead || !config.allowClipboardWrite);
-        if (jobNeeded && !hJob) {
-            g_logger.Log(L"ERROR: job object failed — aborting (profile mode)");
-            TerminateProcess(pi.hProcess, SandyExit::SetupError);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            guard.RunAll();
-            return SandyExit::SetupError;
-        }
-
-        // Resume and wait
-        ResumeThread(pi.hThread);
-        g_logger.Log(L"CHILD: resumed (profile mode)");
-        CloseHandle(pi.hThread);
-
-        TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
-        HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
-
-        DWORD exitCode = WaitForChildExit(pi.hProcess,
-                                           hTimeoutThread, timeoutCtx,
-                                           config.timeoutSeconds);
-
-        // =================================================================
-        // PHASE 5: CLEANUP — NO grant revocation (persistent profile)
-        // =================================================================
-        g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
-        if (timeoutCtx.timedOut)
-            g_logger.Log(L"EXIT_CLASS: TIMEOUT");
-        else if (IsCrashExitCode(exitCode))
-            g_logger.LogFmt(L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
-        else if (exitCode != 0)
-            g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
+        // Cleanup SID and token (RunPipeline doesn't own these in profile mode)
+        if (hRestrictedToken) CloseHandle(hRestrictedToken);
+        if (isAppContainer)
+            FreeSid(pSid);
         else
-            g_logger.Log(L"EXIT_CLASS: CLEAN");
-        FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, auditPmlPath, dumpPath,
-                              crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
+            LocalFree(pSid);
 
-        CloseHandle(pi.hProcess);
-        if (hJob) CloseHandle(hJob);
-
-        // Desktop/loopback/caps/attrs cleanup via guard (but NOT grants)
-        g_logger.Log(L"CLEANUP: starting (profile mode — grants preserved)");
-        guard.RunAll();
-        g_logger.Log(L"CLEANUP: complete (profile mode)");
-
-        int sandyExit;
-        if (timeoutCtx.timedOut)
-            sandyExit = SandyExit::Timeout;
-        else if (IsCrashExitCode(exitCode))
-            sandyExit = SandyExit::ChildCrash;
-        else
-            sandyExit = static_cast<int>(exitCode);
-
-        return sandyExit;
+        return result;
     }
 
 } // namespace Sandbox

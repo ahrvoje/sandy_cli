@@ -540,6 +540,184 @@ del "%TEMP%\sandy_p12a.txt" 2>nul
 del "%TEMP%\sandy_p12b.txt" 2>nul
 
 REM ===================================================================
+REM P13 — Registry Isolation: grants stay in Profiles, not Grants
+REM
+REM Verifies that --create-profile and -p (run) do NOT leave orphaned
+REM entries under Sandy\Grants.  All profile data must live exclusively
+REM under Sandy\Profiles\<name>.
+REM ===================================================================
+echo.
+echo --- P13: Registry Isolation ---
+
+REM P13a: No subkeys under Sandy\Grants after profile creation
+REM   Both test_ac and test_rt were created in P1/P2 above.
+REM   If RecordGrant leaked to Grants, there would be subkeys.
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] P13a: Sandy\Grants has no subkeys after profile creation
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P13a: Orphaned subkeys found in Sandy\Grants
+    set /a FAIL+=1
+)
+
+REM P13b: No bare grant values under Sandy\Grants (only Default)
+set P13B_DIRTY=0
+for /f "tokens=1,2,3*" %%a in ('reg query "HKCU\Software\Sandy\Grants" /v 2^>nul ^| findstr REG_SZ') do (
+    REM Skip (Default)
+    if /i "%%a" NEQ "(Default)" set P13B_DIRTY=1
+)
+if !P13B_DIRTY! EQU 0 (
+    echo   [PASS] P13b: Sandy\Grants has no bare grant values
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P13b: Bare grant values found in Sandy\Grants
+    set /a FAIL+=1
+)
+
+REM P13c: Profile registry key has numbered grant records
+REM   The AC profile's Profiles\test_ac should have at least value "0"
+reg query "HKCU\Software\Sandy\Profiles\test_ac" /v 0 >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P13c: Grant records stored in Profiles\test_ac
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P13c: No grant records in Profiles\test_ac
+    set /a FAIL+=1
+)
+
+REM P13d: Profile registry key has _toml (full config stored)
+reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _toml >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P13d: Full TOML config stored in profile
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P13d: _toml missing from profile
+    set /a FAIL+=1
+)
+
+REM P13e: Run with profile, then verify Grants is still clean
+REM   (P5 already ran with test_ac — check Grants after)
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] P13e: Sandy\Grants clean after profile run
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P13e: Grants leaked during profile run
+    set /a FAIL+=1
+)
+
+REM ===================================================================
+REM P17 — Discrete Config Values: verify registry-native storage
+REM
+REM Verifies that SandboxConfig fields are stored as discrete registry
+REM values (REG_DWORD for bools/ints, REG_SZ for strings), not just
+REM embedded in the _toml blob.
+REM ===================================================================
+echo.
+echo --- P17: Discrete Config Values ---
+
+REM P17a: _token_mode for AC profile should be "appcontainer"
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _token_mode 2^>nul ^| findstr _token_mode') do set P17A_VAL=%%v
+if "!P17A_VAL!"=="appcontainer" (
+    echo   [PASS] P17a: _token_mode = appcontainer
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17a: _token_mode = !P17A_VAL! (expected appcontainer^)
+    set /a FAIL+=1
+)
+
+REM P17b: _timeout should be 30 (0x1e)
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _timeout 2^>nul ^| findstr _timeout') do set P17B_VAL=%%v
+if "!P17B_VAL!"=="0x1e" (
+    echo   [PASS] P17b: _timeout = 30
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17b: _timeout = !P17B_VAL! (expected 0x1e^)
+    set /a FAIL+=1
+)
+
+REM P17c: _allow_count should be >= 2 (read + execute paths)
+reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_count >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P17c: _allow_count exists
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17c: _allow_count missing
+    set /a FAIL+=1
+)
+
+REM P17d: _allow_0 should contain pipe-delimited "access|path"
+reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_0 2>nul | findstr /C:"|" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P17d: _allow_0 has pipe-delimited format
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17d: _allow_0 missing pipe delimiter
+    set /a FAIL+=1
+)
+
+REM P17e: _allow_system_dirs should be 1 for AC profile
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_system_dirs 2^>nul ^| findstr _allow_system_dirs') do set P17E_VAL=%%v
+if "!P17E_VAL!"=="0x1" (
+    echo   [PASS] P17e: _allow_system_dirs = 1
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17e: _allow_system_dirs = !P17E_VAL! (expected 0x1^)
+    set /a FAIL+=1
+)
+
+REM P17f: _allow_child_procs should be 1
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_child_procs 2^>nul ^| findstr _allow_child_procs') do set P17F_VAL=%%v
+if "!P17F_VAL!"=="0x1" (
+    echo   [PASS] P17f: _allow_child_procs = 1
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17f: _allow_child_procs = !P17F_VAL! (expected 0x1^)
+    set /a FAIL+=1
+)
+
+REM P17g: RT profile _token_mode should be "restricted"
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_rt" /v _token_mode 2^>nul ^| findstr _token_mode') do set P17G_VAL=%%v
+if "!P17G_VAL!"=="restricted" (
+    echo   [PASS] P17g: RT _token_mode = restricted
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17g: RT _token_mode = !P17G_VAL! (expected restricted^)
+    set /a FAIL+=1
+)
+
+REM P17h: RT profile _cfg_integrity should be "low"
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_rt" /v _cfg_integrity 2^>nul ^| findstr _cfg_integrity') do set P17H_VAL=%%v
+if "!P17H_VAL!"=="low" (
+    echo   [PASS] P17h: RT _cfg_integrity = low
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17h: RT _cfg_integrity = !P17H_VAL! (expected low^)
+    set /a FAIL+=1
+)
+
+REM P17i: _env_inherit should be 1
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _env_inherit 2^>nul ^| findstr _env_inherit') do set P17I_VAL=%%v
+if "!P17I_VAL!"=="0x1" (
+    echo   [PASS] P17i: _env_inherit = 1
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17i: _env_inherit = !P17I_VAL! (expected 0x1^)
+    set /a FAIL+=1
+)
+
+REM P17j: _allow_network should be 0
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_network 2^>nul ^| findstr _allow_network') do set P17J_VAL=%%v
+if "!P17J_VAL!"=="0x0" (
+    echo   [PASS] P17j: _allow_network = 0
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P17j: _allow_network = !P17J_VAL! (expected 0x0^)
+    set /a FAIL+=1
+)
+
+REM ===================================================================
 REM P14 — Cleanup Does NOT Delete Profiles
 REM ===================================================================
 echo.

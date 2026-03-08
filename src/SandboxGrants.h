@@ -9,6 +9,7 @@
 
 #include "SandboxTypes.h"
 #include "SandboxACL.h"
+#include "SandboxRegistry.h"
 #include <set>
 #include <atomic>
 
@@ -34,6 +35,11 @@ namespace Sandbox {
     inline SRWLOCK               g_aclGrantsLock = SRWLOCK_INIT;
     inline std::atomic<bool>     g_cleanedUp{false};
 
+    // When false, RecordGrant skips registry writes (in-memory only).
+    // Used during --create-profile where grants are persisted to
+    // Sandy\Profiles\<name> instead of Sandy\Grants\<instanceId>.
+    inline bool                  g_grantPersistence = true;
+
     // Per-instance UUID — set once at startup
     inline std::wstring g_instanceId;
 
@@ -42,31 +48,6 @@ namespace Sandbox {
 
     inline std::wstring GetGrantsRegKey() {
         return std::wstring(kGrantsParentKey) + L"\\" + g_instanceId;
-    }
-
-    // -----------------------------------------------------------------------
-    // Registry helper: read REG_SZ value by enumeration index.
-    // Skips metadata values (name starts with '_').
-    // -----------------------------------------------------------------------
-    inline bool ReadRegSzEnum(HKEY hKey, DWORD index,
-                              std::wstring& name, std::wstring& data)
-    {
-        wchar_t vname[64];
-        DWORD vnameLen = 64;
-        DWORD dataSize = 0, dataType = 0;
-        if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, &dataType,
-                          nullptr, &dataSize) != ERROR_SUCCESS)
-            return false;
-        if (vname[0] == L'_' || dataType != REG_SZ) return false;
-
-        data.assign(dataSize / sizeof(wchar_t), L'\0');
-        vnameLen = 64;
-        if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, nullptr,
-                          reinterpret_cast<BYTE*>(&data[0]), &dataSize) != ERROR_SUCCESS)
-            return false;
-        while (!data.empty() && data.back() == L'\0') data.pop_back();
-        name = vname;
-        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -255,9 +236,12 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Save a grant to the in-memory list AND the registry.
-    // Called by GrantObjectAccess and DenyObjectAccess via RecordGrantCallback.
-    // Stores SID string (for ACE-level removal) — no SDDL snapshot.
+    // Save a grant to the in-memory list, and optionally to the registry.
+    //
+    // Registry persistence is controlled by g_grantPersistence:
+    //   true  (default) — writes to Sandy\Grants\<instanceId> for crash recovery
+    //   false           — in-memory only (used during --create-profile, where
+    //                     grants are persisted to Sandy\Profiles\<name> instead)
     // -----------------------------------------------------------------------
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
                             const std::wstring& sidString,
@@ -267,90 +251,92 @@ namespace Sandbox {
     {
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
-        // --- Persist to registry ---
-        std::wstring regKey = GetGrantsRegKey();
-        HKEY hKey = nullptr;
-        DWORD disposition = 0;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
-                0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
-                nullptr, &hKey, &disposition) == ERROR_SUCCESS) {
+        // --- Persist to registry (live instance crash recovery) ---
+        if (g_grantPersistence) {
+            std::wstring regKey = GetGrantsRegKey();
+            HKEY hKey = nullptr;
+            DWORD disposition = 0;
+            if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
+                    0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
+                    nullptr, &hKey, &disposition) == ERROR_SUCCESS) {
 
-            // On first creation, store identity and protect the key
-            if (disposition == REG_CREATED_NEW_KEY) {
-                DWORD pid = GetCurrentProcessId();
-                RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
-                               reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD));
+                // On first creation, store identity and protect the key
+                if (disposition == REG_CREATED_NEW_KEY) {
+                    DWORD pid = GetCurrentProcessId();
+                    RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
+                                   reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD));
 
-                ULONGLONG ct = GetCurrentProcessCreationTime();
-                RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
-                               reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG));
+                    ULONGLONG ct = GetCurrentProcessCreationTime();
+                    RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
+                                   reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG));
 
-                std::wstring containerName = ContainerNameFromId(g_instanceId);
-                RegSetValueExW(hKey, L"_container", 0, REG_SZ,
-                               reinterpret_cast<const BYTE*>(containerName.c_str()),
-                               static_cast<DWORD>((containerName.size() + 1) * sizeof(wchar_t)));
+                    std::wstring containerName = ContainerNameFromId(g_instanceId);
+                    RegSetValueExW(hKey, L"_container", 0, REG_SZ,
+                                   reinterpret_cast<const BYTE*>(containerName.c_str()),
+                                   static_cast<DWORD>((containerName.size() + 1) * sizeof(wchar_t)));
 
-                // Deny Restricted SID (S-1-5-12) write access to prevent tampering
-                SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
-                PSID pRestricted = nullptr;
-                if (AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
-                        0, 0, 0, 0, 0, 0, 0, &pRestricted)) {
-                    EXPLICIT_ACCESSW deny{};
-                    deny.grfAccessPermissions = KEY_ALL_ACCESS;
-                    deny.grfAccessMode = DENY_ACCESS;
-                    deny.grfInheritance = NO_INHERITANCE;
-                    deny.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-                    deny.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pRestricted);
+                    // Deny Restricted SID (S-1-5-12) write access to prevent tampering
+                    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+                    PSID pRestricted = nullptr;
+                    if (AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
+                            0, 0, 0, 0, 0, 0, 0, &pRestricted)) {
+                        EXPLICIT_ACCESSW deny{};
+                        deny.grfAccessPermissions = KEY_ALL_ACCESS;
+                        deny.grfAccessMode = DENY_ACCESS;
+                        deny.grfInheritance = NO_INHERITANCE;
+                        deny.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+                        deny.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pRestricted);
 
-                    PACL pOldDacl = nullptr;
-                    PSECURITY_DESCRIPTOR pKeySD = nullptr;
-                    if (GetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
-                            nullptr, nullptr, &pOldDacl, nullptr, &pKeySD) == ERROR_SUCCESS) {
-                        PACL pNewDacl = nullptr;
-                        if (SetEntriesInAclW(1, &deny, pOldDacl, &pNewDacl) == ERROR_SUCCESS) {
-                            SetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
-                                nullptr, nullptr, pNewDacl, nullptr);
-                            LocalFree(pNewDacl);
+                        PACL pOldDacl = nullptr;
+                        PSECURITY_DESCRIPTOR pKeySD = nullptr;
+                        if (GetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
+                                nullptr, nullptr, &pOldDacl, nullptr, &pKeySD) == ERROR_SUCCESS) {
+                            PACL pNewDacl = nullptr;
+                            if (SetEntriesInAclW(1, &deny, pOldDacl, &pNewDacl) == ERROR_SUCCESS) {
+                                SetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
+                                    nullptr, nullptr, pNewDacl, nullptr);
+                                LocalFree(pNewDacl);
+                            }
+                            LocalFree(pKeySD);
                         }
-                        LocalFree(pKeySD);
+                        FreeSid(pRestricted);
                     }
-                    FreeSid(pRestricted);
                 }
+
+                // Get next index
+                DWORD nextIdx = 0;
+                DWORD idxSize = sizeof(nextIdx);
+                RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
+                                 reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
+
+                // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|DENY:1|TRAPPED:sid1;sid2
+                std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
+                std::wstring data = typeStr + L"|" + path + L"|" + sidString;
+                // Persist deny flag explicitly
+                if (isDeny) {
+                    data += L"|DENY:1";
+                }
+                if (!trappedSids.empty()) {
+                    data += L"|TRAPPED:" + trappedSids;
+                }
+                if (isPeek) {
+                    data += L"|PEEK:1";
+                }
+
+                wchar_t valueName[32];
+                swprintf(valueName, 32, L"%lu", nextIdx);
+                RegSetValueExW(hKey, valueName, 0, REG_SZ,
+                               reinterpret_cast<const BYTE*>(data.c_str()),
+                               static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
+
+                // Increment counter
+                nextIdx++;
+                RegSetValueExW(hKey, L"_nextIdx", 0, REG_DWORD,
+                               reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx));
+
+                g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(nextIdx - 1) + L"] " + data).c_str());
+                RegCloseKey(hKey);
             }
-
-            // Get next index
-            DWORD nextIdx = 0;
-            DWORD idxSize = sizeof(nextIdx);
-            RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
-                             reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
-
-            // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|DENY:1|TRAPPED:sid1;sid2
-            std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-            std::wstring data = typeStr + L"|" + path + L"|" + sidString;
-            // Persist deny flag explicitly
-            if (isDeny) {
-                data += L"|DENY:1";
-            }
-            if (!trappedSids.empty()) {
-                data += L"|TRAPPED:" + trappedSids;
-            }
-            if (isPeek) {
-                data += L"|PEEK:1";
-            }
-
-            wchar_t valueName[32];
-            swprintf(valueName, 32, L"%lu", nextIdx);
-            RegSetValueExW(hKey, valueName, 0, REG_SZ,
-                           reinterpret_cast<const BYTE*>(data.c_str()),
-                           static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
-
-            // Increment counter
-            nextIdx++;
-            RegSetValueExW(hKey, L"_nextIdx", 0, REG_DWORD,
-                           reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx));
-
-            g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(nextIdx - 1) + L"] " + data).c_str());
-            RegCloseKey(hKey);
         }
 
         // --- Save to in-memory list ---
@@ -627,18 +613,6 @@ namespace Sandbox {
         }
         RegCloseKey(hParent);
 
-        // Read _container from a subkey
-        auto readContainer = [](HKEY hKey) -> std::wstring {
-            DWORD size = 0;
-            if (RegQueryValueExW(hKey, L"_container", nullptr, nullptr, nullptr, &size) != ERROR_SUCCESS)
-                return {};
-            std::wstring val(size / sizeof(wchar_t), L'\0');
-            RegQueryValueExW(hKey, L"_container", nullptr, nullptr,
-                             reinterpret_cast<BYTE*>(&val[0]), &size);
-            while (!val.empty() && val.back() == L'\0') val.pop_back();
-            return val;
-        };
-
         // Collect paths from a subkey
         auto collectPaths = [](HKEY hKey, std::set<std::wstring>& outPaths) {
             DWORD valueCount = 0;
@@ -686,7 +660,7 @@ namespace Sandbox {
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
-                std::wstring containerName = readContainer(hKey);
+                std::wstring containerName = ReadRegSz(hKey, L"_container");
                 if (!containerName.empty()) {
                     HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
                     g_logger.Log((L"PROFILE_DELETE: " + containerName +
@@ -708,8 +682,6 @@ namespace Sandbox {
             printf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
                    subKey.c_str(), (unsigned long)stalePid);
         }
-
-
     }
 
 } // namespace Sandbox

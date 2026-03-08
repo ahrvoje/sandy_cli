@@ -181,21 +181,15 @@ if "!SID_FOUND!"=="0" (
     set /a CLEANUP_FAIL+=1
 )
 
-REM --- Registry check ---
-reg query "HKCU\Software\Sandy\Grants" >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+REM --- Registry (parent key is permanent; only subkeys = stale) ---
+set REMAIN=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+if !REMAIN! EQU 0 (
     echo   [PASS] No grant registry entries remain
     set /a CLEANUP_PASS+=1
 ) else (
-    set "HAS_SUBKEYS=0"
-    for /f "delims=" %%K in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul') do set "HAS_SUBKEYS=1"
-    if "!HAS_SUBKEYS!"=="0" (
-        echo   [PASS] Grants registry key empty
-        set /a CLEANUP_PASS+=1
-    ) else (
-        echo   [FAIL] Stale grant registry entries!
-        set /a CLEANUP_FAIL+=1
-    )
+    echo   [FAIL] !REMAIN! stale grant subkeys persist
+    set /a CLEANUP_FAIL+=1
 )
 
 REM --- SDDL fidelity (THE KEY TEST) ---

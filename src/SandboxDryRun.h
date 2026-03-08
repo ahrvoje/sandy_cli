@@ -14,22 +14,6 @@
 namespace Sandbox {
 
 // -----------------------------------------------------------------------
-// Human-readable access level name (wide string for %ls output)
-// -----------------------------------------------------------------------
-inline const wchar_t* AccessLevelNameW(AccessLevel a)
-{
-    switch (a) {
-        case AccessLevel::Read:    return L"read";
-        case AccessLevel::Write:   return L"write";
-        case AccessLevel::Execute: return L"execute";
-        case AccessLevel::Append:  return L"append";
-        case AccessLevel::Delete:  return L"delete";
-        case AccessLevel::All:     return L"all";
-    }
-    return L"?";
-}
-
-// -----------------------------------------------------------------------
 // Print folder entries grouped by access level (for dry-run display)
 // -----------------------------------------------------------------------
 inline void PrintFolderEntries(const wchar_t* section,
@@ -42,7 +26,7 @@ inline void PrintFolderEntries(const wchar_t* section,
         bool first = true;
         for (auto& e : entries) {
             if (e.access != lvl) continue;
-            if (first) { printf("  %ls:\n", AccessLevelNameW(lvl)); first = false; }
+            if (first) { printf("  %ls:\n", AccessLevelName(lvl)); first = false; }
             printf("    %ls\n", e.path.c_str());
         }
     }
@@ -61,7 +45,7 @@ inline void PrintFolderToml(const wchar_t* section,
         for (auto& e : entries) {
             if (e.access != lvl) continue;
             if (first) {
-                printf("%ls = [", AccessLevelNameW(lvl));
+                printf("%ls = [", AccessLevelName(lvl));
                 first = false;
             } else {
                 printf(", ");

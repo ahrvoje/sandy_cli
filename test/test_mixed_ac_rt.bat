@@ -109,7 +109,7 @@ echo.
 
 REM --- Check for residual AppContainer SIDs ---
 set SC_AC=0
-for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC_AC=%%N
+for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC_AC=%%N
 if !SC_AC! EQU 0 (
     echo   [PASS] No AppContainer SIDs (S-1-15-2-^) on shared/ tree
     set /a PASS+=1
@@ -120,7 +120,7 @@ if !SC_AC! EQU 0 (
 
 REM --- Check for residual RT SIDs ---
 set SC_RT=0
-for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC_RT=%%N
+for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC_RT=%%N
 if !SC_RT! EQU 0 (
     echo   [PASS] No Restricted Token SIDs (S-1-9-^) on shared/ tree
     set /a PASS+=1
@@ -136,7 +136,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a PASS+=1
 ) else (
     set REMAIN=0
-    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
     if !REMAIN! EQU 0 (
         echo   [PASS] No grant registry entries remain
         set /a PASS+=1

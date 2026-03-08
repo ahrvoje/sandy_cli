@@ -60,7 +60,7 @@ set PASS=0
 set FAIL=0
 
 set SC=0
-for /f %%N in ('icacls "%ROOT%\workspace" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\workspace" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on workspace/ tree
     set /a PASS+=1

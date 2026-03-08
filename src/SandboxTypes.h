@@ -85,6 +85,58 @@ namespace Sandbox {
         }
     }
 
+    // Lowercase access level name (for TOML output, user-facing display)
+    inline const wchar_t* AccessLevelName(AccessLevel level) {
+        switch (level) {
+        case AccessLevel::Read:    return L"read";
+        case AccessLevel::Write:   return L"write";
+        case AccessLevel::Execute: return L"execute";
+        case AccessLevel::Append:  return L"append";
+        case AccessLevel::Delete:  return L"delete";
+        case AccessLevel::All:     return L"all";
+        case AccessLevel::Peek:    return L"peek";
+        default:                   return L"?";
+        }
+    }
+
+    // Parse access level from string (case-insensitive, reverse of AccessTag)
+    inline AccessLevel ParseAccessTag(const std::wstring& s) {
+        if (_wcsicmp(s.c_str(), L"read")    == 0) return AccessLevel::Read;
+        if (_wcsicmp(s.c_str(), L"write")   == 0) return AccessLevel::Write;
+        if (_wcsicmp(s.c_str(), L"execute") == 0) return AccessLevel::Execute;
+        if (_wcsicmp(s.c_str(), L"append")  == 0) return AccessLevel::Append;
+        if (_wcsicmp(s.c_str(), L"delete")  == 0) return AccessLevel::Delete;
+        if (_wcsicmp(s.c_str(), L"all")     == 0) return AccessLevel::All;
+        if (_wcsicmp(s.c_str(), L"peek")    == 0) return AccessLevel::Peek;
+        return AccessLevel::Read;  // safe fallback
+    }
+
+    // -----------------------------------------------------------------------
+    // AllocateInstanceSid — generate a unique per-instance SID (S-1-9-<uuid>).
+    //
+    // Uses SECURITY_RESOURCE_MANAGER_AUTHORITY — the Microsoft-designated
+    // authority for third-party resource managers.  Each call returns a new
+    // SID derived from a fresh GUID so ACEs are distinguishable per instance.
+    // Caller must FreeSid() on success.  Returns nullptr on failure.
+    // -----------------------------------------------------------------------
+    inline PSID AllocateInstanceSid()
+    {
+        GUID sidGuid{};
+        CoCreateGuid(&sidGuid);
+        SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };
+        PSID pSid = nullptr;
+        if (!AllocateAndInitializeSid(&rmAuth, 4,
+                sidGuid.Data1,
+                static_cast<DWORD>(sidGuid.Data2 | (sidGuid.Data3 << 16)),
+                static_cast<DWORD>(sidGuid.Data4[0] | (sidGuid.Data4[1] << 8) |
+                                   (sidGuid.Data4[2] << 16) | (sidGuid.Data4[3] << 24)),
+                static_cast<DWORD>(sidGuid.Data4[4] | (sidGuid.Data4[5] << 8) |
+                                   (sidGuid.Data4[6] << 16) | (sidGuid.Data4[7] << 24)),
+                0, 0, 0, 0, &pSid))
+            return nullptr;
+        return pSid;
+    }
+
     // -----------------------------------------------------------------------
     // Win32 error code → human-readable string (via FormatMessageW)
     //

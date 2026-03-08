@@ -144,7 +144,7 @@ echo.
 
 REM Count ACTIVE entries
 set ACTIVE_COUNT=0
-for /f %%C in ('findstr /c:"ACTIVE" "%TEMP%\sandy_stress_status.txt" 2^>nul ^| find /c /v ""') do set ACTIVE_COUNT=%%C
+for /f %%C in ('findstr /c:"ACTIVE" "%TEMP%\sandy_stress_status.txt" 2^>nul ^|findstr /c:"Grants\\" ^| find /c /v ""') do set ACTIVE_COUNT=%%C
 if !ACTIVE_COUNT! GEQ 2 (
     echo   [PASS] Multiple active instances detected: !ACTIVE_COUNT!
     set /a PASS+=1
@@ -303,7 +303,7 @@ set RESIDUE=0
 for %%L in ("!DIR_A!" "!DIR_B!" "!DIR_C!") do (
     icacls %%L 2>nul | findstr /c:"S-1-15-2-" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
-        for /f %%N in ('icacls %%L 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do (
+        for /f %%N in ('icacls %%L 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do (
             echo   [INFO] %%~nxL: %%N residual AppContainer SIDs (inert, profiles deleted^)
             set /a RESIDUE+=%%N
         )

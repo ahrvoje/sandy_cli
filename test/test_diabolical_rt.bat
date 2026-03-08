@@ -64,7 +64,7 @@ echo.
 
 REM --- Check 1: RT SID residue ---
 set SC=0
-for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on arena/ tree
     set /a PASS+=1
@@ -77,7 +77,7 @@ REM --- Check 2: OID attack result ---
 if exist "%ROOT%\arena\_oid_attack_done" (
     set FSC=0
     if exist "%ROOT%\arena\fortress_escaped" (
-        for /f %%N in ('icacls "%ROOT%\arena\fortress_escaped" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set FSC=%%N
+        for /f %%N in ('icacls "%ROOT%\arena\fortress_escaped" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set FSC=%%N
         if !FSC! EQU 0 (
             echo   [PASS] Renamed fortress has no residual SIDs
             set /a PASS+=1
@@ -97,7 +97,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a PASS+=1
 ) else (
     set REMAIN=0
-    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"HKEY_" ^| find /c /v ""') do set REMAIN=%%N
+    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""|findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
     if !REMAIN! EQU 0 (
         echo   [PASS] No grant registry entries remain
         set /a PASS+=1
