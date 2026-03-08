@@ -8,6 +8,7 @@
 #include "SandboxCLI.h"
 #include "SandboxStatus.h"
 #include "SandboxDryRun.h"
+#include "SandboxSavedProfile.h"
 
 constexpr const char* kVersion = "0.98";
 using namespace Sandbox;
@@ -40,6 +41,10 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring dumpPath;
     std::wstring exePath;
     std::wstring exeArgs;
+    std::wstring profileName;
+    std::wstring createProfileName;
+    std::wstring deleteProfileName;
+    std::wstring profileInfoName;
     bool quiet = false;
     bool logStamp = false;
     bool dryRun = false;
@@ -109,6 +114,24 @@ static int RunMain(int argc, wchar_t* argv[])
             }
             return HandleExplain(argv[i + 1]);
         }
+
+        // --profile-info <name> — exactly 2 args
+        if (arg == L"--profile-info") {
+            if (argc != 3 || i + 1 >= argc) {
+                fprintf(stderr, "Error: --profile-info requires exactly one argument.\n");
+                return SandyExit::InternalError;
+            }
+            return HandleProfileInfo(argv[i + 1]);
+        }
+
+        // --delete-profile <name> — exactly 2 args
+        if (arg == L"--delete-profile") {
+            if (argc != 3 || i + 1 >= argc) {
+                fprintf(stderr, "Error: --delete-profile requires exactly one argument.\n");
+                return SandyExit::InternalError;
+            }
+            return HandleDeleteProfile(argv[i + 1]);
+        }
     }
 
     // --- Parse command-line arguments ---
@@ -142,6 +165,12 @@ static int RunMain(int argc, wchar_t* argv[])
         else if ((arg == L"-t" || arg == L"--trace") && i + 1 < argc) {
             tracePath = argv[++i];
         }
+        else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
+            profileName = argv[++i];
+        }
+        else if (arg == L"--create-profile" && i + 1 < argc) {
+            createProfileName = argv[++i];
+        }
         else if ((arg == L"-d" || arg == L"--dump") && i + 1 < argc) {
             dumpPath = argv[++i];
         }
@@ -173,6 +202,48 @@ static int RunMain(int argc, wchar_t* argv[])
             return SandyExit::InternalError;
         }
         return RunTrace(exePath, exeArgs, tracePath);
+    }
+
+    // --- Create profile mode (needs -c, no -x) ---
+    if (!createProfileName.empty()) {
+        if (configPath.empty()) {
+            fprintf(stderr, "Error: --create-profile requires -c <config.toml>.\n\n");
+            PrintUsage(kVersion);
+            return SandyExit::InternalError;
+        }
+        if (!logPath.empty())
+            g_logger.Start(logPath);
+        int result = HandleCreateProfile(createProfileName, configPath);
+        g_logger.Stop();
+        return result;
+    }
+
+    // --- Run with profile mode (-p <name> -x <exe>) ---
+    if (!profileName.empty()) {
+        // -p and -c/-s are mutually exclusive
+        if (!configPath.empty() || !configString.empty()) {
+            fprintf(stderr, "Error: -p/--profile and -c/--config/-s/--string are mutually exclusive.\n");
+            fprintf(stderr, "       Profile already contains its configuration.\n\n");
+            return SandyExit::ConfigError;
+        }
+        if (exePath.empty()) {
+            fprintf(stderr, "Error: -p/--profile requires -x <executable>.\n\n");
+            PrintUsage(kVersion);
+            return SandyExit::InternalError;
+        }
+        SavedProfile prof;
+        if (!LoadSavedProfile(profileName, prof)) {
+            fprintf(stderr, "Error: profile '%ls' not found.\n", profileName.c_str());
+            return SandyExit::ConfigError;
+        }
+        prof.config.logPath = logPath;
+        prof.config.quiet = quiet;
+        prof.config.configSource = L"profile:" + profileName;
+        if (!logPath.empty())
+            g_logger.Start(logPath);
+        int result = RunWithProfile(prof, exePath, exeArgs, auditLogPath, dumpPath);
+        g_logger.Stop();
+        return result;
     }
 
     // --- No config/exec provided ---

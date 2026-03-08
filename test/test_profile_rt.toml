@@ -1,0 +1,44 @@
+# Sandy profile test configuration — Restricted Token
+# Minimal config for profile creation/run tests
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+workdir = 'inherit'
+
+[allow]
+peek    = []
+read    = ['C:\Users\H\test_sandy_profile\data']
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[deny]
+read    = []
+write   = []
+execute = []
+append  = []
+delete  = []
+all     = []
+
+[privileges]
+named_pipes     = false
+stdin           = false
+clipboard_read  = false
+clipboard_write = false
+child_processes = true
+
+[registry]
+read  = []
+write = []
+
+[environment]
+inherit = true
+pass    = []
+
+[limit]
+timeout   = 30
+memory    = 0
+processes = 0

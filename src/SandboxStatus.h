@@ -10,6 +10,7 @@
 #include "SandboxGrants.h"
 #include "SandboxCleanup.h"
 #include "SandboxAudit.h"
+#include "SandboxSavedProfile.h"
 #include <sstream>
 
 namespace Sandbox {
@@ -109,6 +110,9 @@ inline int HandleStatus(bool json = false)
 
     profiles = EnumSandyProfiles();
 
+    // Saved profiles (persistent named profiles)
+    auto savedProfiles = EnumSavedProfiles();
+
     // --- Output ---
     if (json) {
         auto esc = [](const std::wstring& s) {
@@ -134,8 +138,14 @@ inline int HandleStatus(bool json = false)
         printf("],\"profiles\":[");
         for (size_t i = 0; i < profiles.size(); i++)
             printf("%s\"%s\"", i ? "," : "", esc(profiles[i]).c_str());
-        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"wer\":%zu,\"stale_wer\":%d,\"tasks\":%zu,\"profiles\":%zu}}\n",
-               insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size());
+        printf("],\"saved_profiles\":[");
+        for (size_t i = 0; i < savedProfiles.size(); i++)
+            printf("%s{\"name\":\"%s\",\"type\":\"%s\",\"created\":\"%s\"}",
+                   i ? "," : "", esc(savedProfiles[i].name).c_str(),
+                   esc(savedProfiles[i].type).c_str(),
+                   esc(savedProfiles[i].created).c_str());
+        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"wer\":%zu,\"stale_wer\":%d,\"tasks\":%zu,\"profiles\":%zu,\"saved_profiles\":%zu}}\n",
+               insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size(), savedProfiles.size());
     } else {
         bool found = false;
         for (auto& x : insts) {
@@ -152,9 +162,14 @@ inline int HandleStatus(bool json = false)
         }
         for (auto& t : tasks) { printf("  [TASK]    %ls scheduled task exists\n", t.c_str()); found = true; }
         for (auto& p : profiles) { printf("  [PROFILE] %ls\n", p.c_str()); found = true; }
+        for (auto& sp : savedProfiles) {
+            printf("  [SAVED_PROFILE] %ls  (%ls, created: %ls)\n",
+                   sp.name.c_str(), sp.type.c_str(), sp.created.c_str());
+            found = true;
+        }
         if (!found) printf("Sandy - no active instances or stale state.\n");
-        else printf("Summary: %zu instance(s), %d stale instance(s), %zu WER entry/entries, %d stale WER, %zu task(s), %zu profile(s).\n",
-                    insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size());
+        else printf("Summary: %zu instance(s), %d stale instance(s), %zu WER entry/entries, %d stale WER, %zu task(s), %zu profile(s), %zu saved profile(s).\n",
+                    insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size(), savedProfiles.size());
     }
     return 0;
 }

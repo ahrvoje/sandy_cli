@@ -43,7 +43,11 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ```
 sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -p <profile>     [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -t <report>       -x <executable> [args...]
+sandy.exe --create-profile <name> -c <config.toml>  (create persistent sandbox profile)
+sandy.exe --delete-profile <name>                   (delete profile + revoke ACLs)
+sandy.exe --profile-info <name>                     (show profile details)
 sandy.exe --print-container-toml          (print default appcontainer config)
 sandy.exe --print-restricted-toml         (print default restricted config)
 sandy.exe --cleanup                       (restore stale state from crashed runs)
@@ -62,6 +66,10 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `-d <path>`, `--dump <path>` | Crash dump output path (independent of `-a`) |
 | `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log/audit/dump filenames |
 | `-t <path>`, `--trace <path>` | Trace unsandboxed run for sandbox feasibility (requires Procmon + admin) |
+| `-p <name>`, `--profile <name>` | Run with a saved profile (mutually exclusive with `-c`/`-s`) |
+| `--create-profile <name>` | Create a persistent sandbox profile with SID + ACLs from TOML config |
+| `--delete-profile <name>` | Delete a saved profile and revoke its persistent ACLs |
+| `--profile-info <name>` | Show saved profile details (type, SID, config, grants) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version |
@@ -533,6 +541,40 @@ write = ['C:\Users\H\AppData\Local\Temp']
 [privileges]
 system_dirs = true
 ```
+
+---
+
+## Profiles
+
+Sandy supports **persistent named profiles** — pre-created sandbox identities with SID and ACLs that stay on disk between runs. This eliminates grant setup/teardown overhead for repeated sandboxing of the same application.
+
+### Lifecycle
+
+1. **Create** a profile from a TOML config:
+   ```
+   sandy.exe --create-profile myapp -c myapp_config.toml
+   ```
+   Sandy generates a SID, applies all ACLs from the config, and persists everything to `HKCU\Software\Sandy\Profiles\myapp`. ACLs remain on disk permanently.
+
+2. **Run** with the profile (no config needed):
+   ```
+   sandy.exe -p myapp -x python.exe script.py
+   ```
+   Sandy reuses the stored SID and config — no ACL setup, no ACL teardown on exit. The `-p` flag is mutually exclusive with `-c`/`-s`.
+
+3. **Inspect** a profile:
+   ```
+   sandy.exe --profile-info myapp
+   ```
+
+4. **Delete** when no longer needed:
+   ```
+   sandy.exe --delete-profile myapp
+   ```
+   Revokes all persistent ACLs and removes the SID.
+
+> [!NOTE]
+> `--cleanup` does **not** delete saved profiles or their ACLs. Only `--delete-profile` removes a profile. `--status` lists all saved profiles.
 
 ---
 
