@@ -164,7 +164,7 @@ all     = ['C:\workspace']
 
 ### `[deny]` — Deny access to specific paths
 
-Block specific permissions on paths that would otherwise be accessible. Uses the same 6 access keys as `[allow]` (except `peek`). All 6 keys are required (use `[]` for none).
+Block specific permissions on paths that would otherwise be accessible. Uses the same 6 access keys as `[allow]` (except `peek`). All keys optional (default `[]`).
 
 ```toml
 [deny]
@@ -211,40 +211,40 @@ PIPELINE: sorted 3 entries by path depth:
 
 ### `[privileges]` — Permissions
 
-All keys must be explicitly set for the active mode. Omitting a key is a parse error. Wrong-mode keys are rejected.
+All keys are optional with safe defaults (shown below). Wrong-mode keys are rejected.
 
 ```toml
-# AppContainer mode — all 8 keys required:
+# AppContainer mode — defaults shown:
 [privileges]
-system_dirs     = true
-network         = false
-localhost       = false
-lan             = false
-stdin           = false
-clipboard_read  = false
-clipboard_write = false
-child_processes = true
+system_dirs     = true    # default true
+network         = false   # default false
+localhost       = false   # default false
+lan             = false   # default false
+stdin           = false   # default false (NUL)
+clipboard_read  = false   # default false
+clipboard_write = false   # default false
+child_processes = true    # default true
 
-# Restricted mode — all 5 keys required:
+# Restricted mode — defaults shown:
 [privileges]
-named_pipes     = false
-stdin           = false
-clipboard_read  = false
-clipboard_write = false
-child_processes = true
+named_pipes     = false   # default false
+stdin           = false   # default false (NUL)
+clipboard_read  = false   # default false
+clipboard_write = false   # default false
+child_processes = true    # default true
 ```
 
-| Key | Required in | Description |
-|-----|-------------|-------------|
-| `system_dirs` | appcontainer | Read access to `C:\Windows`, `Program Files` |
-| `network` | appcontainer | Outbound internet access |
-| `localhost` | appcontainer | Loopback connections (requires admin) |
-| `lan` | appcontainer | Local network access |
-| `named_pipes` | restricted | Named pipe creation (`CreateNamedPipeW`) |
-| `stdin` | both | `true` = inherit, `false` = disabled (NUL), or a file path |
-| `clipboard_read` | both | Allow reading from the clipboard |
-| `clipboard_write` | both | Allow writing to the clipboard |
-| `child_processes` | both | Allow spawning child processes (kernel-enforced) |
+| Key | Available in | Default | Description |
+|-----|-------------|---------|-------------|
+| `system_dirs` | appcontainer | `true` | Read access to `C:\Windows`, `Program Files` |
+| `network` | appcontainer | `false` | Outbound internet access |
+| `localhost` | appcontainer | `false` | Loopback connections (requires admin) |
+| `lan` | appcontainer | `false` | Local network access |
+| `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
+| `stdin` | both | `false` | `true` = inherit, `false` = disabled (NUL), or a file path |
+| `clipboard_read` | both | `false` | Allow reading from the clipboard |
+| `clipboard_write` | both | `false` | Allow writing to the clipboard |
+| `child_processes` | both | `true` | Allow spawning child processes (kernel-enforced) |
 
 #### What `system_dirs` exposes (AppContainer only)
 
@@ -275,13 +275,13 @@ write = ['HKCU\Software\MyApp\Settings']
 
 ### `[environment]` — Environment variables
 
-`inherit` must be explicitly set. When `false`, the child gets a clean environment with only essential Windows variables. Use `pass` to add specific variables.
+All keys are optional. Default: `inherit = false`, `pass = []` (clean environment with essential Windows variables).
 
 ```toml
 [environment]
 inherit = true            # pass full parent environment
 # or:
-inherit = false           # clean env + pass list
+inherit = false           # clean env + pass list (default)
 pass = ['PATH', 'PYTHONPATH', 'HOME']
 ```
 
@@ -317,30 +317,26 @@ processes = 10      # max total active processes (including main)
 | **`[sandbox]`** | 🟢 required | 🟢 required |
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
-| &ensp; `workdir` | 🟢 required (`'inherit'` or path) | 🟢 required (`'inherit'` or path) |
-| **`[allow]`** | ­­🟢 required (all 7 keys) | 🟢 required (all 7 keys) |
-| &ensp; `read` `write` `execute` `append` `delete` `all` `peek` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
-| **`[deny]`** | 🟢 required (all 6 keys) | 🟢 required (all 6 keys) |
-| &ensp; `read` `write` `execute` `append` `delete` `all` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
-| **`[privileges]`** | 🟢 required | 🟢 required |
-| &ensp; `system_dirs` | 🟢 required | 🔴 n/a |
-| &ensp; `network` | 🟢 required | 🔴 n/a |
-| &ensp; `localhost` | 🟢 required | 🔴 n/a |
-| &ensp; `lan` | 🟢 required | 🔴 n/a |
-| &ensp; `named_pipes` | 🔴 n/a | 🟢 required |
-| &ensp; `stdin` | 🟢 required | 🟢 required |
-| &ensp; `clipboard_read` | 🟢 required | 🟢 required |
-| &ensp; `clipboard_write` | 🟢 required | 🟢 required |
-| &ensp; `child_processes` | 🟢 required | 🟢 required |
-| **`[registry]`** | 🔴 n/a | 🟢 required (both keys) |
-| &ensp; `read` `write` | 🔴 n/a | 🟢 required (`[]` for none) |
-| **`[environment]`** | 🟢 required | 🟢 required |
-| &ensp; `inherit` | 🟢 required | 🟢 required |
-| &ensp; `pass` | 🟢 required (`[]` for none) | 🟢 required (`[]` for none) |
-| **`[limit]`** | 🟢 required (all 3 keys) | 🟢 required (all 3 keys) |
-| &ensp; `timeout` `memory` `processes` | 🟢 required (`0` = unlimited) | 🟢 required (`0` = unlimited) |
+| &ensp; `workdir` | 🔵 optional (default: `'inherit'`) | 🔵 optional (default: `'inherit'`) |
+| **`[allow]`** | 🔵 optional (all keys default `[]`) | 🔵 optional (all keys default `[]`) |
+| **`[deny]`** | 🔵 optional (all keys default `[]`) | 🔵 optional (all keys default `[]`) |
+| **`[privileges]`** | 🔵 optional (defaults shown) | 🔵 optional (defaults shown) |
+| &ensp; `system_dirs` | 🔵 default `true` | 🔴 n/a |
+| &ensp; `network` | 🔵 default `false` | 🔴 n/a |
+| &ensp; `localhost` | 🔵 default `false` | 🔴 n/a |
+| &ensp; `lan` | 🔵 default `false` | 🔴 n/a |
+| &ensp; `named_pipes` | 🔴 n/a | 🔵 default `false` |
+| &ensp; `stdin` | 🔵 default `false` | 🔵 default `false` |
+| &ensp; `clipboard_read` | 🔵 default `false` | 🔵 default `false` |
+| &ensp; `clipboard_write` | 🔵 default `false` | 🔵 default `false` |
+| &ensp; `child_processes` | 🔵 default `true` | 🔵 default `true` |
+| **`[registry]`** | 🔴 n/a | 🔵 optional (both keys default `[]`) |
+| **`[environment]`** | 🔵 optional | 🔵 optional |
+| &ensp; `inherit` | 🔵 default `false` | 🔵 default `false` |
+| &ensp; `pass` | 🔵 default `[]` | 🔵 default `[]` |
+| **`[limit]`** | 🔵 optional (all keys default `0`) | 🔵 optional (all keys default `0`) |
 
-🟢 required · 🔴 not available (parse error if used)
+🟢 required · 🔵 optional (safe default) · 🔴 not available (parse error if used)
 
 ---
 

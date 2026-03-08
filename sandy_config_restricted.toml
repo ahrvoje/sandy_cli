@@ -1,8 +1,8 @@
 # Sandy — Restricted Token Config Template
 # ============================================================
-# Restricted token mode uses restricting SIDs + Low integrity instead
-# of AppContainer. Use this mode when your app needs named pipe creation
-# (Flutter, Chromium, Mojo IPC frameworks).
+# Restricted token mode uses restricting SIDs + configurable integrity
+# instead of AppContainer. Use this mode when your app needs named pipe
+# creation (Flutter, Chromium, Mojo IPC frameworks).
 #
 # Trade-offs vs AppContainer:
 #   + Named pipe creation (configurable)
@@ -10,76 +10,66 @@
 #   - No network isolation (unrestricted)
 #   - No object namespace isolation (shared)
 #   - System directories always readable
+#
+# Only [sandbox] token + integrity are required. All other sections
+# are optional with safe defaults.
 
 [sandbox]
 token = 'restricted'
-integrity = 'low'        # required: 'low' or 'medium'
-workdir = 'inherit'      # required: absolute path or 'inherit' (= exe folder)
+integrity = 'low'          # required: 'low' or 'medium'
+# workdir = 'inherit'      # optional (default: exe folder)
 
 # ============================================================
-# ACCESS — File and folder grants (optional)
-# ============================================================
-# Grant the sandboxed process access to specific folders or files.
-# Use single quotes for Windows paths (no backslash escaping needed).
-
-[allow]
-peek    = []              # non-recursive: list dir + stat only (path traversal)
-read = []
-write = []
-execute = []
-append = []
-delete = []
-all = []
-
-# ============================================================
-# PERMISSIONS — All keys mandatory per mode
-# ============================================================
-# Every key must be explicitly set. Omitting a key is a parse error.
-
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-named_pipes     = false   # allow named pipe creation (CreateNamedPipeW)
-stdin           = false   # true = inherit, false = disabled (NUL), or a file path
-clipboard_read  = false   # allow reading from clipboard
-clipboard_write = false   # allow writing to clipboard
-child_processes = true    # allow spawning child processes (kernel-enforced)
-
-# NOTE: network, localhost, lan, system_dirs are not available in restricted mode.
-# Restricted tokens have no capability-based network model — network
-# access is unrestricted. System dirs are always readable via BUILTIN\Users.
-
-# ============================================================
-# REGISTRY — Registry key grants (optional, restricted only)
-# ============================================================
-# Most registry keys (HKLM\Software, HKCU) are already readable by
-# default — BUILTIN\Users is in the restricting SID list, and most
-# keys grant Users read access in their DACLs.
-# Use this section primarily to grant write access to specific keys.
-
-[registry]
-read = []
-write = []
-
-# ============================================================
-# ENVIRONMENT — inherit is mandatory
+# ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
 
-[environment]
-inherit = true                            # required: true or false
-pass = []                                 # required: [] or ['PATH', 'PYTHONPATH']
+# [allow]
+# peek    = []              # non-recursive: list dir + stat only
+# read    = []              # read files, list dirs (recursive)
+# write   = []              # create/modify files (recursive)
+# execute = []              # read + execute (recursive)
+# append  = []              # append only (recursive)
+# delete  = []              # delete only (recursive)
+# all     = []              # full access (recursive)
+
+# [deny]                    # optional, default: no denies
 
 # ============================================================
-# RESOURCE LIMITS — all keys required (0 = unlimited)
+# PRIVILEGES — Optional, safe defaults shown
 # ============================================================
 
-[limit]
-timeout = 0        # 0 = no timeout, positive = kill after N seconds
-memory = 0         # 0 = no cap, positive = limit in MB
-processes = 0      # 0 = no cap, positive = max active processes
+# [privileges]
+# named_pipes     = false   # default false: no named pipe creation
+# stdin           = false   # default false (NUL). true=inherit, path=file
+# clipboard_read  = false   # default false
+# clipboard_write = false   # default false
+# child_processes = true    # default true
+
+# NOTE: network, localhost, lan, system_dirs are not available in
+# restricted mode. Network is always unrestricted, system dirs are
+# always readable via BUILTIN\Users.
+
+# ============================================================
+# REGISTRY — Registry key grants (optional, default: no grants)
+# ============================================================
+
+# [registry]
+# read = ['HKCU\Software\MyApp']
+# write = ['HKCU\Software\MyApp\Settings']
+
+# ============================================================
+# ENVIRONMENT — Optional, default: filtered
+# ============================================================
+
+# [environment]
+# inherit = false            # default false (clean environment)
+# pass = []                  # default [] (pass no extra variables)
+
+# ============================================================
+# RESOURCE LIMITS — Optional, default: unlimited (0)
+# ============================================================
+
+# [limit]
+# timeout = 0               # 0 = no timeout
+# memory = 0                # 0 = no cap (MB)
+# processes = 0             # 0 = no cap

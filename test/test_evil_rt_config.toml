@@ -14,15 +14,9 @@
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
-workdir = 'inherit'
 
 [allow]
-peek    = []
-execute = []
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_evil\scripts']
-write = []
-append = []
-delete = []
 all = ['C:\Users\H\test_evil\arena']
 
 [deny]
@@ -32,27 +26,8 @@ all = [
     'C:\Users\H\test_evil\arena\CaseSensitive',
 ]
 write = ['C:\Users\H\test_evil\arena\records']
-read = []
-execute = []
-append = []
-delete = []
-
-[privileges]
-named_pipes = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
-child_processes = true
-
-[registry]
-read = []
-write = []
-
 [environment]
 inherit = true
-pass = []
 
 [limit]
 timeout = 60
-memory = 0
-processes = 0

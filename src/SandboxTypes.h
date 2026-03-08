@@ -184,18 +184,18 @@ namespace Sandbox {
         std::vector<FolderEntry> folders;
         std::vector<FolderEntry> denyFolders;  // [deny] — DENY ACEs
 
-        // [privileges] — sandbox capabilities (all keys mandatory per mode)
+        // [privileges] — sandbox capabilities (optional, defaults shown)
         bool allowNetwork    = false;
         bool allowLocalhost  = false;
         bool allowLan        = false;
-        bool allowSystemDirs = false;
+        bool allowSystemDirs = true;   // default true: most programs need DLLs from system dirs
         bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
 
         // stdin control: "NUL" = disabled, empty/true = inherit, path = file
         std::wstring stdinMode = L"NUL";
         bool allowClipboardRead  = false;
         bool allowClipboardWrite = false;
-        bool allowChildProcesses = false;
+        bool allowChildProcesses = true;  // default true: most programs spawn child processes
 
         // [registry] — registry key grants (restricted mode only)
         std::vector<std::wstring> registryRead;

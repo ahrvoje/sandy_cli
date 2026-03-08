@@ -5,41 +5,15 @@
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
-workdir = 'inherit'
 
 [allow]
-peek    = []
-execute = []
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_mixed\scripts']
-write = []
-append = []
-delete = []
 all = ['C:\Users\H\test_mixed\shared']
 
 [deny]
-read    = []
 write   = ['C:\Users\H\test_mixed\shared\protected']
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-named_pipes = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
-child_processes = true
-
-[registry]
-read = []
-write = []
-
 [environment]
 inherit = true
-pass = []
 
 [limit]
 timeout = 30
-memory = 0
-processes = 0

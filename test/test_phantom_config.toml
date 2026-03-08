@@ -3,40 +3,17 @@
 
 [sandbox]
 token = 'appcontainer'
-workdir = 'inherit'
 
 [allow]
-peek    = []
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_phantom\scripts']
-write = []
-append = []
-delete = []
 all = ['C:\Users\H\test_phantom\arena']
 
 [deny]
 all = ['C:\Users\H\test_phantom\arena\forbidden']
 write = ['C:\Users\H\test_phantom\arena\readonly']
-read = []
-execute = []
-append = []
-delete = []
 
 [privileges]
-system_dirs = true
-network = false
-localhost = false
-lan = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
 child_processes = false
-
-[environment]
-inherit = false
-pass = []
-
 [limit]
 timeout = 90
-memory = 0
-processes = 0

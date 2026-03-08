@@ -4,8 +4,9 @@
 #   sandy_config_appcontainer.toml  — AppContainer mode
 #   sandy_config_restricted.toml    — Restricted Token mode
 #
-# All sandbox settings are defined here.
-# All [privileges] keys are mandatory and must be set explicitly.
+# Only [sandbox] token is required. All other sections/keys are
+# optional with safe defaults (deny-all / disabled / unlimited).
+# Omitting a field never grants more access.
 
 # ============================================================
 # SANDBOX MODE (required)
@@ -14,73 +15,65 @@
 [sandbox]
 token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # integrity = 'low'        # required (restricted only): 'low' or 'medium'
-workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
+# workdir = 'inherit'      # optional (default: exe folder)
 
 # ============================================================
-# ACCESS — File and folder grants
+# ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
 [allow]
-peek    = []              # non-recursive: list dir + stat only (path traversal)
-read = []
+# peek    = []              # non-recursive: list dir + stat only (path traversal)
 # read = [
 #     'C:\data\config.json',          # single file
 #     'C:\Python314',                 # entire folder (recursive)
 # ]
-write = []
-execute = []
-append = []
-delete = []
-all = []
+# write = []
+# execute = []
+# append = []
+# delete = []
+# all = []
+
+# [deny]                    # optional, default: no denies
 
 # ============================================================
-# PERMISSIONS — All keys mandatory per mode
+# PRIVILEGES — Optional, safe defaults shown
 # ============================================================
-# AppContainer: system_dirs, network, localhost, lan, stdin, clipboard_read, clipboard_write, child_processes
-# Restricted:   named_pipes, stdin, clipboard_read, clipboard_write, child_processes
+# AppContainer: system_dirs, network, localhost, lan, stdin, clipboard_*, child_processes
+# Restricted:   named_pipes, stdin, clipboard_*, child_processes
 
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-system_dirs = true   # read C:\Windows, Program Files (appcontainer only)
-network = false      # outbound internet access            (appcontainer only)
-localhost = false    # loopback connections (admin required) (appcontainer only)
-lan = false          # local network access                (appcontainer only)
-# named_pipes = false  # named pipe creation                 (restricted only)
-stdin = false        # true = inherit, false = NUL           (both modes)
-clipboard_read = false
-clipboard_write = false
-child_processes = true
+# [privileges]
+# system_dirs = true         # default true  (appcontainer only)
+# network = false            # default false (appcontainer only)
+# localhost = false           # default false (appcontainer only)
+# lan = false                # default false (appcontainer only)
+# named_pipes = false        # default false (restricted only)
+# stdin = false              # default false (NUL)
+# clipboard_read = false     # default false
+# clipboard_write = false    # default false
+# child_processes = true     # default true
 
 # ============================================================
-# REGISTRY — Registry key grants (restricted only)
+# REGISTRY — Registry key grants (restricted only, optional)
 # ============================================================
 # [registry]
 # read = ['HKCU\Software\MyApp']
 # write = ['HKCU\Software\MyApp\Settings']
 
 # ============================================================
-# ENVIRONMENT — Control inherited variables
-# ============================================================
-# All settings are mandatory. No optional/hidden defaults.
-
-[environment]
-inherit = true                            # required: true or false
-pass = []                                 # required: [] or ['PATH', 'PYTHONPATH']
-
-# ============================================================
-# RESOURCE LIMITS — all keys required (0 = unlimited)
+# ENVIRONMENT — Optional, defaults to filtered
 # ============================================================
 
-[limit]
-timeout = 0        # 0 = no timeout, positive = kill after N seconds
-memory = 0         # 0 = no cap, positive = limit in MB
-processes = 0      # 0 = no cap, positive = max active processes
+# [environment]
+# inherit = false            # default false (clean environment)
+# pass = []                  # default [] (pass no extra variables)
+
+# ============================================================
+# RESOURCE LIMITS — Optional, defaults to unlimited (0)
+# ============================================================
+
+# [limit]
+# timeout = 0               # 0 = no timeout, positive = kill after N seconds
+# memory = 0                # 0 = no cap, positive = limit in MB
+# processes = 0             # 0 = no cap, positive = max active processes

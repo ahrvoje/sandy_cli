@@ -63,7 +63,7 @@ REM Test 3: Stale Grants entry detected by --status
 REM ===================================================================
 echo.
 echo --- Test 3: Stale grant detection ---
-reg add "HKCU\Software\Sandy\Test\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
 "!SANDY!" --status >"%TEMP%\sandy_status_warn.txt" 2>nul
 
 findstr /C:"STALE" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
@@ -90,7 +90,7 @@ REM Test 4: --cleanup clears stale Grants
 REM ===================================================================
 echo.
 echo --- Test 4: --cleanup clears stale grants ---
-reg query "HKCU\Software\Sandy\Test\Grants\99999" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\99999" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale grants key exists before cleanup
     set /a PASS+=1
@@ -101,7 +101,7 @@ if !ERRORLEVEL! EQU 0 (
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\99999" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Grants key removed after --cleanup
     set /a PASS+=1
@@ -115,7 +115,7 @@ REM Test 5: Stale WER entry detected and --cleanup clears it
 REM ===================================================================
 echo.
 echo --- Test 5: Stale WER detection and cleanup ---
-reg add "HKCU\Software\Sandy\Test\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
 "!SANDY!" --status >"%TEMP%\sandy_wer_status.txt" 2>nul
 
 findstr /C:"WER" "%TEMP%\sandy_wer_status.txt" >nul 2>nul
@@ -130,7 +130,7 @@ del "%TEMP%\sandy_wer_status.txt" 2>nul
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
+reg query "HKCU\Software\Sandy\WER" /v 88888 >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] WER key removed after --cleanup
     set /a PASS+=1

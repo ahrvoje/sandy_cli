@@ -28,15 +28,10 @@
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
-workdir = 'inherit'
 
 [allow]
-peek    = []
 execute = ['C:\Users\H\test_deep\scripts']
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
-write = []
-append = []
-delete = []
 all = ['C:\Users\H\test_deep\app']
 
 [deny]
@@ -44,25 +39,8 @@ write   = ['C:\Users\H\test_deep\app\src\core']
 all     = ['C:\Users\H\test_deep\app\src\contrib']
 read    = ['C:\Users\H\test_deep\app\docs\classified', 'C:\Users\H\test_deep\library\experimental']
 execute = ['C:\Users\H\test_deep\scripts\restricted']
-append  = []
-delete  = []
-
-[privileges]
-named_pipes = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
-child_processes = true
-
-[registry]
-read = []
-write = []
-
 [environment]
 inherit = true
-pass = []
 
 [limit]
 timeout = 60
-memory = 0
-processes = 0

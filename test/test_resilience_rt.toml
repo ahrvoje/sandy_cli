@@ -7,38 +7,6 @@ integrity = 'low'
 workdir = 'C:\Users\H'
 
 [allow]
-peek    = []
 read    = ['C:\Users\H']
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-named_pipes     = false
-stdin           = false
-clipboard_read  = false
-clipboard_write = false
-child_processes = true
-
-[registry]
-read  = []
-write = []
-
 [environment]
 inherit = true
-pass    = []
-
-[limit]
-timeout   = 0
-memory    = 0
-processes = 0

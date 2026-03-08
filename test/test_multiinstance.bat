@@ -48,11 +48,11 @@ REM TEST 1: Overlapping grants — both instances have access
 REM =====================================================================
 echo [TEST 1] Overlapping grants — both instances accessing same folder
 echo   Starting instance A (wait=15s)...
-start "" /b "%SANDY%" -c "%TEST%multiinstance_a.toml" -l "%ROOT%\log_a.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" a 15 "%ROOT%\shared"
+start "" /b cmd /c ""%SANDY%" -c "%TEST%multiinstance_a.toml" -l "%ROOT%\log_a.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" a 15 "%ROOT%\shared" > "%ROOT%\out_a.txt" 2>&1"
 ping -n 8 127.0.0.1 >nul
 
 echo   Starting instance B (wait=5s)...
-start "" /b "%SANDY%" -c "%TEST%multiinstance_b.toml" -l "%ROOT%\log_b.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" b 5 "%ROOT%\shared"
+start "" /b cmd /c ""%SANDY%" -c "%TEST%multiinstance_b.toml" -l "%ROOT%\log_b.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" b 5 "%ROOT%\shared" > "%ROOT%\out_b.txt" 2>&1"
 ping -n 6 127.0.0.1 >nul
 
 REM Both should be running now
@@ -109,18 +109,18 @@ if !ERRORLEVEL! EQU 0 (
 echo.
 
 REM Check A's log for post-wait verification
-if exist "%ROOT%\log_a.txt" (
-    findstr /c:"POST-WAIT READ seed -> OK" "%ROOT%\log_a.txt" >nul 2>nul
+if exist "%ROOT%\out_a.txt" (
+    findstr /c:"POST-WAIT READ seed -> OK" "%ROOT%\out_a.txt" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
         echo   [PASS] Instance A retained read access after B exited
     ) else (
         echo   [FAIL] Instance A lost read access when B exited!
-        echo   --- log_a.txt excerpt: ---
-        findstr /c:"[a]" "%ROOT%\log_a.txt"
+        echo   --- out_a.txt excerpt: ---
+        findstr /c:"[a]" "%ROOT%\out_a.txt"
         set /a ERRORS+=1
     )
 
-    findstr /c:"POST-WAIT WRITE marker -> OK" "%ROOT%\log_a.txt" >nul 2>nul
+    findstr /c:"POST-WAIT WRITE marker -> OK" "%ROOT%\out_a.txt" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
         echo   [PASS] Instance A retained write access after B exited
     ) else (
@@ -128,7 +128,7 @@ if exist "%ROOT%\log_a.txt" (
         set /a ERRORS+=1
     )
 ) else (
-    echo   [FAIL] log_a.txt not found — instance A may not have started
+    echo   [FAIL] out_a.txt not found — instance A may not have started
     set /a ERRORS+=1
 )
 echo.

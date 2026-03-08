@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy — a lightweight Windows sandbox runner. Run any executable in an isolated sandbox with fine-grained file, folder, and network access control. No VMs, no Docker, no elevation required.">
+  <title>Sandy — Lightweight Windows Sandbox Runner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ── Reset & Base ──────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary:   #0a0e17;
+      --bg-secondary: #111827;
+      --bg-card:      rgba(17, 24, 39, 0.65);
+      --bg-glass:     rgba(255, 255, 255, 0.04);
+      --border-glass: rgba(255, 255, 255, 0.08);
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted:   #64748b;
+      --accent:       #38bdf8;
+      --accent-glow:  rgba(56, 189, 248, 0.25);
+      --accent2:      #a78bfa;
+      --accent3:      #34d399;
+      --accent4:      #fb923c;
+      --danger:       #f87171;
+      --radius:       12px;
+      --radius-lg:    20px;
+      --shadow-card:  0 4px 24px rgba(0,0,0,0.35);
+      --transition:   0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+
+    /* ── Background Gradient Blobs ─────────────── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 600px 600px at 15% 10%, rgba(56,189,248,0.08), transparent),
+        radial-gradient(ellipse 500px 500px at 85% 30%, rgba(167,139,250,0.07), transparent),
+        radial-gradient(ellipse 400px 400px at 50% 80%, rgba(52,211,153,0.06), transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ──────────────────────────────── */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 0 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    section {
+      padding: 80px 0;
+    }
+
+    section + section {
+      border-top: 1px solid var(--border-glass);
+    }
+
+    /* ── Header ──────────────────────────────── */
+    .hero {
+      text-align: center;
+      padding: 100px 0 80px;
+    }
+
+    .hero-logo {
+      width: 280px;
+      max-width: 60vw;
+      margin-bottom: 32px;
+      filter: drop-shadow(0 0 40px var(--accent-glow));
+      animation: float 6s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-12px); }
+    }
+
+    h1 {
+      font-size: clamp(2.2rem, 5vw, 3.4rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, var(--text-primary) 0%, var(--accent) 50%, var(--accent2) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-sub {
+      font-size: 1.15rem;
+      color: var(--text-secondary);
+      max-width: 640px;
+      margin: 0 auto 40px;
+      font-weight: 400;
+    }
+
+    .hero-badges {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 500;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-secondary);
+      backdrop-filter: blur(8px);
+    }
+
+    .badge .icon { font-size: 1rem; }
+
+    /* ── Section Headings ────────────────────── */
+    h2 {
+      font-size: 1.9rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+
+    h2 .accent { color: var(--accent); }
+
+    .section-lead {
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      margin-bottom: 40px;
+      max-width: 700px;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: var(--text-primary);
+    }
+
+    /* ── Cards ────────────────────────────────── */
+    .card-grid {
+      display: grid;
+      gap: 20px;
+    }
+
+    .card-grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card-grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 28px;
+      backdrop-filter: blur(16px);
+      box-shadow: var(--shadow-card);
+      transition: transform var(--transition), border-color var(--transition), box-shadow var(--transition);
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: rgba(56, 189, 248, 0.2);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(56,189,248,0.1);
+    }
+
+    .card-icon {
+      font-size: 2rem;
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .card h3 { margin-bottom: 8px; }
+
+    .card p {
+      color: var(--text-secondary);
+      font-size: 0.92rem;
+      line-height: 1.65;
+    }
+
+    /* ── Feature Rows ────────────────────────── */
+    .feature-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 40px;
+      align-items: center;
+      margin-bottom: 60px;
+    }
+
+    .feature-row.reverse .feature-visual { order: -1; }
+
+    .feature-text h3 {
+      font-size: 1.3rem;
+      margin-bottom: 12px;
+    }
+
+    .feature-text p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      margin-bottom: 12px;
+    }
+
+    .feature-visual {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 24px;
+      backdrop-filter: blur(16px);
+    }
+
+    @media (max-width: 700px) {
+      .feature-row {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+      .feature-row.reverse .feature-visual { order: 0; }
+    }
+
+    /* ── Code Blocks ─────────────────────────── */
+    pre, code {
+      font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+    }
+
+    pre {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.7;
+      color: var(--text-secondary);
+    }
+
+    code {
+      background: rgba(56, 189, 248, 0.1);
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 0.88em;
+      color: var(--accent);
+    }
+
+    pre code {
+      background: none;
+      padding: 0;
+      border-radius: 0;
+      color: inherit;
+    }
+
+    .code-comment { color: var(--text-muted); }
+    .code-keyword { color: var(--accent2); }
+    .code-string  { color: var(--accent3); }
+    .code-flag    { color: var(--accent); }
+
+    /* ── Tables ───────────────────────────────── */
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-glass);
+      margin: 20px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      padding: 12px 18px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    th {
+      background: rgba(56, 189, 248, 0.06);
+      font-weight: 600;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    td { color: var(--text-secondary); }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    /* ── Callout ──────────────────────────────── */
+    .callout {
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin: 24px 0;
+      border-left: 3px solid;
+      font-size: 0.92rem;
+      line-height: 1.65;
+    }
+
+    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
+    .callout.success { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+    .callout.danger  { border-color: var(--danger);  background: rgba(248,113,113,0.06); }
+
+    .callout-title {
+      font-weight: 600;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .callout p { color: var(--text-secondary); }
+
+    /* ── Numbered Steps ───────────────────────── */
+    .steps {
+      list-style: none;
+      counter-reset: step;
+      padding: 0;
+    }
+
+    .steps li {
+      counter-increment: step;
+      position: relative;
+      padding-left: 56px;
+      margin-bottom: 32px;
+    }
+
+    .steps li::before {
+      content: counter(step);
+      position: absolute;
+      left: 0; top: 0;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: var(--bg-primary);
+      font-weight: 700;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .steps li h3 { margin-bottom: 6px; }
+    .steps li p { color: var(--text-secondary); font-size: 0.93rem; }
+
+    /* ── Tags / Pills ────────────────────────── */
+    .tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .tag.ac   { background: rgba(56,189,248,0.15); color: var(--accent); }
+    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .tag.both { background: rgba(52,211,153,0.15); color: var(--accent3); }
+
+    /* ── Divider / Deco ──────────────────────── */
+    .divider {
+      width: 60px;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 2px;
+      margin-bottom: 32px;
+    }
+
+    /* ── Nav ──────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(10, 14, 23, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-glass);
+    }
+
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+    }
+
+    .nav-brand {
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: var(--text-primary);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 4px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 8px;
+      transition: color var(--transition), background var(--transition);
+    }
+
+    .nav-links a:hover {
+      color: var(--text-primary);
+      background: var(--bg-glass);
+    }
+
+    @media (max-width: 700px) {
+      .nav-links { display: none; }
+    }
+
+    /* ── Footer ──────────────────────────────── */
+    footer {
+      padding: 40px 0;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    /* ── Scroll Animations ───────────────────── */
+    .fade-in {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+    }
+
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    /* ── Quick-start bar ─────────────────────── */
+    .quickstart {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 24px 28px;
+      backdrop-filter: blur(16px);
+      margin-top: 8px;
+    }
+
+    .quickstart pre {
+      border: none;
+      background: transparent;
+      padding: 0;
+      margin: 0;
+    }
+
+    /* ── Pipeline Diagram ────────────────────── */
+    .pipeline {
+      display: flex;
+      gap: 0;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin: 24px 0;
+    }
+
+    .pipeline-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px 20px;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      min-width: 100px;
+      position: relative;
+      transition: background var(--transition);
+    }
+
+    .pipeline-stage:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+    .pipeline-stage:last-child  { border-radius: 0 var(--radius) var(--radius) 0; }
+
+    .pipeline-stage:hover { background: rgba(56,189,248,0.06); }
+
+    .pipeline-stage .num {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 4px;
+    }
+
+    .pipeline-stage .name {
+      font-weight: 600;
+      font-size: 0.88rem;
+    }
+
+    .pipeline-stage .desc {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+      text-align: center;
+    }
+
+    .pipeline-arrow {
+      display: flex;
+      align-items: center;
+      color: var(--text-muted);
+      font-size: 1.2rem;
+      padding: 0 2px;
+    }
+
+    @media (max-width: 600px) {
+      .pipeline { flex-direction: column; align-items: stretch; }
+      .pipeline-stage { border-radius: 0 !important; }
+      .pipeline-stage:first-child { border-radius: var(--radius) var(--radius) 0 0 !important; }
+      .pipeline-stage:last-child  { border-radius: 0 0 var(--radius) var(--radius) !important; }
+      .pipeline-arrow { justify-content: center; transform: rotate(90deg); padding: 4px 0; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════ NAV ═══════════════════ -->
+<nav>
+  <div class="container">
+    <a href="#" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="#motivation">Motivation</a></li>
+      <li><a href="#use-cases">Use Cases</a></li>
+      <li><a href="#how-it-works">How It Works</a></li>
+      <li><a href="#acl">ACL</a></li>
+      <li><a href="#resilience">Resilience</a></li>
+      <li><a href="#safety">Safety</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ═══════════════════ HERO ══════════════════ -->
+<header class="hero">
+  <div class="container">
+    <img src="../resources/sandy_logo.png" alt="Sandy" class="hero-logo">
+    <p class="hero-sub">
+      A lightweight Windows sandbox runner. Run any executable in an isolated, kernel-enforced
+      sandbox with fine-grained file, folder, and network access control — no VMs, no Docker,
+      no elevation required.
+    </p>
+    <div class="hero-badges">
+      <span class="badge"><span class="icon">⚡</span> Single native executable</span>
+      <span class="badge"><span class="icon">🔒</span> Kernel-enforced isolation</span>
+      <span class="badge"><span class="icon">📁</span> Granular ACL control</span>
+      <span class="badge"><span class="icon">🧹</span> Self-healing cleanup</span>
+    </div>
+
+    <div class="quickstart" style="margin-top: 40px; text-align: left;">
+      <pre><code><span class="code-comment"># Risky operation: cleaning a test folder — one wrong path</span>
+<span class="code-comment"># and your entire project is gone. Sandy makes it safe:</span>
+
+<span class="code-flag">sandy.exe</span> -c cleanup.toml -x cmd.exe /c <span class="code-string">"del /s /q * &amp;&amp; rd /s /q ."</span>
+
+<span class="code-comment"># cleanup.toml — only 6 lines needed:</span>
+<span class="code-keyword">[sandbox]</span>
+token = <span class="code-string">'appcontainer'</span>
+workdir = <span class="code-string">'C:\project\test\output'</span>
+<span class="code-keyword">[allow]</span>
+all = [<span class="code-string">'C:\project\test\output'</span>]  <span class="code-comment"># nothing else is reachable</span>
+<span class="code-keyword">[limit]</span>
+timeout = 30
+
+<span class="code-comment"># Everything else defaults to deny-all / disabled.</span>
+<span class="code-comment"># Your project, profile, and system files are kernel-protected.</span></code></pre>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════════ MOTIVATION ════════════ -->
+<section id="motivation">
+  <div class="container fade-in">
+    <div class="divider"></div>
+
+    <div class="card-grid cols-2">
+      <div class="card">
+        <span class="card-icon">⚡</span>
+        <h3>Too fast to skip</h3>
+        <p>
+          VMs take minutes to boot. Windows Sandbox needs Hyper-V. OS-level isolation is overkill
+          when you just need to run a quick script safely. Sandy is instant — a single native
+          <code>sandy.exe</code>, no runtime, no setup, no waiting.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🏢</span>
+        <h3>Works without admin</h3>
+        <p>
+          In locked-down corporate environments, Hyper-V, Windows Sandbox, and even VMs may be
+          disabled by policy — you only own the user domain with no elevation. Sandy runs entirely
+          in user-space using unprivileged Windows APIs. No admin, no GPO exceptions needed.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🛡️</span>
+        <h3>Kernel-enforced boundaries</h3>
+        <p>
+          Sandy doesn't <em>simulate</em> isolation — it leverages the same kernel-level security mechanisms
+          that protect UWP apps and Microsoft Edge. Access decisions are made by the Windows kernel, not by Sandy.
+        </p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ USE CASES ═════════════ -->
+<section id="use-cases">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Primary <span class="accent">Use Cases</span></h2>
+    <p class="section-lead">
+      Sandy is built for situations where you need to run code but can't fully trust
+      what it might do to your system.
+    </p>
+
+    <div class="card-grid cols-3">
+      <div class="card">
+        <span class="card-icon">💥</span>
+        <h3>Risky cleanup operations</h3>
+        <p>
+          Commands like <code>rm -rf *</code>, recursive deletes, or batch file mutations are one typo
+          away from disaster. Sandy constrains the blast radius — the process can only touch paths you
+          explicitly allow.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🤖</span>
+        <h3>Agentic tools &amp; workflows</h3>
+        <p>
+          AI agents that call tools, write files, and execute code need guardrails.
+          Sandy gives each agent invocation its own sandbox with precise permissions —
+          read the project, write to output, deny everything else.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🧠</span>
+        <h3>Autonomous agentic work</h3>
+        <p>
+          Long-running autonomous agents produce unpredictable filesystem activity. Sandy
+          provides durable sandboxing that survives agent crashes, restarts, and multi-hour
+          execution — with full auditability via session logs.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">📦</span>
+        <h3>Untrusted applications</h3>
+        <p>
+          Downloaded executables, third-party scripts, npm packages running post-install hooks —
+          run them sandboxed first. Sandy blocks access to your profile, secrets, and system unless
+          explicitly granted.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🔬</span>
+        <h3>Security research &amp; testing</h3>
+        <p>
+          Analyze malware behavior, test exploit payloads, or audit application resource usage
+          with Sandy's Procmon-backed audit logging. Trace mode generates a sandboxability report
+          for any executable.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">⚙️</span>
+        <h3>CI/CD &amp; automation pipelines</h3>
+        <p>
+          Run build steps, test suites, and deployment scripts with least-privilege filesystem access.
+          Sandy's TOML configs are version-controllable and its exit codes follow POSIX conventions
+          for clean integration.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ HOW IT WORKS ══════════ -->
+<section id="how-it-works">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>How It <span class="accent">Works</span></h2>
+    <p class="section-lead">
+      Sandy reads your TOML configuration, creates an isolated security context, grants precisely the
+      permissions you specify, launches your process, and restores everything on exit.
+    </p>
+
+    <!-- Pipeline -->
+    <h3 style="margin-bottom: 16px;">Execution Pipeline</h3>
+    <div class="pipeline">
+      <div class="pipeline-stage">
+        <span class="num">Phase 1</span>
+        <span class="name">Setup</span>
+        <span class="desc">Create sandbox identity</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage">
+        <span class="num">Phase 2</span>
+        <span class="name">Grant</span>
+        <span class="desc">Apply ACL pipeline</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage">
+        <span class="num">Phase 3</span>
+        <span class="name">Prepare</span>
+        <span class="desc">Build token &amp; env</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage">
+        <span class="num">Phase 4</span>
+        <span class="name">Launch</span>
+        <span class="desc">Start child process</span>
+      </div>
+      <span class="pipeline-arrow">→</span>
+      <div class="pipeline-stage">
+        <span class="num">Phase 5</span>
+        <span class="name">Cleanup</span>
+        <span class="desc">Restore all state</span>
+      </div>
+    </div>
+
+    <!-- Two modes -->
+    <h3 style="margin-top: 48px; margin-bottom: 24px;">Two Isolation Modes</h3>
+    <div class="card-grid cols-2">
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+          <span class="tag ac">AppContainer</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">AC mode</span>
+        </div>
+        <p>
+          Uses the same kernel-level isolation as UWP apps and Microsoft Edge. Each instance gets
+          a <strong>unique AppContainer SID</strong> (<code>S-1-15-2-*</code>) derived from a UUID-based
+          profile name.
+        </p>
+        <ul style="margin-top: 12px; padding-left: 20px; color: var(--text-secondary); font-size: 0.9rem;">
+          <li>Isolated object namespace — invisible to other processes</li>
+          <li>Configurable network isolation (internet, LAN, localhost)</li>
+          <li><code>system_dirs</code> controls access to Windows &amp; Program Files</li>
+          <li>Private registry hive — no host registry access</li>
+          <li>DENY implemented via allow-mask reduction (not DENY ACEs)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+          <span class="tag rt">Restricted Token</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">RT mode</span>
+        </div>
+        <p>
+          Creates a restricted token with a <strong>unique per-instance SID</strong>
+          (<code>S-1-9-*</code>) under the Resource Manager authority. Supports configurable
+          integrity level — <code>low</code> or <code>medium</code>.
+        </p>
+        <ul style="margin-top: 12px; padding-left: 20px; color: var(--text-secondary); font-size: 0.9rem;">
+          <li>Real <code>DENY_ACCESS</code> ACEs — kernel evaluates deny-before-allow</li>
+          <li>Named pipe support (Flutter, Chromium, Mojo IPC)</li>
+          <li>COM/RPC server access for complex applications</li>
+          <li>Configurable registry grants (<code>[registry]</code> section)</li>
+          <li>Medium integrity for wider app compatibility</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout info" style="margin-top: 32px;">
+      <div class="callout-title">💡 Choosing a mode</div>
+      <p>
+        <strong>Use AppContainer</strong> when you need network isolation and don't require named pipes or COM.<br>
+        <strong>Use Restricted Token</strong> when the sandboxed app needs named pipes, COM/RPC, or medium integrity
+        for broader compatibility.
+      </p>
+    </div>
+
+    <!-- Per-instance SIDs -->
+    <h3 style="margin-top: 48px; margin-bottom: 12px;">Per-Instance Isolation</h3>
+    <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 20px;">
+      Every Sandy instance generates a UUID at startup and derives a <strong>unique SID</strong> for all ACL operations.
+      This is the foundation of multi-instance safety:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Aspect</th><th>AppContainer</th><th>Restricted Token</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Instance SID</td>
+            <td><code>S-1-15-2-*</code> (from profile name)</td>
+            <td><code>S-1-9-*</code> (from GUID)</td>
+          </tr>
+          <tr>
+            <td>Grant scope</td>
+            <td>Per-instance — isolated ACEs</td>
+            <td>Per-instance — isolated ACEs</td>
+          </tr>
+          <tr>
+            <td>Cleanup scope</td>
+            <td>Own ACEs only — zero interference</td>
+            <td>Own ACEs only — zero interference</td>
+          </tr>
+          <tr>
+            <td>Registry tracking</td>
+            <td colspan="2"><code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ ACL MANAGEMENT ════════ -->
+<section id="acl">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>ACL <span class="accent">Management</span></h2>
+    <p class="section-lead">
+      Sandy manages Windows DACLs at the ACE level — adding individual Access Control Entries on grant,
+      removing them on cleanup. This is fundamentally different from snapshot-based DACL restoration,
+      which races fatally with concurrent instances.
+    </p>
+
+    <!-- Permission table -->
+    <h3 style="margin-bottom: 16px;">Permission Levels</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Level</th><th>Config Key</th><th>What It Grants</th><th>Key Restriction</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Peek</strong></td><td><code>peek</code></td><td>List + stat a single directory</td><td>Non-recursive — directory only</td></tr>
+          <tr><td><strong>Read</strong></td><td><code>read</code></td><td>Read files, list directories</td><td>No <code>FILE_EXECUTE</code> — can't load DLLs</td></tr>
+          <tr><td><strong>Write</strong></td><td><code>write</code></td><td>Create and modify files</td><td>No read — write-blind</td></tr>
+          <tr><td><strong>Execute</strong></td><td><code>execute</code></td><td>Read + execute</td><td>Standard <code>(RX)</code> — for running programs</td></tr>
+          <tr><td><strong>Append</strong></td><td><code>append</code></td><td>Append data to files</td><td>No overwrite, no read</td></tr>
+          <tr><td><strong>Delete</strong></td><td><code>delete</code></td><td>Delete files and directories</td><td>No read, no write</td></tr>
+          <tr><td><strong>All</strong></td><td><code>all</code></td><td>Full data control</td><td>No <code>WRITE_DAC</code>, <code>WRITE_OWNER</code>, <code>FILE_DELETE_CHILD</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warning">
+      <div class="callout-title">⚠️ Permissions are independent</div>
+      <p>
+        <code>write</code> does <strong>not</strong> grant <code>read</code>, and <code>read</code> does
+        <strong>not</strong> grant <code>execute</code>. Grant each explicitly, or use <code>all</code>.
+        Directories with executables (Python, Node) need <code>execute</code>, not <code>read</code>.
+      </p>
+    </div>
+
+    <!-- Deny mechanics -->
+    <h3 style="margin-top: 40px;">Deny Mechanics — Mode-Aware Hybrid</h3>
+    <div class="card-grid cols-2" style="margin-top: 16px;">
+      <div class="card">
+        <span class="tag rt" style="margin-bottom: 12px;">Restricted Token</span>
+        <p>
+          Uses real <code>DENY_ACCESS</code> ACEs. The Windows kernel evaluates DENY before ALLOW
+          as expected — straightforward and reliable.
+        </p>
+      </div>
+      <div class="card">
+        <span class="tag ac" style="margin-bottom: 12px;">AppContainer</span>
+        <p>
+          The kernel <strong>ignores</strong> DENY ACEs for AppContainer SIDs. Sandy implements deny
+          via <strong>allow-mask reduction</strong> — reading the existing ALLOW ACE, subtracting the
+          denied bits (preserving shared bits like <code>SYNCHRONIZE</code>), and writing back a reduced
+          mask with <code>PROTECTED_DACL</code> to break inheritance.
+        </p>
+      </div>
+    </div>
+
+    <!-- Depth-sorted pipeline -->
+    <h3 style="margin-top: 40px;">Depth-Sorted Pipeline — Allow Inside Deny</h3>
+    <p style="color: var(--text-secondary); font-size: 0.93rem; margin-bottom: 16px;">
+      Sandy supports carving out allowed subtrees from within denied areas. All allow and deny entries
+      are merged into a single pipeline, sorted by path depth. The most specific (deepest) path always wins:
+    </p>
+    <pre><code><span class="code-comment"># Config: deny all of C:\repos, but allow C:\repos\snipps</span>
+<span class="code-keyword">[deny]</span>
+<span class="code-string">all</span> = [<span class="code-string">'C:\repos'</span>]
+
+<span class="code-keyword">[allow]</span>
+<span class="code-string">all</span>  = [<span class="code-string">'C:\repos\snipps'</span>]
+<span class="code-string">peek</span> = [<span class="code-string">'C:\repos'</span>]         <span class="code-comment"># list the repos dir itself</span>
+
+<span class="code-comment"># Pipeline execution log:</span>
+PIPELINE: sorted 3 entries by path depth:
+    DENY  [ALL    ] C:\repos
+    ALLOW [PEEK   ] C:\repos            &lt;- strip deny (dir only)
+    ALLOW [ALL    ] C:\repos\snipps     &lt;- strip deny (subtree)</code></pre>
+  </div>
+</section>
+
+<!-- ═══════════════════ RESILIENCE ════════════ -->
+<section id="resilience">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Crash <span class="accent">Resilience</span></h2>
+    <p class="section-lead">
+      Sandy never leaves your system in a dirty state. Every exit path — clean, crash, signal,
+      power loss — has a guaranteed cleanup mechanism.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Scenario</th><th>ACLs</th><th>Loopback</th><th>Container</th><th>Task</th><th>WER</th><th>Registry</th><th>Mechanism</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Clean exit</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>RAII guard</td></tr>
+          <tr><td>Child crash</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Child exit ≠ Sandy exit</td></tr>
+          <tr><td>Ctrl+C / close</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Console signal handler</td></tr>
+          <tr><td>Sandy crash (SEH)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>__except handler</td></tr>
+          <tr><td>Power loss / taskkill</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Scheduled task at logon</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <ol class="steps" style="margin-top: 40px;">
+      <li>
+        <h3>Write-Ahead Logging</h3>
+        <p>
+          Before modifying any ACL, Sandy persists each grant as
+          <code>TYPE|PATH|SID</code> to <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code>.
+          The registry write happens <em>before</em> the filesystem modification — if Sandy crashes
+          mid-grant, the record survives for later cleanup.
+        </p>
+      </li>
+      <li>
+        <h3>Per-Instance Scheduled Task</h3>
+        <p>
+          A <code>SandyCleanup_&lt;UUID&gt;</code> task is registered in Task Scheduler,
+          configured to run <code>sandy.exe --cleanup</code> at next logon. It only fires
+          if Sandy didn't clean up normally. Deleted on clean exit.
+        </p>
+      </li>
+      <li>
+        <h3>Dead-PID Detection</h3>
+        <p>
+          <code>--cleanup</code> checks each persisted PID with <code>OpenProcess</code> +
+          <code>WaitForSingleObject</code> to handle zombie processes (terminated but handle still open).
+          Only entries from truly dead processes are cleaned.
+        </p>
+      </li>
+      <li>
+        <h3>ACE-Level Restoration</h3>
+        <p>
+          Cleanup walks each stale grant, removes only the ACEs matching the dead instance's SID
+          via <code>RemoveSidFromDacl</code>, and deletes the registry subkey. Live instances'
+          grants are never touched.
+        </p>
+      </li>
+    </ol>
+
+    <div class="callout success">
+      <div class="callout-title">✅ Six resources tracked and cleaned</div>
+      <p>
+        ACL grants &middot; Registry persistence &middot; Loopback exemptions &middot; AppContainer profiles &middot;
+        Scheduled tasks &middot; WER exception keys — all automatically restored regardless of exit path.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ SAFETY ════════════════ -->
+<section id="safety">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Safety <span class="accent">Guarantees</span></h2>
+    <p class="section-lead">
+      Sandy's security model is additive and explicit — the sandbox starts with zero access,
+      and every permission is granted individually. Several design decisions enforce defense-in-depth.
+    </p>
+
+    <div class="card-grid cols-2">
+      <div class="card">
+        <span class="card-icon">🔐</span>
+        <h3>No implicit defaults</h3>
+        <p>
+          Every TOML key for the active mode must be explicitly declared. There are no hidden defaults —
+          if a key is missing, Sandy exits with a configuration error. This eliminates
+          "I forgot to disable network" surprises.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🚫</span>
+        <h3>Stripped dangerous bits</h3>
+        <p>
+          Even with <code>all</code> access, three bits are permanently excluded:
+          <code>WRITE_DAC</code> (can't modify ACLs), <code>WRITE_OWNER</code> (can't take ownership),
+          <code>FILE_DELETE_CHILD</code> (can't bypass child deny).
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🧱</span>
+        <h3>Fail-closed resource limits</h3>
+        <p>
+          If a configured resource limit (memory, process count) cannot be enforced via the job object,
+          Sandy terminates the child immediately with exit code 129. The sandbox never runs with
+          unenforced limits.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🔍</span>
+        <h3>Dry-run validation</h3>
+        <p>
+          <code>--dry-run</code> validates the entire config and shows all planned changes
+          (ACL modifications, capabilities, environment) without touching the system. Run it first
+          to catch mistakes.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">📊</span>
+        <h3>Full audit trail</h3>
+        <p>
+          Session logs capture every ACL operation, deny rule application, and error with Win32 error codes.
+          Audit mode (<code>-a</code>) uses Procmon to record all denied resource accesses with deduplication.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🧬</span>
+        <h3>Multi-instance isolation</h3>
+        <p>
+          Concurrent Sandy instances have completely independent SIDs, ACE sets, and registry subkeys.
+          One instance's cleanup never touches another's grants — verified by dedicated concurrent test suites.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout danger" style="margin-top: 32px;">
+      <div class="callout-title">🛑 DENY ACE kernel invariant</div>
+      <p>
+        The Windows kernel does <strong>not</strong> evaluate <code>DENY_ACCESS</code> ACEs for AppContainer SIDs.
+        This is an immutable property of the OS. Sandy handles this by implementing deny as allow-mask reduction
+        in AC mode, and real DENY ACEs in RT mode — the correct approach for each kernel behavior.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ FOOTER ════════════════ -->
+<footer>
+  <div class="container">
+    Sandy — MIT Licensed &middot;
+    <a href="https://github.com/nicholasgasior/sandy" target="_blank" rel="noopener">GitHub</a> &middot;
+    Built for secure, lean, unprivileged sandboxing on Windows
+  </div>
+</footer>
+
+<!-- ═══════════════════ SCRIPTS ═══════════════ -->
+<script>
+  // Intersection Observer for fade-in animations
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // Smooth-scroll for nav links (handles sticky offset)
+  document.querySelectorAll('nav a[href^="#"]').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      const target = document.querySelector(link.getAttribute('href'));
+      if (target) {
+        const offset = 72; // nav height + padding
+        const top = target.getBoundingClientRect().top + window.scrollY - offset;
+        window.scrollTo({ top, behavior: 'smooth' });
+      }
+    });
+  });
+</script>
+
+</body>
+</html>

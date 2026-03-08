@@ -1,40 +1,10 @@
 # Concurrent test: WRITE-only access to data folder
 [sandbox]
 token = 'appcontainer'
-workdir = 'inherit'
 
 [allow]
-peek    = []
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_concurrent\scripts']
 write = ['C:\Users\H\test_concurrent\data']
-append = []
-delete = []
-all = []
-
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-system_dirs = true
-network = false
-localhost = false
-lan = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
-child_processes = true
-
 [environment]
 inherit = true
-pass = []
-
-[limit]
-timeout = 0
-memory = 0
-processes = 0

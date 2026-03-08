@@ -11,15 +11,10 @@
 
 [sandbox]
 token = 'appcontainer'
-workdir = 'inherit'
 
 [allow]
-peek    = []
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_diabolical\scripts']
-write = []
-append = []
-delete = []
 all = ['C:\Users\H\test_diabolical\arena']
 
 [deny]
@@ -28,26 +23,12 @@ all = [
     'C:\Users\H\test_diabolical\arena\fortress',
 ]
 write = ['C:\Users\H\test_diabolical\arena\readonly_zone']
-read = []
-execute = []
-append = []
-delete = []
 
 [privileges]
-system_dirs = true
-network = false
-localhost = false
-lan = false
-stdin = false
-clipboard_read = false
-clipboard_write = false
 child_processes = false
 
 [environment]
 inherit = true
-pass = []
 
 [limit]
 timeout = 60
-memory = 0
-processes = 0

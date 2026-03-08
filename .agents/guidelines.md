@@ -92,16 +92,51 @@ path, STOP. You are about to write dead code that will pass no test.**
     (stale tasks, desktop/WinSta ACL). Documents **mode trust boundaries**
     (AC vs RT-low vs RT-medium).
 
-# TOML Configuration — Strict No-Defaults Rule
+# TOML Configuration — Optional Defaults
 
-- **All settings available for a container type must be declared** in the TOML
-  config. There are no implicit defaults — every key the sandbox recognizes
-  for the chosen `token` type must be present in the file.
-- **Settings not available for a container type must be absent.** For example,
-  `system_dirs` is AppContainer-only; if it appears in a `restricted` config,
-  Sandy must exit with a configuration error.
-- Any deviation or collision with this rule is a **configuration error** and
-  Sandy must exit immediately with a clear error message.
+Most TOML settings are **optional** with restrictive defaults. Only `[sandbox]`
+section and `token` key are always mandatory. Omitting a field **never grants
+more access** — defaults are deny-all / disabled / unlimited.
+
+## Mandatory Fields
+
+| Field | When | Values |
+|-------|------|--------|
+| `[sandbox]` section | Always | Must be present |
+| `token` | Always | `'appcontainer'` or `'restricted'` |
+| `integrity` | Restricted only | `'low'` or `'medium'` |
+
+## Optional Fields and Defaults
+
+| Section | Key | Default | Notes |
+|---------|-----|---------|-------|
+| `[sandbox]` | `workdir` | `'inherit'` (exe folder) | |
+| `[allow]` | `peek/read/write/execute/append/delete/all` | `[]` | No grants |
+| `[deny]` | `read/write/execute/append/delete/all` | `[]` | No denies |
+| `[privileges]` | `system_dirs` | `true` | AC only — false breaks most apps |
+| `[privileges]` | `network` | `false` | AC only |
+| `[privileges]` | `localhost` | `false` | AC only, needs admin |
+| `[privileges]` | `lan` | `false` | AC only |
+| `[privileges]` | `named_pipes` | `false` | RT only |
+| `[privileges]` | `stdin` | `false` | `false`=NUL, `true`=inherit, path=file |
+| `[privileges]` | `clipboard_read` | `false` | |
+| `[privileges]` | `clipboard_write` | `false` | |
+| `[privileges]` | `child_processes` | `true` | false breaks most apps |
+| `[registry]` | `read/write` | `[]` | RT only |
+| `[environment]` | `inherit` | `false` | filtered env |
+| `[environment]` | `pass` | `[]` | |
+| `[limit]` | `timeout/memory/processes` | `0` | 0 = no limit |
+
+## Rules
+
+- **Wrong-mode keys are rejected.** For example, `named_pipes` in an
+  AppContainer config or `network` in a Restricted config → configuration error.
+- **Unknown keys/sections are rejected.** Typos and unsupported keys → error.
+- A minimal valid config is just 2-3 lines:
+  ```toml
+  [sandbox]
+  token = 'appcontainer'
+  ```
 
 # Test Structure
 
@@ -132,10 +167,16 @@ running processes, or the host platform. Every rule below is mandatory.
 ### Registry
 
 - **Never read, write, or delete** production keys under `HKCU\Software\Sandy`
-  or `HKCU\Software\Sandy\Grants`.
-- All test-specific registry entries go under **`HKCU\Software\Sandy\Test`**.
+  or `HKCU\Software\Sandy\Grants` — **except** for `--status` tests, which
+  must inject stale entries into production paths (`Grants\<pid>`, `WER`)
+  because `--status` only reads production keys.
+- All other test-specific registry entries go under **`HKCU\Software\Sandy\Test`**.
 - Cleanup of test keys is handled by `sandy --cleanup`
   (which calls `RegDeleteTreeW` on `Software\Sandy\Test`).
+- **Parent keys are permanent.** Tests verifying cleanup must check for
+  specific subkey/value removal, not parent key non-existence. An empty
+  `Grants` or `WER` key with zero children is the expected clean state.
+
 
 ### Process Management
 

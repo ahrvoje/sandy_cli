@@ -65,10 +65,12 @@ namespace Sandbox {
         // --- [sandbox] ---
         bool integritySeen = false;
         bool workdirSeen = false;
+        bool tokenSeen = false;
         if (sandboxSeen) {
             const Toml::TomlSection& sec = doc.find(L"sandbox")->second;
             for (const auto& [key, val] : sec) {
                 if (key == L"token") {
+                    tokenSeen = true;
                     if (val.str == L"restricted") config.tokenMode = TokenMode::Restricted;
                     else if (val.str == L"appcontainer") config.tokenMode = TokenMode::AppContainer;
                     else {
@@ -94,6 +96,12 @@ namespace Sandbox {
                     config.parseError = true;
                 }
             }
+        }
+
+        // token is always mandatory
+        if (sandboxSeen && !tokenSeen) {
+            fprintf(stderr, "Error: 'token' is required in [sandbox]. Use token = 'appcontainer' or 'restricted'.\n");
+            config.parseError = true;
         }
 
         // --- [allow] — file/folder ALLOW ACEs ---
@@ -310,117 +318,6 @@ namespace Sandbox {
                 if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
                 if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
                 if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
-            }
-
-            // --- Mandatory keys (no optional settings) ---
-            auto requireKey = [&](const wchar_t* key, const wchar_t* section, const std::set<std::wstring>& seen) {
-                if (seen.find(key) == seen.end()) {
-                    fprintf(stderr, "Error: '%ls' is required in [%ls]. All settings must be explicit.\n", key, section);
-                    config.parseError = true;
-                }
-            };
-
-            // Mode-specific mandatory [privileges] keys
-            if (isAC) {
-                requireKey(L"system_dirs", L"privileges", privSeen);
-                requireKey(L"network", L"privileges", privSeen);
-                requireKey(L"localhost", L"privileges", privSeen);
-                requireKey(L"lan", L"privileges", privSeen);
-            }
-            if (isRT) {
-                requireKey(L"named_pipes", L"privileges", privSeen);
-            }
-
-            // Common mandatory [privileges] keys
-            requireKey(L"stdin", L"privileges", privSeen);
-            requireKey(L"clipboard_read", L"privileges", privSeen);
-            requireKey(L"clipboard_write", L"privileges", privSeen);
-            requireKey(L"child_processes", L"privileges", privSeen);
-
-            // [environment] inherit + pass are mandatory
-            if (!inheritSeen) {
-                fprintf(stderr, "Error: 'inherit' is required in [environment]. All settings must be explicit.\n");
-                config.parseError = true;
-            }
-            if (!passSeen) {
-                fprintf(stderr, "Error: 'pass' is required in [environment]. Use pass = [] for no extra variables.\n");
-                config.parseError = true;
-            }
-
-            // [sandbox] workdir is mandatory
-            if (!workdirSeen) {
-                fprintf(stderr, "Error: 'workdir' is required in [sandbox]. Use workdir = 'inherit' for exe folder.\n");
-                config.parseError = true;
-            }
-
-            // [allow] section + all 7 keys mandatory
-            if (doc.find(L"allow") == doc.end()) {
-                fprintf(stderr, "Error: [allow] section is required. Use empty arrays [] for no grants.\n");
-                config.parseError = true;
-            } else {
-                static const wchar_t* allowAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all", L"peek" };
-                for (auto ak : allowAclKeys) {
-                    if (allowSeen.find(ak) == allowSeen.end()) {
-                        fprintf(stderr, "Error: '%ls' is required in [allow]. Use %ls = [] for no grants.\n", ak, ak);
-                        config.parseError = true;
-                    }
-                }
-            }
-
-            // [deny] section + all 6 keys mandatory
-            if (doc.find(L"deny") == doc.end()) {
-                fprintf(stderr, "Error: [deny] section is required. Use empty arrays [] for no denials.\n");
-                config.parseError = true;
-            } else {
-                static const wchar_t* denyAclKeys[] = { L"read", L"write", L"execute", L"append", L"delete", L"all" };
-                for (auto dk : denyAclKeys) {
-                    if (denySeen.find(dk) == denySeen.end()) {
-                        fprintf(stderr, "Error: '%ls' is required in [deny]. Use %ls = [] for no denials.\n", dk, dk);
-                        config.parseError = true;
-                    }
-                }
-            }
-
-            // [privileges] section is mandatory
-            if (doc.find(L"privileges") == doc.end()) {
-                fprintf(stderr, "Error: [privileges] section is required. All capability settings must be explicit.\n");
-                config.parseError = true;
-            }
-
-            // [registry] section + both keys mandatory (restricted only)
-            if (isRT) {
-                if (!registrySeen) {
-                    fprintf(stderr, "Error: [registry] section is required in restricted mode. Use empty arrays [] for no grants.\n");
-                    config.parseError = true;
-                } else {
-                    if (!registryReadSeen) {
-                        fprintf(stderr, "Error: 'read' is required in [registry]. Use read = [] for no grants.\n");
-                        config.parseError = true;
-                    }
-                    if (!registryWriteSeen) {
-                        fprintf(stderr, "Error: 'write' is required in [registry]. Use write = [] for no grants.\n");
-                        config.parseError = true;
-                    }
-                }
-            }
-
-            // [limit] section + all 3 keys mandatory
-            if (doc.find(L"limit") == doc.end()) {
-                fprintf(stderr, "Error: [limit] section is required. Use 0 for unlimited.\n");
-                config.parseError = true;
-            } else {
-                if (limitSeen.find(L"timeout") == limitSeen.end()) {
-                    fprintf(stderr, "Error: 'timeout' is required in [limit]. Use timeout = 0 for no timeout.\n");
-                    config.parseError = true;
-                }
-                if (limitSeen.find(L"memory") == limitSeen.end()) {
-                    fprintf(stderr, "Error: 'memory' is required in [limit]. Use memory = 0 for no limit.\n");
-                    config.parseError = true;
-                }
-                if (limitSeen.find(L"processes") == limitSeen.end()) {
-                    fprintf(stderr, "Error: 'processes' is required in [limit]. Use processes = 0 for no limit.\n");
-                    config.parseError = true;
-                }
             }
         }
 

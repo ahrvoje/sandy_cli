@@ -3,69 +3,59 @@
 # AppContainer is the default sandbox mode. It provides kernel-enforced
 # isolation with network control and object namespace isolation.
 # Named pipe creation is blocked (kernel restriction).
+#
+# Only [sandbox] token is required. All other sections are optional
+# with safe defaults (deny-all / disabled / unlimited).
 
 [sandbox]
 token = 'appcontainer'
-workdir = 'inherit'        # required: absolute path or 'inherit' (= exe folder)
+# workdir = 'inherit'      # optional (default: exe folder)
 
 # ============================================================
-# ACCESS — File and folder grants
+# ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
-# Grant the sandboxed process access to specific folders or files.
-# Use single quotes for Windows paths (no backslash escaping needed).
 
-[allow]
-peek    = []              # non-recursive: list dir + stat only (path traversal)
-read = []
-write = []
-execute = []
-append = []
-delete = []
-all = []
+# [allow]
+# peek    = []              # non-recursive: list dir + stat only
+# read    = []              # read files, list dirs (recursive)
+# write   = []              # create/modify files (recursive)
+# execute = []              # read + execute (recursive)
+# append  = []              # append only (recursive)
+# delete  = []              # delete only (recursive)
+# all     = []              # full access (recursive)
+
+# [deny]                    # optional, default: no denies
 
 # ============================================================
-# PERMISSIONS — All keys mandatory per mode
+# PRIVILEGES — Optional, safe defaults shown
 # ============================================================
-# Every key must be explicitly set. Omitting a key is a parse error.
 
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
-
-[privileges]
-system_dirs     = true    # read C:\Windows, Program Files (required for most executables)
-network         = false   # outbound internet access
-localhost       = false   # loopback/localhost connections (admin required)
-lan             = false   # local network access
-stdin           = false   # true = inherit, false = disabled (NUL), or a file path
-clipboard_read  = false   # allow reading from clipboard
-clipboard_write = false   # allow writing to clipboard
-child_processes = true    # allow spawning child processes (kernel-enforced)
+# [privileges]
+# system_dirs     = true    # default true: read C:\Windows, Program Files
+# network         = false   # default false: no outbound internet
+# localhost       = false   # default false: no loopback (admin required)
+# lan             = false   # default false: no local network
+# stdin           = false   # default false (NUL). true=inherit, path=file
+# clipboard_read  = false   # default false
+# clipboard_write = false   # default false
+# child_processes = true    # default true
 
 # NOTE: named_pipes is not available in AppContainer mode.
-# Named pipe creation is a kernel-level restriction of AppContainer.
-# Use token = 'restricted' in [sandbox] if your app needs named pipes.
-
 # NOTE: [registry] section is not available in AppContainer mode.
-# AppContainer provides a fixed private registry hive automatically.
 
 # ============================================================
-# ENVIRONMENT — inherit is mandatory
+# ENVIRONMENT — Optional, default: filtered
 # ============================================================
 
-[environment]
-inherit = true                            # required: true or false
-pass = []                                 # required: [] or ['PATH', 'PYTHONPATH']
+# [environment]
+# inherit = false            # default false (clean environment)
+# pass = []                  # default [] (pass no extra variables)
 
 # ============================================================
-# RESOURCE LIMITS — all keys required (0 = unlimited)
+# RESOURCE LIMITS — Optional, default: unlimited (0)
 # ============================================================
 
-[limit]
-timeout = 0        # 0 = no timeout, positive = kill after N seconds
-memory = 0         # 0 = no cap, positive = limit in MB
-processes = 0      # 0 = no cap, positive = max active processes
+# [limit]
+# timeout = 0               # 0 = no timeout
+# memory = 0                # 0 = no cap (MB)
+# processes = 0             # 0 = no cap
