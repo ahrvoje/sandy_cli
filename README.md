@@ -122,14 +122,14 @@ See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_c
 [sandbox]
 token = 'appcontainer'    # or 'restricted'
 integrity = 'low'         # restricted only: 'low' or 'medium' (required)
-workdir = 'C:\projects'   # child working directory (default: sandy.exe folder)
+workdir = 'C:\projects'   # child working directory (default: 'inherit')
 ```
 
 | Key | Values | Modes | Description |
 |-----|--------|-------|-------------|
 | `token` | `'appcontainer'`, `'restricted'` | both | Sandbox isolation model *(required)* |
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
-| `workdir` | path | both | Child process working directory (default: folder containing `sandy.exe`) |
+| `workdir` | path | both | Child process working directory (default: `'inherit'`) |
 
 ### `[allow]` — File and folder grants
 
@@ -216,22 +216,22 @@ All keys are optional with safe defaults (shown below). Wrong-mode keys are reje
 ```toml
 # AppContainer mode — defaults shown:
 [privileges]
-system_dirs     = true    # default true
-network         = false   # default false
-localhost       = false   # default false
-lan             = false   # default false
-stdin           = false   # default false (NUL)
-clipboard_read  = false   # default false
-clipboard_write = false   # default false
-child_processes = true    # default true
+system_dirs     = true    # default: true
+network         = false   # default: false
+localhost       = false   # default: false
+lan             = false   # default: false
+stdin           = false   # default: false (NUL)
+clipboard_read  = false   # default: false
+clipboard_write = false   # default: false
+child_processes = true    # default: true
 
 # Restricted mode — defaults shown:
 [privileges]
-named_pipes     = false   # default false
-stdin           = false   # default false (NUL)
-clipboard_read  = false   # default false
-clipboard_write = false   # default false
-child_processes = true    # default true
+named_pipes     = false   # default: false
+stdin           = false   # default: false (NUL)
+clipboard_read  = false   # default: false
+clipboard_write = false   # default: false
+child_processes = true    # default: true
 ```
 
 | Key | Available in | Default | Description |
@@ -299,9 +299,9 @@ When `inherit = false`, the following essential Windows vars are always passed:
 
 ```toml
 [limit]
-timeout = 300       # kill process after N seconds (exit code 1)
-memory = 4096       # job-wide memory cap in MB (all processes combined)
-processes = 10      # max total active processes (including main)
+timeout = 300       # kill process after N seconds (default: 0)
+memory = 4096       # job-wide memory cap in MB (default: 0)
+processes = 10      # max total active processes (default: 0)
 ```
 
 > [!IMPORTANT]
@@ -317,24 +317,24 @@ processes = 10      # max total active processes (including main)
 | **`[sandbox]`** | 🟢 required | 🟢 required |
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
-| &ensp; `workdir` | 🔵 optional (default: `'inherit'`) | 🔵 optional (default: `'inherit'`) |
-| **`[allow]`** | 🔵 optional (all keys default `[]`) | 🔵 optional (all keys default `[]`) |
-| **`[deny]`** | 🔵 optional (all keys default `[]`) | 🔵 optional (all keys default `[]`) |
-| **`[privileges]`** | 🔵 optional (defaults shown) | 🔵 optional (defaults shown) |
-| &ensp; `system_dirs` | 🔵 default `true` | 🔴 n/a |
-| &ensp; `network` | 🔵 default `false` | 🔴 n/a |
-| &ensp; `localhost` | 🔵 default `false` | 🔴 n/a |
-| &ensp; `lan` | 🔵 default `false` | 🔴 n/a |
-| &ensp; `named_pipes` | 🔴 n/a | 🔵 default `false` |
-| &ensp; `stdin` | 🔵 default `false` | 🔵 default `false` |
-| &ensp; `clipboard_read` | 🔵 default `false` | 🔵 default `false` |
-| &ensp; `clipboard_write` | 🔵 default `false` | 🔵 default `false` |
-| &ensp; `child_processes` | 🔵 default `true` | 🔵 default `true` |
-| **`[registry]`** | 🔴 n/a | 🔵 optional (both keys default `[]`) |
+| &ensp; `workdir` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` |
+| **`[allow]`** | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[deny]`** | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[privileges]`** | 🔵 optional | 🔵 optional |
+| &ensp; `system_dirs` | 🔵 default: `true` | 🔴 n/a |
+| &ensp; `network` | 🔵 default: `false` | 🔴 n/a |
+| &ensp; `localhost` | 🔵 default: `false` | 🔴 n/a |
+| &ensp; `lan` | 🔵 default: `false` | 🔴 n/a |
+| &ensp; `named_pipes` | 🔴 n/a | 🔵 default: `false` |
+| &ensp; `stdin` | 🔵 default: `false` | 🔵 default: `false` |
+| &ensp; `clipboard_read` | 🔵 default: `false` | 🔵 default: `false` |
+| &ensp; `clipboard_write` | 🔵 default: `false` | 🔵 default: `false` |
+| &ensp; `child_processes` | 🔵 default: `true` | 🔵 default: `true` |
+| **`[registry]`** | 🔴 n/a | 🔵 default: `[]` |
 | **`[environment]`** | 🔵 optional | 🔵 optional |
-| &ensp; `inherit` | 🔵 default `false` | 🔵 default `false` |
-| &ensp; `pass` | 🔵 default `[]` | 🔵 default `[]` |
-| **`[limit]`** | 🔵 optional (all keys default `0`) | 🔵 optional (all keys default `0`) |
+| &ensp; `inherit` | 🔵 default: `false` | 🔵 default: `false` |
+| &ensp; `pass` | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[limit]`** | 🔵 default: `0` | 🔵 default: `0` |
 
 🟢 required · 🔵 optional (safe default) · 🔴 not available (parse error if used)
 
