@@ -87,8 +87,9 @@ path, STOP. You are about to write dead code that will pass no test.**
      usage and critical side-effects. Users must be able to use Sandy correctly
      from `--help` alone without reading the README.
   - Help text separates **guaranteed** cleanup (ACE removal, profile deletion,
-    loopback, instance registry key) from **best-effort** (parent key cascade,
-    stale tasks, desktop/WinSta ACL). Documents **mode trust boundaries**
+    loopback, instance registry key) from **permanent** state (parent keys
+    Sandy, Grants, WER — never deleted) and **best-effort** cleanup
+    (stale tasks, desktop/WinSta ACL). Documents **mode trust boundaries**
     (AC vs RT-low vs RT-medium).
 
 # TOML Configuration — Strict No-Defaults Rule

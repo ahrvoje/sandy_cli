@@ -395,7 +395,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Launch Procmon for capture — shared by audit and profile modes.
+    // Launch Procmon for capture — shared by audit and trace modes.
     // Terminates any existing instance, starts a new one with the given
     // backing file, and waits for the PML file to appear.
     // pmlPathOut receives the unique PML path for later stop/convert.
@@ -437,7 +437,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Start Procmon for profile mode with include filter for target process
+    // Start Procmon for trace mode with include filter for target process
     // -----------------------------------------------------------------------
     inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName,
                                      std::wstring& pmlPathOut)
@@ -462,7 +462,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Terminate Procmon and convert PML → CSV.  Shared by audit/profile.
+    // Terminate Procmon and convert PML → CSV.  Shared by audit/trace.
     // Returns true if csvPath was created successfully.
     // -----------------------------------------------------------------------
     inline bool StopAndConvertProcmon(const std::wstring& procmonPath,

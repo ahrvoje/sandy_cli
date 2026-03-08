@@ -94,12 +94,12 @@ Each instance creates its own scheduled task: `SandyCleanup_<uuid>`. On clean ex
 ### Key design constraint
 `RestoreStaleGrants` skips paths used by other live instances (the `livePaths` set). If any live instance still needs a path, its ACEs are preserved.
 
-### Parent Key Cleanup Robustness
-`TryDeleteEmptyParentKeys()` cascade-deletes `Software\Sandy\Grants` and `Software\Sandy` when empty:
-- Checks `RegQueryInfoKeyW` return value — if query fails, does **not** attempt deletion
-- Checks both subkeys **and** values (not just subkeys) before deleting
-- Logs `RegDeleteKeyW` failures with error codes
-- Best-effort and race-safe: concurrent instances won't cause issues (key won't be empty)
+### Parent Registry Key Policy
+Parent registry keys (`Software\Sandy`, `Grants`, `WER`) are **permanent** — they are never deleted,
+even when empty. This ensures the Sandy registry structure is always visible for tracking and is safe
+against accidental or cascade deletion. Only individual instance subkeys (under `Grants\<UUID>`) and
+individual PID values (under `WER`) are deleted during cleanup. The `Software\Sandy\Test` subtree is
+the only key that gets fully deleted (by `--cleanup`).
 
 ---
 

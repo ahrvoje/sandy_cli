@@ -36,7 +36,7 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring configString;
     std::wstring logPath;
     std::wstring auditLogPath;
-    std::wstring profilePath;
+    std::wstring tracePath;
     std::wstring dumpPath;
     std::wstring exePath;
     std::wstring exeArgs;
@@ -139,8 +139,8 @@ static int RunMain(int argc, wchar_t* argv[])
         else if ((arg == L"-a" || arg == L"--audit") && i + 1 < argc) {
             auditLogPath = argv[++i];
         }
-        else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
-            profilePath = argv[++i];
+        else if ((arg == L"-t" || arg == L"--trace") && i + 1 < argc) {
+            tracePath = argv[++i];
         }
         else if ((arg == L"-d" || arg == L"--dump") && i + 1 < argc) {
             dumpPath = argv[++i];
@@ -165,14 +165,14 @@ static int RunMain(int argc, wchar_t* argv[])
         }
     }
 
-    // --- Profile mode (no config needed) ---
-    if (!profilePath.empty()) {
+    // --- Trace mode (no config needed) ---
+    if (!tracePath.empty()) {
         if (exePath.empty()) {
-            fprintf(stderr, "Error: -p requires -x <executable>.\n\n");
+            fprintf(stderr, "Error: -t requires -x <executable>.\n\n");
             PrintUsage(kVersion);
             return SandyExit::InternalError;
         }
-        return RunProfile(exePath, exeArgs, profilePath);
+        return RunTrace(exePath, exeArgs, tracePath);
     }
 
     // --- No config/exec provided ---

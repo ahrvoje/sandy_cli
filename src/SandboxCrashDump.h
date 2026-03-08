@@ -80,11 +80,11 @@ namespace Sandbox {
         swprintf(valueName, 32, L"%lu", GetCurrentProcessId());
         RegDeleteValueW(hKey, valueName);
         RegCloseKey(hKey);
-        // Try to remove parent key if empty
-        RegDeleteKeyW(HKEY_CURRENT_USER, kWERParentKey);
+        // Parent key (Software\Sandy\WER) is permanent — never delete it
     }
 
-    // Enumerate all persisted WER entries and clean them
+    // Enumerate persisted WER entries and clean only dead-PID ones.
+    // Parent key (Software\Sandy\WER) is permanent — never deleted.
     inline void RestoreStaleWER()
     {
         HKEY hKey = nullptr;
@@ -114,18 +114,30 @@ namespace Sandbox {
         }
         RegCloseKey(hKey);
 
-        // Clean each WER key and delete the registry entry
+        // Clean only dead-PID entries — skip live ones
+        std::vector<std::wstring> toDelete;
         for (const auto& entry : entries) {
+            DWORD pid = (DWORD)_wtoi(entry.first.c_str());
+            if (IsProcessAlive(pid, 0)) continue;  // skip live instances
+
             if (!entry.second.empty()) {
                 DisableCrashDumps(entry.second);
                 g_logger.Log((L"WER_RESTORE: " + entry.second).c_str());
                 printf("  [WER]  PID %ls crash dumps for %ls -> cleaned\n",
                        entry.first.c_str(), entry.second.c_str());
             }
+            toDelete.push_back(entry.first);
         }
 
-        // Delete the entire WER parent key
-        RegDeleteKeyW(HKEY_CURRENT_USER, kWERParentKey);
+        // Delete only stale PID values from the WER key
+        if (!toDelete.empty()) {
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                              KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+                for (const auto& name : toDelete)
+                    RegDeleteValueW(hKey, name.c_str());
+                RegCloseKey(hKey);
+            }
+        }
     }
 
     // Check if exit code looks like a native crash.

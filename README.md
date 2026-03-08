@@ -43,7 +43,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ```
 sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
-sandy.exe -p <report>       -x <executable> [args...]
+sandy.exe -t <report>       -x <executable> [args...]
 sandy.exe --print-container-toml          (print default appcontainer config)
 sandy.exe --print-restricted-toml         (print default restricted config)
 sandy.exe --cleanup                       (restore stale state from crashed runs)
@@ -61,7 +61,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `-a <path>`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
 | `-d <path>`, `--dump <path>` | Crash dump output path (independent of `-a`) |
 | `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log/audit/dump filenames |
-| `-p <path>`, `--profile <path>` | Profile unsandboxed run for sandbox feasibility (requires Procmon + admin) |
+| `-t <path>`, `--trace <path>` | Trace unsandboxed run for sandbox feasibility (requires Procmon + admin) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
 | `-q`, `--quiet` | Suppress the config banner on stderr |
 | `-v`, `--version` | Print version |
@@ -509,15 +509,15 @@ sandy.exe -c config.toml -a audit.log -x myapp.exe
 
 ---
 
-## Profile
+## Trace
 
-The `-p` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage (files, registry, network, DLLs, pipes, child processes), and generates a feasibility report with a suggested TOML config. Requires Procmon on PATH + admin.
+The `-t` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage (files, registry, network, DLLs, pipes, child processes), and generates a feasibility report with a suggested TOML config. Requires Procmon on PATH + admin.
 
 ```
-sandy.exe -p report.txt -x myapp.exe [args...]
+sandy.exe -t report.txt -x myapp.exe [args...]
 ```
 
-Use profile mode **before** sandboxing an unfamiliar application. It tells you whether the process can be sandboxed, which mode works best, and what `[allow]` paths and `[privileges]` are needed.
+Use trace mode **before** sandboxing an unfamiliar application. It tells you whether the process can be sandboxed, which mode works best, and what `[allow]` paths and `[privileges]` are needed.
 
 ```
 --- Verdict ---
@@ -604,13 +604,12 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 | **Loopback exemption removed** on clean exit | `CheckNetIsolation.exe LoopbackExempt -d` |
 | **Scheduled task deleted** on clean exit | `schtasks /Delete` |
 | **Stale ACLs restored** after crash | `--cleanup` parses persisted `TYPE|PATH|SID` records, removes SID's ACEs |
-| **Parent registry key cascade** | `Software\Sandy\Grants` and `Software\Sandy` are deleted when empty |
+| **Parent registry keys permanent** | `Software\Sandy`, `Grants`, `WER` are never deleted — preserved for visual tracking |
 
 **Best-effort behaviors** (not guaranteed):
 - **Desktop/window-station ACL cleanup** depends on `GetProcessWindowStation()` and `OpenDesktopW()` succeeding — these may fail in service or headless contexts. Failures are logged with error codes.
 - **Loopback cleanup** depends on `CheckNetIsolation.exe` being available and the process running with sufficient privileges.
 - **Persisted grant records** that are malformed (invalid TYPE, empty PATH, non-SID strings, or unknown flags) are skipped and logged — they will not cause cleanup to fail or corrupt system state.
-- **Parent registry cascade cleanup** (`Software\Sandy\Grants`, `Software\Sandy`) is opportunistic and may be skipped if keys are not empty or registry inspection fails.
 
 ### Validation notes
 

@@ -479,15 +479,15 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Run a profile analysis: launch unsandboxed with Procmon, then analyze
+    // Run a trace analysis: launch unsandboxed with Procmon, then analyze
     // -----------------------------------------------------------------------
-    inline int RunProfile(const std::wstring& exePath, const std::wstring& exeArgs,
+    inline int RunTrace(const std::wstring& exePath, const std::wstring& exeArgs,
                            const std::wstring& reportPath)
     {
         // Require Procmon
         std::wstring procmonExe = FindProcmon();
         if (procmonExe.empty()) {
-            fprintf(stderr, "[Profile] Procmon not found on PATH. Profile requires Procmon.\n");
+            fprintf(stderr, "[Trace] Procmon not found on PATH. Trace requires Procmon.\n");
             return 1;
         }
 
@@ -498,10 +498,10 @@ namespace Sandbox {
         // Start Procmon with include filter for target process
         std::wstring pmlPath;
         if (!StartProcmonProfile(procmonExe, exeBase, pmlPath)) {
-            fprintf(stderr, "[Profile] Failed to start Procmon capture.\n");
+            fprintf(stderr, "[Trace] Failed to start Procmon capture.\n");
             return 1;
         }
-        fprintf(stderr, "[Profile] Capturing resource usage...\n");
+        fprintf(stderr, "[Trace] Capturing resource usage...\n");
 
         // Launch the process unsandboxed (normal token)
         std::wstring cmdLine = L"\"" + exePath + L"\"";
@@ -512,7 +512,7 @@ namespace Sandbox {
         std::wstring cmd = cmdLine;
         if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE,
                            0, nullptr, nullptr, &si, &pi)) {
-            fprintf(stderr, "[Profile] Failed to launch process (error %lu).\n", GetLastError());
+            fprintf(stderr, "[Trace] Failed to launch process (error %lu).\n", GetLastError());
             RunProcAndWait(L"\"" + procmonExe + L"\" /Terminate", 5000);
             return 1;
         }
@@ -523,7 +523,7 @@ namespace Sandbox {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
 
-        fprintf(stderr, "[Profile] Process exited with code %lu (0x%08lX). Analyzing...\n", exitCode, exitCode);
+        fprintf(stderr, "[Trace] Process exited with code %lu (0x%08lX). Analyzing...\n", exitCode, exitCode);
 
         // Stop Procmon and convert PML → CSV
         // Derive CSV path from PML path (same unique suffix, different extension)
@@ -532,7 +532,7 @@ namespace Sandbox {
         if (csvDot != std::wstring::npos) csvPath = csvPath.substr(0, csvDot);
         csvPath += L".csv";
 
-        if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Profile"))
+        if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Trace"))
             return 1;
 
         // Analyze events
@@ -543,9 +543,9 @@ namespace Sandbox {
 
         // Write report
         if (WriteProfileReport(reportPath, result, exePath))
-            fprintf(stderr, "[Profile] Report written to: %ls\n", reportPath.c_str());
+            fprintf(stderr, "[Trace] Report written to: %ls\n", reportPath.c_str());
         else
-            fprintf(stderr, "[Profile] Failed to write report.\n");
+            fprintf(stderr, "[Trace] Failed to write report.\n");
 
         // Cleanup
         DeleteFileW(pmlPath.c_str());

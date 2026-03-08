@@ -361,72 +361,15 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // TryDeleteEmptyParentKeys — cascade-delete empty registry parents.
-    // Deletes Software\Sandy\Grants if no subkeys or values remain, then
-    // Software\Sandy itself if both Grants and WER are gone.
-    //
-    // Best-effort: logs but does not propagate failures.  Registry races
-    // with other instances are benign — the key simply won't be empty.
-    // -----------------------------------------------------------------------
-    inline void TryDeleteEmptyParentKeys()
-    {
-        // Step 1: delete Grants parent if completely empty
-        HKEY hGrants = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ, &hGrants) == ERROR_SUCCESS) {
-            DWORD subKeys = 0, values = 0;
-            LSTATUS qs = RegQueryInfoKeyW(hGrants, nullptr, nullptr, nullptr,
-                             &subKeys, nullptr, nullptr, &values,
-                             nullptr, nullptr, nullptr, nullptr);
-            RegCloseKey(hGrants);
-            if (qs != ERROR_SUCCESS) {
-                g_logger.LogFmt(L"REG_CASCADE: RegQueryInfoKey(Grants) failed (error %lu)", qs);
-                return; // can't determine state — don't delete
-            }
-            if (subKeys == 0 && values == 0) {
-                LSTATUS ds = RegDeleteKeyW(HKEY_CURRENT_USER, kGrantsParentKey);
-                if (ds == ERROR_SUCCESS)
-                    g_logger.Log(L"REG_CASCADE: deleted empty Grants key");
-                else
-                    g_logger.LogFmt(L"REG_CASCADE: RegDeleteKey(Grants) failed (error %lu)", ds);
-            } else {
-                return; // Grants still has children; don't touch parent
-            }
-        }
-
-        // Step 2: delete Software\Sandy if both Grants and WER are gone
-        HKEY hSandy = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Sandy", 0,
-                          KEY_READ, &hSandy) == ERROR_SUCCESS) {
-            DWORD subKeys = 0, values = 0;
-            LSTATUS qs = RegQueryInfoKeyW(hSandy, nullptr, nullptr, nullptr,
-                             &subKeys, nullptr, nullptr, &values,
-                             nullptr, nullptr, nullptr, nullptr);
-            RegCloseKey(hSandy);
-            if (qs != ERROR_SUCCESS) {
-                g_logger.LogFmt(L"REG_CASCADE: RegQueryInfoKey(Sandy) failed (error %lu)", qs);
-                return;
-            }
-            if (subKeys == 0 && values == 0) {
-                LSTATUS ds = RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Sandy");
-                if (ds == ERROR_SUCCESS)
-                    g_logger.Log(L"REG_CASCADE: deleted empty Sandy key");
-                else
-                    g_logger.LogFmt(L"REG_CASCADE: RegDeleteKey(Sandy) failed (error %lu)", ds);
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Clear this instance's persisted grants from registry
+    // Clear this instance's persisted grants from registry.
+    // Only deletes the instance subkey — parent keys (Sandy, Grants) are
+    // permanent and never deleted.
     // -----------------------------------------------------------------------
     inline void ClearPersistedGrants()
     {
         std::wstring regKey = GetGrantsRegKey();
         LSTATUS r = RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
-
-        TryDeleteEmptyParentKeys();
     }
 
     // -----------------------------------------------------------------------
@@ -766,7 +709,7 @@ namespace Sandbox {
                    subKey.c_str(), (unsigned long)stalePid);
         }
 
-        TryDeleteEmptyParentKeys();
+
     }
 
 } // namespace Sandbox
