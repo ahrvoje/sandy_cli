@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy CLI usage — all command-line switches, invocation forms, and exit codes.">
+  <title>Sandy — Usage</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: #0a0e17; --bg-secondary: #111827;
+      --bg-card: rgba(17,24,39,0.65); --bg-glass: rgba(255,255,255,0.04);
+      --border-glass: rgba(255,255,255,0.08); --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8; --text-muted: #64748b;
+      --accent: #38bdf8; --accent2: #a78bfa; --accent3: #34d399; --accent4: #fb923c;
+      --danger: #f87171; --radius: 12px; --shadow-card: 0 4px 24px rgba(0,0,0,0.35);
+      --transition: 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 600px 600px at 15% 10%,rgba(56,189,248,0.08),transparent), radial-gradient(ellipse 500px 500px at 85% 30%,rgba(167,139,250,0.07),transparent), radial-gradient(ellipse 400px 400px at 50% 80%,rgba(52,211,153,0.06),transparent); pointer-events: none; z-index: 0; }
+    .container { max-width: 1040px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+    section { padding: 72px 0; }
+    section + section { border-top: 1px solid var(--border-glass); }
+    nav { position: sticky; top: 0; z-index: 100; background: rgba(10,14,23,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
+    nav .container { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 4px; list-style: none; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
+    .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    @media (max-width: 700px) { .nav-links { display: none; } }
+    .page-hero { padding: 72px 0 48px; text-align: center; }
+    .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 620px; margin: 0 auto 24px; }
+    .breadcrumb { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    h2 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+    h2 .accent { color: var(--accent); }
+    .section-lead { color: var(--text-secondary); font-size: 1rem; margin-bottom: 28px; max-width: 820px; }
+    .divider { width: 60px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--accent2)); border-radius: 2px; margin-bottom: 28px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 24px 28px; backdrop-filter: blur(16px); box-shadow: var(--shadow-card); }
+    pre, code { font-family: 'JetBrains Mono','Cascadia Code',monospace; }
+    pre { background: rgba(0,0,0,0.4); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 20px 24px; overflow-x: auto; font-size: 0.84rem; line-height: 1.9; color: var(--text-secondary); }
+    code { background: rgba(56,189,248,0.1); padding: 2px 7px; border-radius: 5px; font-size: 0.88em; color: var(--accent); }
+    pre code { background: none; padding: 0; border-radius: 0; color: inherit; }
+    .syn-cmd  { color: var(--accent); font-weight: 600; }
+    .syn-flag { color: var(--accent4); }
+    .syn-arg  { color: var(--accent3); }
+    .syn-opt  { color: var(--text-muted); }
+    .syn-cmt  { color: var(--text-muted); font-style: italic; }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-glass); margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-glass); vertical-align: top; }
+    th { background: rgba(56,189,248,0.06); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); white-space: nowrap; }
+    td { color: var(--text-secondary); }
+    td:first-child { white-space: nowrap; }
+    td code { white-space: nowrap; }
+    .td-flag { color: var(--accent4); font-weight: 500; font-size: 0.83rem; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    /* group header rows */
+    .group-row td { background: rgba(56,189,248,0.04); color: var(--text-muted); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border-glass); padding: 6px 14px; }
+    .callout { border-radius: var(--radius); padding: 16px 20px; margin: 20px 0; border-left: 3px solid; font-size: 0.90rem; line-height: 1.65; }
+    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
+    .callout.tip     { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+    .callout-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .callout p { color: var(--text-secondary); }
+    /* exit code badge */
+    .ec { display: inline-block; padding: 2px 9px; border-radius: 6px; font-family: 'JetBrains Mono',monospace; font-size: 0.82rem; font-weight: 600; background: rgba(56,189,248,0.1); color: var(--accent); }
+    .ec.sandy { background: rgba(167,139,250,0.12); color: var(--accent2); }
+    .ec.warn  { background: rgba(251,146,60,0.12);  color: var(--accent4); }
+    .ec.thru  { background: rgba(52,211,153,0.12);  color: var(--accent3); }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+    .fade-in.visible { opacity: 1; transform: none; }
+    footer { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-glass); }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="config.html">Config</a></li>
+      <li><a href="modes.html">Modes</a></li>
+      <li><a href="examples.html">Examples</a></li>
+      <li><a href="usage.html" class="active">Usage</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>Usage</span></div>
+    <h1>CLI Usage</h1>
+    <p>All invocation forms, flags, and exit codes — one page.</p>
+  </div>
+</header>
+
+<!-- ═══ Invocation forms ═══ -->
+<section id="invocation">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Invocation <span class="accent">Forms</span></h2>
+    <p class="section-lead">All Sandy flags must come <strong>before</strong> <code>-x</code>. Everything after <code>-x &lt;exe&gt;</code> is forwarded to the child as-is.</p>
+
+    <pre><span class="syn-cmt"># Run from a TOML file</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-c</span> <span class="syn-arg">&lt;config.toml&gt;</span> <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
+
+<span class="syn-cmt"># Run from an inline TOML string</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-s</span> <span class="syn-arg">"&lt;toml&gt;"</span>       <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
+
+<span class="syn-cmt"># Run from a saved profile</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-p</span> <span class="syn-arg">&lt;profile&gt;</span>      <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-q]</span>       <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
+
+<span class="syn-cmt"># Trace (unsandboxed Procmon — requires admin)</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-t</span> <span class="syn-arg">&lt;report.txt&gt;</span>   <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span></pre>
+
+    <div class="callout info" style="margin-top:20px;">
+      <div class="callout-title">💡 Config sources are mutually exclusive</div>
+      <p><code>-c</code>, <code>-s</code>, and <code>-p</code> cannot be combined. If more than one is present, Sandy exits with code 128.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Flags ═══ -->
+<section id="flags">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Command-line <span class="accent">Flags</span></h2>
+    <p class="section-lead">Short and long forms are synonymous.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr class="group-row"><td colspan="2">Config input</td></tr>
+          <tr><td class="td-flag"><code>-c &lt;path&gt;</code>, <code>--config</code></td><td>Path to TOML config file</td></tr>
+          <tr><td class="td-flag"><code>-s &lt;toml&gt;</code>, <code>--string</code></td><td>Inline TOML config string — alternative to <code>-c</code></td></tr>
+          <tr><td class="td-flag"><code>-p &lt;name&gt;</code>, <code>--profile</code></td><td>Run with a saved profile — mutually exclusive with <code>-c</code> / <code>-s</code></td></tr>
+
+          <tr class="group-row"><td colspan="2">Execution</td></tr>
+          <tr><td class="td-flag"><code>-x &lt;path&gt;</code>, <code>--exec</code></td><td>Executable to run sandboxed — consumes all remaining arguments and forwards them to the child</td></tr>
+
+          <tr class="group-row"><td colspan="2">Logging &amp; output</td></tr>
+          <tr><td class="td-flag"><code>-l &lt;path&gt;</code>, <code>--log</code></td><td>Session log — captures config, stdout/stderr, and exit code</td></tr>
+          <tr><td class="td-flag"><code>-a &lt;path&gt;</code>, <code>--audit</code></td><td>Audit log of denied resource access — requires Procmon on PATH and admin elevation</td></tr>
+          <tr><td class="td-flag"><code>-d &lt;path&gt;</code>, <code>--dump</code></td><td>Crash dump output path — independent of <code>-a</code></td></tr>
+          <tr><td class="td-flag"><code>-L</code>, <code>--log-stamp</code></td><td>Prepend <code>YYYYMMDD_HHMMSS_uid_</code> to log / audit / dump filenames to prevent collisions on repeated runs</td></tr>
+          <tr><td class="td-flag"><code>-q</code>, <code>--quiet</code></td><td>Suppress the config banner printed to stderr on launch</td></tr>
+
+          <tr class="group-row"><td colspan="2">Profiles</td></tr>
+          <tr><td class="td-flag"><code>--create-profile &lt;name&gt;</code></td><td>Create a persistent sandbox profile — saves SID, ACLs, and config derived from <code>-c</code></td></tr>
+          <tr><td class="td-flag"><code>--delete-profile &lt;name&gt;</code></td><td>Delete a saved profile and revoke its persistent ACLs</td></tr>
+          <tr><td class="td-flag"><code>--profile-info &lt;name&gt;</code></td><td>Print profile details: type, SID, config, and grants</td></tr>
+
+          <tr class="group-row"><td colspan="2">Inspection &amp; tooling</td></tr>
+          <tr><td class="td-flag"><code>-t &lt;path&gt;</code>, <code>--trace</code></td><td>Trace app unsandboxed via Procmon — generates a feasibility report and suggested TOML. Requires Procmon on PATH and admin elevation</td></tr>
+          <tr><td class="td-flag"><code>--dry-run</code>, <code>--check</code></td><td>Validate config and show planned ACL changes — no system modifications made</td></tr>
+          <tr><td class="td-flag"><code>--print-config</code></td><td>Print resolved config to stdout with all defaults filled in — requires <code>-c</code> or <code>-s</code></td></tr>
+          <tr><td class="td-flag"><code>--print-container-toml</code></td><td>Print the default AppContainer TOML template to stdout</td></tr>
+          <tr><td class="td-flag"><code>--print-restricted-toml</code></td><td>Print the default Restricted Token TOML template to stdout</td></tr>
+          <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show active instances, stale grants, and scheduled tasks — optionally as JSON</td></tr>
+          <tr><td class="td-flag"><code>--cleanup</code></td><td>Restore stale state left by a crashed run — removes orphaned ACLs, loopback exemptions, scheduled tasks, and WER keys</td></tr>
+          <tr><td class="td-flag"><code>--explain &lt;code&gt;</code></td><td>Decode a numeric exit code — distinguishes Sandy codes (125–131), NTSTATUS, and Win32 error codes</td></tr>
+
+          <tr class="group-row"><td colspan="2">Info</td></tr>
+          <tr><td class="td-flag"><code>-v</code>, <code>--version</code></td><td>Print version and exit</td></tr>
+          <tr><td class="td-flag"><code>-h</code>, <code>--help</code></td><td>Print full help text with config reference</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Exit codes ═══ -->
+<section id="exit-codes">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Exit <span class="accent">Codes</span></h2>
+    <p class="section-lead">Sandy follows the POSIX high-code convention used by <code>bash</code>, <code>env</code>, <code>timeout</code>, and <code>git bisect</code>. Child exit codes 0–124 pass through unchanged with zero ambiguity.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Code</th><th>Origin</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><span class="ec thru">0</span></td><td>Child / Sandy</td><td>Success — child exited cleanly, or info command succeeded</td></tr>
+          <tr><td><span class="ec thru">1–124</span></td><td>Child</td><td>Child's own exit code, passed through unchanged</td></tr>
+          <tr><td><span class="ec sandy">125</span></td><td>Sandy</td><td>Internal / general error</td></tr>
+          <tr><td><span class="ec sandy">126</span></td><td>Sandy</td><td>Cannot execute — <code>CreateProcess</code> failed (permission denied, bad format)</td></tr>
+          <tr><td><span class="ec sandy">127</span></td><td>Sandy</td><td>Command not found — executable does not exist on disk</td></tr>
+          <tr><td><span class="ec sandy">128</span></td><td>Sandy</td><td>Configuration error — invalid TOML, wrong-mode key, config file not found</td></tr>
+          <tr><td><span class="ec sandy">129</span></td><td>Sandy</td><td>Sandbox setup failed — token / SID creation, ACL grants, or stdin setup</td></tr>
+          <tr><td><span class="ec warn">130</span></td><td>Sandy</td><td>Timeout — child killed by Sandy's watchdog</td></tr>
+          <tr><td><span class="ec warn">131</span></td><td>Sandy</td><td>Child crashed — NTSTATUS crash code detected (e.g. <code>0xC0000005</code> access violation)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout tip">
+      <div class="callout-title">💡 Automation tip</div>
+      <p>In scripts, check <code>exit code &gt;= 125</code> to detect Sandy-level failures. Codes 130 and 131 mean the child ran but terminated abnormally — use <code>sandy.exe --explain &lt;code&gt;</code> to decode any code, including raw NTSTATUS and Win32 error values.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p><a href="index.html">Sandy</a> &nbsp;·&nbsp; <a href="config.html">Config Reference</a> &nbsp;·&nbsp; <a href="modes.html">Sandbox Modes</a> &nbsp;·&nbsp; <a href="examples.html">Examples</a> &nbsp;·&nbsp; <a href="usage.html">Usage</a></p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.08 });
+  document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+</body>
+</html>

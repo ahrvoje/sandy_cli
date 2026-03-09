@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy sandbox modes — detailed comparison of AppContainer and Restricted Token (low and medium integrity), with availability table for all sandbox aspects.">
+  <title>Sandy — Sandbox Modes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: #0a0e17; --bg-secondary: #111827;
+      --bg-card: rgba(17,24,39,0.65); --bg-glass: rgba(255,255,255,0.04);
+      --border-glass: rgba(255,255,255,0.08); --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8; --text-muted: #64748b;
+      --accent: #38bdf8; --accent2: #a78bfa; --accent3: #34d399; --accent4: #fb923c;
+      --danger: #f87171; --radius: 12px; --shadow-card: 0 4px 24px rgba(0,0,0,0.35);
+      --transition: 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 600px 600px at 15% 10%,rgba(56,189,248,0.08),transparent), radial-gradient(ellipse 500px 500px at 85% 30%,rgba(167,139,250,0.07),transparent), radial-gradient(ellipse 400px 400px at 50% 80%,rgba(52,211,153,0.06),transparent); pointer-events: none; z-index: 0; }
+    .container { max-width: 1040px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+    section { padding: 72px 0; }
+    section + section { border-top: 1px solid var(--border-glass); }
+    nav { position: sticky; top: 0; z-index: 100; background: rgba(10,14,23,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
+    nav .container { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 4px; list-style: none; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
+    .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    @media (max-width: 700px) { .nav-links { display: none; } }
+    .page-hero { padding: 72px 0 48px; text-align: center; }
+    .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 660px; margin: 0 auto 24px; }
+    .breadcrumb { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    h2 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+    h2 .accent { color: var(--accent); }
+    .section-lead { color: var(--text-secondary); font-size: 1rem; margin-bottom: 32px; max-width: 720px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: var(--text-primary); }
+    .divider { width: 60px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--accent2)); border-radius: 2px; margin-bottom: 28px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 24px; backdrop-filter: blur(16px); box-shadow: var(--shadow-card); }
+    .card-grid { display: grid; gap: 20px; }
+    .card-grid.cols-2 { grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); }
+    .card-grid.cols-3 { grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); }
+    pre, code { font-family: 'JetBrains Mono','Cascadia Code',monospace; }
+    pre { background: rgba(0,0,0,0.35); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 20px 24px; overflow-x: auto; font-size: 0.84rem; line-height: 1.75; color: var(--text-secondary); }
+    code { background: rgba(56,189,248,0.1); padding: 2px 7px; border-radius: 5px; font-size: 0.88em; color: var(--accent); }
+    pre code { background: none; padding: 0; border-radius: 0; color: inherit; }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-glass); margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-glass); }
+    th { background: rgba(56,189,248,0.06); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); white-space: nowrap; }
+    td { color: var(--text-secondary); }
+    .td-aspect { color: var(--text-primary); font-weight: 500; font-family: inherit; font-size: 0.87rem; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    td.center { text-align: center; }
+    .callout { border-radius: var(--radius); padding: 16px 20px; margin: 20px 0; border-left: 3px solid; font-size: 0.90rem; line-height: 1.65; }
+    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+    .callout.success { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
+    .callout.danger  { border-color: var(--danger);  background: rgba(248,113,113,0.06); }
+    .callout-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .callout p { color: var(--text-secondary); }
+    .tag { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 0.76rem; font-weight: 600; }
+    .tag.ac   { background: rgba(56,189,248,0.15);  color: var(--accent); }
+    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .tag.both { background: rgba(52,211,153,0.15);  color: var(--accent3); }
+    /* Emoji cells */
+    .ok    { color: var(--accent3); font-size: 1.05rem; }
+    .no    { color: var(--danger);  font-size: 1.05rem; }
+    .cfg   { color: var(--accent4); font-size: 1.05rem; }
+    .warn  { color: #facc15;        font-size: 1.05rem; }
+    .lock  { color: var(--accent2); font-size: 1.05rem; }
+    .legend-row { display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.87rem; color: var(--text-secondary); margin-bottom: 16px; }
+    .legend-row span { display: inline-flex; align-items: center; gap: 6px; }
+    /* Mode highlight columns */
+    td.col-ac  { border-left: 1px solid rgba(56,189,248,0.12); }
+    td.col-rtl { border-left: 1px solid rgba(167,139,250,0.12); }
+    td.col-rtm { border-left: 1px solid rgba(167,139,250,0.06); }
+    th.col-ac  { border-left: 1px solid rgba(56,189,248,0.12); background: rgba(56,189,248,0.09); color: var(--accent); }
+    th.col-rtl { border-left: 1px solid rgba(167,139,250,0.12); background: rgba(167,139,250,0.09); color: var(--accent2); }
+    th.col-rtm { border-left: 1px solid rgba(167,139,250,0.06); background: rgba(167,139,250,0.05); color: var(--accent2); }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+    .fade-in.visible { opacity: 1; transform: none; }
+    footer { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-glass); }
+    footer a { color: var(--accent); text-decoration: none; }
+    ul.check-list { list-style: none; padding: 0; margin-top: 10px; }
+    ul.check-list li { font-size: 0.9rem; color: var(--text-secondary); padding: 3px 0; padding-left: 20px; position: relative; }
+    ul.check-list li::before { content: '✓'; position: absolute; left: 0; color: var(--accent3); font-weight: 700; }
+    ul.cross-list { list-style: none; padding: 0; margin-top: 6px; }
+    ul.cross-list li { font-size: 0.9rem; color: var(--text-muted); padding: 3px 0; padding-left: 20px; position: relative; }
+    ul.cross-list li::before { content: '✗'; position: absolute; left: 0; color: var(--danger); font-weight: 700; }
+    .card-mode-title { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .mode-badge { font-size: 0.95rem; font-weight: 700; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="config.html">Config</a></li>
+      <li><a href="modes.html" class="active">Modes</a></li>
+      <li><a href="examples.html">Examples</a></li>
+      <li><a href="usage.html">Usage</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>Sandbox Modes</span></div>
+    <h1>Sandbox Modes</h1>
+    <p>Detailed comparison of AppContainer and Restricted Token — architecture, capabilities, constraints, and how to choose the right mode for your use case.</p>
+  </div>
+</header>
+
+<!-- Architecture overview -->
+<section id="architecture">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Architecture <span class="accent">Overview</span></h2>
+    <p class="section-lead">Sandy supports two fundamentally different Windows sandbox mechanisms. Each creates a per-instance unique SID for complete ACE isolation — no two instances share security identifiers.</p>
+
+    <div class="card-grid cols-2">
+      <div class="card">
+        <div class="card-mode-title">
+          <span class="tag ac">AppContainer</span>
+          <span class="mode-badge" style="color:var(--accent);">AC</span>
+        </div>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:12px;">
+          Uses the same kernel-level isolation as UWP apps and Microsoft Edge. Each instance generates a UUID-based profile (<code>Sandy_&lt;uuid&gt;</code>) and receives a unique SID (<code>S-1-15-2-*</code>) from <code>CreateAppContainerProfile</code>.
+        </p>
+        <ul class="check-list">
+          <li>Isolated object namespace — invisible to other processes</li>
+          <li>Configurable network isolation (internet, LAN, localhost)</li>
+          <li>Private registry hive — no host registry access</li>
+          <li><code>system_dirs</code> controls Windows/Program Files access</li>
+          <li>DENY implemented via allow-mask reduction (kernel ignores DENY ACEs for AC SIDs)</li>
+          <li>Strongest isolation layer available to unprivileged users</li>
+        </ul>
+        <ul class="cross-list" style="margin-top:8px;">
+          <li>No named pipe creation</li>
+          <li>No COM/RPC server access</li>
+          <li>Network must be explicitly enabled</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-mode-title">
+          <span class="tag rt">Restricted Token</span>
+          <span class="mode-badge" style="color:var(--accent2);">RT</span>
+        </div>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:12px;">
+          Creates a restricted token with a per-instance SID (<code>S-1-9-*</code>) under the SECURITY_RESOURCE_MANAGER_AUTHORITY. The old fixed <code>S-1-5-12</code> SID remains in restricting SIDs for system object access only. Configurable integrity level: <code>low</code> or <code>medium</code>.
+        </p>
+        <ul class="check-list">
+          <li>Real <code>DENY_ACCESS</code> ACEs — kernel evaluates deny-before-allow</li>
+          <li>Named pipe support (<code>named_pipes = true</code>)</li>
+          <li>COM/RPC server access for complex applications</li>
+          <li>Configurable registry grants (<code>[registry]</code> section)</li>
+          <li>Medium integrity for wider app compatibility</li>
+          <li>Network always allowed (no config needed)</li>
+        </ul>
+        <ul class="cross-list" style="margin-top:8px;">
+          <li>Sharing host object namespace</li>
+          <li>Low integrity: user profile writes blocked by MIC</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Token and integrity details -->
+<section id="identity">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Identity &amp; <span class="accent">Isolation Layers</span></h2>
+    <p class="section-lead">Both modes generate a unique SID per instance — no two concurrent Sandy instances share security identifiers, even if they grant access to the same paths.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Aspect</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="td-aspect">SID authority</td><td class="col-ac"><code>S-1-15-2-*</code> (AppContainer)</td><td class="col-rtl"><code>S-1-9-*</code> (Resource Manager)</td><td class="col-rtm"><code>S-1-9-*</code> (Resource Manager)</td></tr>
+          <tr><td class="td-aspect">SID uniqueness</td><td class="col-ac">UUID-derived, per-profile</td><td class="col-rtl">GUID-derived, per-instance</td><td class="col-rtm">GUID-derived, per-instance</td></tr>
+          <tr><td class="td-aspect">Integrity level</td><td class="col-ac"><span class="lock">🔒</span> Low (fixed)</td><td class="col-rtl"><span class="lock">🔒</span> Low (fixed)</td><td class="col-rtm"><span class="lock">🔒</span> Medium (fixed)</td></tr>
+          <tr><td class="td-aspect">Object namespace</td><td class="col-ac"><span class="lock">🔒</span> Isolated, private</td><td class="col-rtl"><span class="lock">🔒</span> Shared with host</td><td class="col-rtm"><span class="lock">🔒</span> Shared with host</td></tr>
+          <tr><td class="td-aspect">Privilege stripping</td><td class="col-ac"><span class="lock">🔒</span> All stripped</td><td class="col-rtl"><span class="lock">🔒</span> All except SeChangeNotify</td><td class="col-rtm"><span class="lock">🔒</span> All except SeChangeNotify</td></tr>
+          <tr><td class="td-aspect">Elevation</td><td class="col-ac"><span class="no">❌</span> Blocked</td><td class="col-rtl"><span class="no">❌</span> Blocked</td><td class="col-rtm"><span class="no">❌</span> Blocked</td></tr>
+          <tr><td class="td-aspect">Isolation layers</td><td class="col-ac">2: SID + namespace</td><td class="col-rtl">2: SIDs + integrity</td><td class="col-rtm">1: SIDs only</td></tr>
+          <tr><td class="td-aspect">DENY ACE mechanism</td><td class="col-ac">Mask reduction (kernel ignores DENY ACEs)</td><td class="col-rtl">Real <code>DENY_ACCESS</code> ACEs</td><td class="col-rtm">Real <code>DENY_ACCESS</code> ACEs</td></tr>
+          <tr><td class="td-aspect">Pre-launch token validation</td><td class="col-ac">N/A</td><td class="col-rtl"><span class="ok">✅</span> Integrity verified (0x1000)</td><td class="col-rtm"><span class="ok">✅</span> Integrity verified (0x2000)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warning">
+      <div class="callout-title">⚠️ Critical: AC deny is mask reduction, not DENY ACEs</div>
+      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs — this is a kernel property, not a design choice. Sandy implements AC deny by computing <code>reducedMask = existingMask &amp; ~denyOnlyBits</code> and setting <code>PROTECTED_DACL</code> on denied paths to prevent re-inheritance from parent grants. Restricted Token mode uses real <code>DENY_ACCESS</code> ACEs, which the kernel evaluates deny-before-allow as expected.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Full capability comparison -->
+<section id="comparison">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Capability <span class="accent">Comparison</span></h2>
+    <p class="section-lead">All sandbox aspects across all three operating modes.</p>
+
+    <div class="legend-row">
+      <span><span class="lock">🔒</span> Fixed / always enforced</span>
+      <span><span class="no">❌</span> Blocked</span>
+      <span><span class="ok">✅</span> Always allowed</span>
+      <span><span class="cfg">⚙️</span> Configurable</span>
+      <span><span class="warn">⚠️</span> Warning / caveat</span>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Aspect</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Identity &amp; Process</td></tr>
+          <tr><td class="td-aspect">Integrity level</td><td class="col-ac center"><span class="lock">🔒</span> Low</td><td class="col-rtl center"><span class="lock">🔒</span> Low</td><td class="col-rtm center"><span class="lock">🔒</span> Medium</td></tr>
+          <tr><td class="td-aspect">Object namespace</td><td class="col-ac center"><span class="lock">🔒</span> Isolated</td><td class="col-rtl center"><span class="lock">🔒</span> Shared</td><td class="col-rtm center"><span class="lock">🔒</span> Shared</td></tr>
+          <tr><td class="td-aspect">Elevation</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="no">❌</span> Blocked</td></tr>
+
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Network</td></tr>
+          <tr><td class="td-aspect">Internet / outbound</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>network</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">LAN access</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>lan</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Localhost / loopback</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>localhost</code> ¹</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">IPC &amp; Interop</td></tr>
+          <tr><td class="td-aspect">Named pipes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>named_pipes</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>named_pipes</code></td></tr>
+          <tr><td class="td-aspect">COM / RPC servers</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Window messages (UIPI)</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Scheduled tasks</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">File System</td></tr>
+          <tr><td class="td-aspect">System dir reads (Windows, PF)</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>system_dirs</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">System dir writes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="no">❌</span> Blocked</td></tr>
+          <tr><td class="td-aspect">User profile reads</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">User profile writes</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow]</code> ²</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Custom file/folder grants</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[allow]</code></td></tr>
+          <tr><td class="td-aspect">DLL/API set resolution</td><td class="col-ac center"><span class="ok">✅</span> Allowed</td><td class="col-rtl center"><span class="warn">⚠️</span> May break apps</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Registry</td></tr>
+          <tr><td class="td-aspect">Registry reads</td><td class="col-ac center"><span class="ok">✅</span> Private hive</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">HKCU writes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">HKLM writes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="no">❌</span> Blocked</td></tr>
+          <tr><td class="td-aspect">Custom registry grants</td><td class="col-ac center"><span class="no">❌</span> N/A</td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[registry]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[registry]</code></td></tr>
+
+          <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Process &amp; I/O</td></tr>
+          <tr><td class="td-aspect">Child processes</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>child_processes</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>child_processes</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>child_processes</code></td></tr>
+          <tr><td class="td-aspect">Stdin</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>stdin</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>stdin</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>stdin</code></td></tr>
+          <tr><td class="td-aspect">Clipboard read</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>clipboard_read</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>clipboard_read</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>clipboard_read</code></td></tr>
+          <tr><td class="td-aspect">Clipboard write</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>clipboard_write</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>clipboard_write</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>clipboard_write</code></td></tr>
+          <tr><td class="td-aspect">Environment</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>inherit</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>inherit</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>inherit</code></td></tr>
+          <tr><td class="td-aspect">Resource limits</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[limit]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[limit]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[limit]</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
+      ¹ <code>localhost</code> (AppContainer) requires admin. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked).<br>
+      ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.
+    </p>
+  </div>
+</section>
+
+<!-- Choosing a mode -->
+<section id="choosing">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Choosing a <span class="accent">Mode</span></h2>
+    <p class="section-lead">Both modes are fully self-cleaning — ACLs and registry entries are tracked per-instance and always restored on exit, even after crash or power loss.</p>
+
+    <div class="card-grid cols-3">
+      <div class="card">
+        <span style="font-size:1.6rem;display:block;margin-bottom:12px;">🛡️</span>
+        <h3>Use AppContainer when…</h3>
+        <ul class="check-list">
+          <li>You need network isolation (control internet/LAN separately)</li>
+          <li>Maximum isolation is the priority</li>
+          <li>Running Python scripts, CLI tools, simple agents</li>
+          <li>App does not need named pipes or COM</li>
+          <li>Running agentic AI workflows</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span style="font-size:1.6rem;display:block;margin-bottom:12px;">🔧</span>
+        <h3>Use Restricted Low when…</h3>
+        <ul class="check-list">
+          <li>App needs named pipes (Flutter, Chromium, Bun IPC)</li>
+          <li>COM/RPC servers required</li>
+          <li>Maximum restriction still desired</li>
+          <li>App only writes to <code>AppData\LocalLow</code></li>
+          <li>Security research with network access</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span style="font-size:1.6rem;display:block;margin-bottom:12px;">⚖️</span>
+        <h3>Use Restricted Medium when…</h3>
+        <ul class="check-list">
+          <li>App needs named pipes AND user-profile writes</li>
+          <li>Interactive CLI tools (e.g. Claude Code, git)</li>
+          <li>COM, scheduled tasks, or window messages needed</li>
+          <li>App breaks under Low integrity and AC doesn't work</li>
+          <li>Trusted app, narrower threat surface needed</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="callout info" style="margin-top:28px;">
+      <div class="callout-title">💡 Not sure? Use <code>--trace</code> first</div>
+      <p>Run <code>sandy -t report.txt -x yourapp.exe</code> to analyze the application unsandboxed via Procmon, then review the generated feasibility report and suggested TOML. Requires Procmon on PATH and admin elevation.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Cleanup behavior -->
+<section id="cleanup">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Cleanup &amp; <span class="accent">Resilience</span></h2>
+    <p class="section-lead">Both modes track the same six resources and fully restore system state on any exit — including crash, taskkill, and power loss.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Resource</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted (any)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="td-aspect">ACL grants</td><td class="col-ac">Remove ACEs for instance SID (<code>S-1-15-2-*</code>)</td><td class="col-rtl">Remove ACEs for instance SID (<code>S-1-9-*</code>)</td></tr>
+          <tr><td class="td-aspect">AppContainer profile</td><td class="col-ac">Deleted: <code>Sandy_&lt;uuid&gt;</code></td><td class="col-rtl">N/A</td></tr>
+          <tr><td class="td-aspect">Loopback exemption</td><td class="col-ac">Removed via <code>CheckNetIsolation.exe</code></td><td class="col-rtl">N/A</td></tr>
+          <tr><td class="td-aspect">Desktop / WinSta ACLs</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID (best-effort)</td></tr>
+          <tr><td class="td-aspect">Registry grants</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID</td></tr>
+          <tr><td class="td-aspect">Instance subkey</td><td class="col-ac" colspan="2">Deleted from <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code></td></tr>
+          <tr><td class="td-aspect">Scheduled task</td><td class="col-ac" colspan="2">Deleted: <code>SandyCleanup_&lt;UUID&gt;</code></td></tr>
+          <tr><td class="td-aspect">WER crash keys</td><td class="col-ac" colspan="2">Removed from <code>HKCU\Software\Sandy\WER</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout success">
+      <div class="callout-title">✅ Multi-instance safe</div>
+      <p>Because each instance uses a unique SID, cleanup is ACE-level: <code>RemoveSidFromDacl</code> removes only ACEs matching the instance's SID. Concurrent instances never interfere — one instance's cleanup cannot accidentally revoke another's grants.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p><a href="index.html">Sandy</a> &nbsp;·&nbsp; <a href="config.html">Config Reference</a> &nbsp;·&nbsp; <a href="modes.html">Sandbox Modes</a> &nbsp;·&nbsp; <a href="examples.html">Examples</a> &nbsp;·&nbsp; <a href="usage.html">Usage</a></p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.08 });
+  document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+</body>
+</html>

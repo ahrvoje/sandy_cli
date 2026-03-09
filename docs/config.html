@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy TOML configuration reference — complete settings for AppContainer and Restricted Token modes.">
+  <title>Sandy — TOML Configuration Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: #0a0e17; --bg-secondary: #111827;
+      --bg-card: rgba(17,24,39,0.65); --bg-glass: rgba(255,255,255,0.04);
+      --border-glass: rgba(255,255,255,0.08); --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8; --text-muted: #64748b;
+      --accent: #38bdf8; --accent-glow: rgba(56,189,248,0.25);
+      --accent2: #a78bfa; --accent3: #34d399; --accent4: #fb923c;
+      --danger: #f87171; --radius: 12px; --shadow-card: 0 4px 24px rgba(0,0,0,0.35);
+      --transition: 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 600px 600px at 15% 10%,rgba(56,189,248,0.08),transparent), radial-gradient(ellipse 500px 500px at 85% 30%,rgba(167,139,250,0.07),transparent), radial-gradient(ellipse 400px 400px at 50% 80%,rgba(52,211,153,0.06),transparent); pointer-events: none; z-index: 0; }
+    .container { max-width: 1040px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+    section { padding: 72px 0; }
+    section + section { border-top: 1px solid var(--border-glass); }
+    nav { position: sticky; top: 0; z-index: 100; background: rgba(10,14,23,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
+    nav .container { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 4px; list-style: none; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
+    .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    @media (max-width: 700px) { .nav-links { display: none; } }
+    .page-hero { padding: 72px 0 48px; text-align: center; }
+    .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 660px; margin: 0 auto 24px; }
+    .breadcrumb { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    h2 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+    h2 .accent { color: var(--accent); }
+    .section-lead { color: var(--text-secondary); font-size: 1rem; margin-bottom: 32px; max-width: 720px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: var(--text-primary); }
+    .divider { width: 60px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--accent2)); border-radius: 2px; margin-bottom: 28px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 24px; backdrop-filter: blur(16px); box-shadow: var(--shadow-card); }
+    .card-grid { display: grid; gap: 20px; }
+    .card-grid.cols-2 { grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); }
+    pre, code { font-family: 'JetBrains Mono','Cascadia Code',monospace; }
+    pre { background: rgba(0,0,0,0.35); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 20px 24px; overflow-x: auto; font-size: 0.84rem; line-height: 1.75; color: var(--text-secondary); }
+    code { background: rgba(56,189,248,0.1); padding: 2px 7px; border-radius: 5px; font-size: 0.88em; color: var(--accent); }
+    pre code { background: none; padding: 0; border-radius: 0; color: inherit; }
+    .code-comment { color: var(--text-muted); }
+    .code-keyword { color: var(--accent2); }
+    .code-string  { color: var(--accent3); }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-glass); margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-glass); }
+    th { background: rgba(56,189,248,0.06); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); white-space: nowrap; }
+    td { color: var(--text-secondary); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    td:first-child { font-family: 'JetBrains Mono',monospace; font-size: 0.81rem; color: var(--accent); }
+    .status { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; font-size: 0.74rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+    .status.req  { background: rgba(52,211,153,0.15); color: var(--accent3); border: 1px solid rgba(52,211,153,0.25); }
+    .status.opt  { background: rgba(56,189,248,0.12); color: var(--accent); border: 1px solid rgba(56,189,248,0.2); }
+    .status.na   { background: rgba(100,116,139,0.12); color: var(--text-muted); border: 1px solid rgba(100,116,139,0.2); }
+    .callout { border-radius: var(--radius); padding: 16px 20px; margin: 20px 0; border-left: 3px solid; font-size: 0.90rem; line-height: 1.65; }
+    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+    .callout.danger  { border-color: var(--danger);  background: rgba(248,113,113,0.06); }
+    .callout-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .callout p { color: var(--text-secondary); }
+    .tag { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 0.74rem; font-weight: 600; }
+    .tag.ac   { background: rgba(56,189,248,0.15);  color: var(--accent); }
+    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .tag.both { background: rgba(52,211,153,0.15);  color: var(--accent3); }
+    .section-header { display: flex; align-items: center; gap: 10px; margin-top: 36px; margin-bottom: 12px; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+    .fade-in.visible { opacity: 1; transform: none; }
+    footer { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-glass); }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="config.html" class="active">Config</a></li>
+      <li><a href="modes.html">Modes</a></li>
+      <li><a href="examples.html">Examples</a></li>
+      <li><a href="usage.html">Usage</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>TOML Config Reference</span></div>
+    <h1>TOML Configuration Reference</h1>
+    <p>Complete settings for AppContainer and Restricted Token modes — every key, its default, and whether it is mandatory, optional, or unavailable.</p>
+  </div>
+</header>
+
+<section id="overview">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Configuration <span class="accent">Fundamentals</span></h2>
+    <p class="section-lead">Every config must have a <code>[sandbox]</code> section. Everything else defaults to deny-all / disabled. Omitting a setting never grants more access. Wrong-mode keys, unknown keys, and unknown sections are all configuration errors (exit 128).</p>
+
+    <div class="card-grid cols-2">
+      <div class="card">
+        <h3>📐 Minimal valid config</h3>
+        <pre><span class="code-keyword">[sandbox]</span>
+token = <span class="code-string">'appcontainer'</span></pre>
+        <p style="margin-top:12px;color:var(--text-secondary);font-size:0.9rem;">Two lines. All other sections are optional. No access is granted by omission — defaults are deny-all / disabled.</p>
+      </div>
+      <div class="card">
+        <h3>⚠️ Config limits</h3>
+        <div class="table-wrap" style="margin:0;">
+          <table>
+            <tr><td>Config file</td><td>max 1 MB</td></tr>
+            <tr><td>Path length</td><td>max 32,768 chars</td></tr>
+            <tr><td>Rules per section</td><td>max 256 in <code>[allow]</code>, <code>[deny]</code>, <code>[registry]</code></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout warning">
+      <div class="callout-title">⛔ Wrong-mode keys are rejected</div>
+      <p>Using an AC-only key (e.g. <code>network</code>, <code>system_dirs</code>) in an RT config, or an RT-only key (<code>named_pipes</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
+    </div>
+  </div>
+</section>
+
+<section id="settings">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>All <span class="accent">Settings</span></h2>
+
+    <div class="legend">
+      <span class="status req">● Required</span>
+      <span class="status opt">● Optional (safe default)</span>
+      <span class="status na">● N/A — error if used</span>
+    </div>
+
+    <!-- [sandbox] -->
+    <div class="section-header">
+      <h3><code>[sandbox]</code></h3><span class="tag both">both modes</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Values</th><th>Default</th><th>AppContainer</th><th>Restricted</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>token</td><td><code>'appcontainer'</code> / <code>'restricted'</code></td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td><td>Isolation model</td></tr>
+          <tr><td>integrity</td><td><code>'low'</code> / <code>'medium'</code></td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td><td><code>low</code> = strongest; <code>medium</code> = wider compatibility</td></tr>
+          <tr><td>workdir</td><td>absolute path</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Child cwd. Default: inherited from Sandy's cwd</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- [allow] -->
+    <div class="section-header">
+      <h3><code>[allow]</code> — File and folder grants</h3><span class="tag both">both modes</span>
+    </div>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). All grants are recursive except <code>peek</code> (directory itself only, non-recursive).</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Default</th><th>AC</th><th>RT</th><th>Permission granted</th></tr></thead>
+        <tbody>
+          <tr><td>peek</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>List directory + stat only — non-recursive, directory itself only</td></tr>
+          <tr><td>read</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read files, list dirs (recursive). Does NOT grant execute.</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create/modify files (recursive). Does NOT grant read.</td></tr>
+          <tr><td>execute</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read + execute files, list dirs (recursive)</td></tr>
+          <tr><td>append</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Append-only. Cannot overwrite or read.</td></tr>
+          <tr><td>delete</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Delete only. No read or write.</td></tr>
+          <tr><td>all</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Full access: read+write+execute+delete. Strips WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout info">
+      <div class="callout-title">💡 Allow-inside-deny pipeline</div>
+      <p>You can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>deny.all = ['C:\repos']</code> + <code>allow.all = ['C:\repos\snipps']</code>.</p>
+    </div>
+
+    <!-- [deny] -->
+    <div class="section-header">
+      <h3><code>[deny]</code> — Block specific permissions</h3><span class="tag both">both modes</span>
+    </div>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). <code>peek</code> is not in <code>[deny]</code>. Deny is recursive and surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Default</th><th>AC mechanism</th><th>RT mechanism</th></tr></thead>
+        <tbody>
+          <tr><td>read</td><td><code>[]</code></td><td>Mask reduction (ALLOW bits subtracted)</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE. Does NOT block delete.</td></tr>
+          <tr><td>execute</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>append</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>delete</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>all</td><td><code>[]</code></td><td>Mask reduction (all bits)</td><td>Real <code>DENY_ACCESS</code> ACE (all bits)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout warning">
+      <div class="callout-title">⚠️ AppContainer deny is mask reduction, not DENY ACEs</div>
+      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy implements AC deny by subtracting bits from the existing ALLOW mask and setting <code>PROTECTED_DACL</code> to block re-inheritance from parent grants.</p>
+    </div>
+
+    <!-- [privileges] -->
+    <div class="section-header">
+      <h3><code>[privileges]</code> — Sandbox capabilities</h3><span class="tag both">both (mode-gated keys)</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>system_dirs</td><td>bool</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Read access to C:\Windows, Program Files via ALL_APPLICATION_PACKAGES. Keep <code>true</code> for most apps.</td></tr>
+          <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
+          <tr><td>localhost</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Loopback TCP. Requires admin (uses CheckNetIsolation.exe).</td></tr>
+          <tr><td>lan</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN access. RT mode: always allowed.</td></tr>
+          <tr><td>named_pipes</td><td>bool</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Allow CreateNamedPipeW. Required for Flutter, Chromium, Bun/Node IPC.</td></tr>
+          <tr><td>stdin</td><td>bool / path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; path=redirect from file</td></tr>
+          <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow reading from the system clipboard</td></tr>
+          <tr><td>clipboard_write</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow writing to the system clipboard</td></tr>
+          <tr><td>child_processes</td><td>bool</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow spawning child processes. Set <code>false</code> only for strictly single-process scripts.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- [registry] -->
+    <div class="section-header">
+      <h3><code>[registry]</code> — Registry key grants</h3><span class="tag rt">Restricted only</span>
+    </div>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Not available in AppContainer — AC uses a fixed private registry hive automatically. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>read</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant read access to specific registry keys</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant write access to specific registry keys</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- [environment] -->
+    <div class="section-header">
+      <h3><code>[environment]</code> — Environment variables</h3><span class="tag both">both modes</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>inherit</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>true</code>: pass full parent env; <code>false</code>: clean env + essential Windows vars + <code>pass</code> list</td></tr>
+          <tr><td>pass</td><td>string array</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Specific vars to include when <code>inherit = false</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:8px;">
+      <h3 style="font-size:0.9rem;margin-bottom:8px;">Always passed when <code>inherit = false</code></h3>
+      <p style="color:var(--text-secondary);font-size:0.85rem;line-height:1.8;">
+        <code>SYSTEMROOT</code> · <code>SYSTEMDRIVE</code> · <code>WINDIR</code> · <code>OS</code> · <code>TEMP</code> · <code>TMP</code> · <code>COMSPEC</code> · <code>PATHEXT</code> · <code>LOCALAPPDATA</code> · <code>APPDATA</code> · <code>USERPROFILE</code> · <code>HOMEDRIVE</code> · <code>HOMEPATH</code> · <code>PROCESSOR_ARCHITECTURE</code> · <code>NUMBER_OF_PROCESSORS</code>
+      </p>
+    </div>
+
+    <!-- [limit] -->
+    <div class="section-header">
+      <h3><code>[limit]</code> — Resource constraints</h3><span class="tag both">both modes</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Kill after N seconds. <code>0</code>=no limit. Sandy exits 130 on timeout.</td></tr>
+          <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap. <code>0</code>=no limit. Enforced via job objects.</td></tr>
+          <tr><td>processes</td><td>count</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Max active process count. <code>0</code>=no limit.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout danger">
+      <div class="callout-title">🔒 Limits are fail-closed</div>
+      <p>If a limit is configured but cannot be enforced (job object failure), Sandy terminates the child and exits with code <strong>129</strong>. The sandbox never runs with unenforced limits.</p>
+    </div>
+  </div>
+</section>
+
+<section id="summary">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Availability <span class="accent">Summary</span></h2>
+    <p class="section-lead">One-glance view of every key and its status per mode.</p>
+    <div class="legend">
+      <span class="status req">🟢 Required</span>
+      <span class="status opt">🔵 Optional</span>
+      <span class="status na">🔴 N/A — error if used</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Section / Key</th><th>Default</th><th>AppContainer</th><th>Restricted</th></tr></thead>
+        <tbody>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[sandbox]</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
+          <tr><td>&ensp;token</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
+          <tr><td>&ensp;integrity</td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td></tr>
+          <tr><td>&ensp;workdir</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow] all keys</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny] all keys</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
+          <tr><td>&ensp;system_dirs</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;localhost</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;named_pipes</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;stdin</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;clipboard_read</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;clipboard_write</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;child_processes</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[registry]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;read / write</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[environment]</td><td>—</td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;inherit</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;pass</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[limit]</td><td>—</td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;timeout / memory / processes</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="permbits">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Permission <span class="accent">Bit Reference</span></h2>
+    <p class="section-lead">Exact Windows access masks per <code>[allow]</code> level. <code>write</code> ≠ <code>read</code>, and <code>read</code> ≠ <code>execute</code>.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Level</th><th>Key</th><th>Key Windows bits</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Read</td><td><code>read</code></td><td><code>FILE_READ_DATA, FILE_READ_EA, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE</code></td><td>Cannot load DLLs — no FILE_EXECUTE</td></tr>
+          <tr><td>Write</td><td><code>write</code></td><td><code>FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE, FILE_READ_ATTRIBUTES</code></td><td>Cannot list/read contents</td></tr>
+          <tr><td>Execute</td><td><code>execute</code></td><td>All Read bits + <code>FILE_EXECUTE</code></td><td>Standard (RX) — minimum to run programs</td></tr>
+          <tr><td>Append</td><td><code>append</code></td><td><code>FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Cannot overwrite existing data</td></tr>
+          <tr><td>Delete</td><td><code>delete</code></td><td><code>DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>No read or write</td></tr>
+          <tr><td>All</td><td><code>all</code></td><td><code>FILE_ALL_ACCESS &amp; ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER)</code></td><td>Full data control. WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD intentionally stripped.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p><a href="index.html">Sandy</a> &nbsp;·&nbsp; <a href="config.html">Config Reference</a> &nbsp;·&nbsp; <a href="modes.html">Sandbox Modes</a> &nbsp;·&nbsp; <a href="examples.html">Examples</a></p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.08 });
+  document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+</body>
+</html>

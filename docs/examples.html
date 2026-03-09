@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy minimal examples — simple Python file-mangling script, AppContainer hello world, and Claude Code with Restricted Token sandbox configuration.">
+  <title>Sandy — Examples</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary: #0a0e17; --bg-secondary: #111827;
+      --bg-card: rgba(17,24,39,0.65); --bg-glass: rgba(255,255,255,0.04);
+      --border-glass: rgba(255,255,255,0.08); --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8; --text-muted: #64748b;
+      --accent: #38bdf8; --accent2: #a78bfa; --accent3: #34d399; --accent4: #fb923c;
+      --danger: #f87171; --radius: 12px; --shadow-card: 0 4px 24px rgba(0,0,0,0.35);
+      --transition: 0.3s cubic-bezier(0.4,0,0.2,1);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 600px 600px at 15% 10%,rgba(56,189,248,0.08),transparent), radial-gradient(ellipse 500px 500px at 85% 30%,rgba(167,139,250,0.07),transparent), radial-gradient(ellipse 400px 400px at 50% 80%,rgba(52,211,153,0.06),transparent); pointer-events: none; z-index: 0; }
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+    section { padding: 72px 0; }
+    section + section { border-top: 1px solid var(--border-glass); }
+    nav { position: sticky; top: 0; z-index: 100; background: rgba(10,14,23,0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
+    nav .container { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+    .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; gap: 4px; list-style: none; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
+    .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    @media (max-width: 700px) { .nav-links { display: none; } }
+    .page-hero { padding: 72px 0 48px; text-align: center; }
+    .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 620px; margin: 0 auto 24px; }
+    .breadcrumb { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    h2 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+    h2 .accent { color: var(--accent); }
+    .section-lead { color: var(--text-secondary); font-size: 1rem; margin-bottom: 28px; max-width: 720px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: var(--text-primary); }
+    .divider { width: 60px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--accent2)); border-radius: 2px; margin-bottom: 28px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 24px 28px; backdrop-filter: blur(16px); box-shadow: var(--shadow-card); }
+    pre, code { font-family: 'JetBrains Mono','Cascadia Code',monospace; }
+    pre { background: rgba(0,0,0,0.4); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 20px 24px; overflow-x: auto; font-size: 0.84rem; line-height: 1.8; color: var(--text-secondary); position: relative; }
+    code { background: rgba(56,189,248,0.1); padding: 2px 7px; border-radius: 5px; font-size: 0.88em; color: var(--accent); }
+    pre code { background: none; padding: 0; border-radius: 0; color: inherit; }
+    .code-comment { color: var(--text-muted); font-style: italic; }
+    .code-keyword { color: var(--accent2); }
+    .code-string  { color: var(--accent3); }
+    .code-key     { color: var(--accent); }
+    .code-value   { color: var(--accent4); }
+    .code-section { color: var(--accent2); font-weight: 600; }
+    .code-cmd     { color: var(--accent); }
+    .code-builtin { color: var(--accent3); }
+    .code-num     { color: #f9a8d4; }
+    /* file label above code block */
+    .file-label { font-family: 'JetBrains Mono',monospace; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .file-label span { color: var(--accent); font-weight: 600; }
+    /* example block = card + optional file label + pre */
+    .example-block { margin-bottom: 28px; }
+    .callout { border-radius: var(--radius); padding: 16px 20px; margin: 20px 0; border-left: 3px solid; font-size: 0.90rem; line-height: 1.65; }
+    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
+    .callout.success { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
+    .callout-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .callout p { color: var(--text-secondary); }
+    .tag { display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 0.76rem; font-weight: 600; }
+    .tag.ac   { background: rgba(56,189,248,0.15); color: var(--accent); }
+    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .tag.both { background: rgba(52,211,153,0.15); color: var(--accent3); }
+    .example-header { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .example-num { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg,var(--accent),var(--accent2)); color: var(--bg-primary); font-weight: 800; font-size: 0.88rem; flex-shrink: 0; }
+    .toc { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 0; }
+    .toc a { color: var(--accent); text-decoration: none; font-size: 0.87rem; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-glass); background: var(--bg-glass); transition: background var(--transition), border-color var(--transition); }
+    .toc a:hover { background: rgba(56,189,248,0.08); border-color: rgba(56,189,248,0.3); }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-glass); margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-glass); }
+    th { background: rgba(56,189,248,0.06); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); }
+    td { color: var(--text-secondary); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+    .fade-in.visible { opacity: 1; transform: none; }
+    footer { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-glass); }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="index.html">Overview</a></li>
+      <li><a href="config.html">Config</a></li>
+      <li><a href="modes.html">Modes</a></li>
+      <li><a href="examples.html" class="active">Examples</a></li>
+      <li><a href="usage.html">Usage</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>Examples</span></div>
+    <h1>Minimal Examples</h1>
+    <p>Copy-paste starting points. Comment-free and stripped to essentials — every line present for a reason.</p>
+  </div>
+</header>
+
+<!-- TOC -->
+<section id="toc" style="padding: 32px 0;">
+  <div class="container">
+    <div class="toc">
+      <a href="#ex-ac-minimal">1. AppContainer minimal</a>
+      <a href="#ex-file-mangle">2. Python file-mangling</a>
+      <a href="#ex-rt-minimal">3. Restricted Token minimal</a>
+      <a href="#ex-claude">4. Claude Code (RT medium)</a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Ex 1: AppContainer minimal ═══ -->
+<section id="ex-ac-minimal">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <div class="example-header">
+      <span class="example-num">1</span>
+      <h2>AppContainer <span class="accent">Minimal</span></h2>
+      <span class="tag ac">AppContainer</span>
+    </div>
+    <p class="section-lead">The smallest possible AC config. Two mandatory lines. All access defaults to deny-all.</p>
+
+    <div class="file-label">📄 <span>minimal_ac.toml</span></div>
+    <pre><span class="code-section">[sandbox]</span>
+<span class="code-key">token</span> = <span class="code-string">'appcontainer'</span></pre>
+
+    <div class="file-label" style="margin-top:20px;">💻 <span>Command</span></div>
+    <pre><span class="code-cmd">sandy.exe</span> -c minimal_ac.toml -x cmd.exe /c echo hello</pre>
+
+    <div class="callout info">
+      <div class="callout-title">💡 What this does</div>
+      <p>Runs <code>cmd.exe</code> in an AppContainer with <em>no file grants</em> — it can read from system directories (<code>system_dirs = true</code> is the default) but cannot touch any user files, network, or registry. Good starting point to add <code>[allow]</code> rules incrementally.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Ex 2: Python file-mangling ═══ -->
+<section id="ex-file-mangle">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <div class="example-header">
+      <span class="example-num">2</span>
+      <h2>Python <span class="accent">File-Mangling</span></h2>
+      <span class="tag ac">AppContainer</span>
+    </div>
+    <p class="section-lead">A Python script that renames, rewrites, and deletes files in a working directory — sandboxed so a bug or runaway glob can only affect the explicitly granted folder.</p>
+
+    <div class="file-label">📄 <span>mangle.toml</span></div>
+    <pre><span class="code-section">[sandbox]</span>
+<span class="code-key">token</span>   = <span class="code-string">'appcontainer'</span>
+<span class="code-key">workdir</span> = <span class="code-string">'C:\work\output'</span>
+
+<span class="code-section">[allow]</span>
+<span class="code-key">execute</span> = [<span class="code-string">'C:\Python313'</span>]   <span class="code-comment"># run the interpreter + stdlib</span>
+<span class="code-key">all</span>     = [<span class="code-string">'C:\work\output'</span>]  <span class="code-comment"># full access to output folder only</span>
+
+<span class="code-section">[environment]</span>
+<span class="code-key">pass</span> = [<span class="code-string">'PATH'</span>]</pre>
+
+    <div class="file-label" style="margin-top:20px;">🐍 <span>mangle.py</span></div>
+    <pre><span class="code-keyword">import</span> pathlib, re, shutil, sys
+
+ROOT = pathlib.Path(<span class="code-string">"."</span>)          <span class="code-comment"># cwd = C:\work\output (from workdir)</span>
+
+<span class="code-comment"># 1. rename: strip leading digits from all .txt filenames</span>
+<span class="code-keyword">for</span> p <span class="code-keyword">in</span> ROOT.glob(<span class="code-string">"*.txt"</span>):
+    new_name = re.sub(<span class="code-string">r"^\d+_"</span>, <span class="code-string">""</span>, p.name)
+    <span class="code-keyword">if</span> new_name != p.name:
+        p.rename(ROOT / new_name)
+        <span class="code-builtin">print</span>(<span class="code-string">f"renamed: {p.name} → {new_name}"</span>)
+
+<span class="code-comment"># 2. rewrite: uppercase all lines in *.log files</span>
+<span class="code-keyword">for</span> p <span class="code-keyword">in</span> ROOT.glob(<span class="code-string">"*.log"</span>):
+    data = p.read_text(encoding=<span class="code-string">"utf-8"</span>)
+    p.write_text(data.upper(), encoding=<span class="code-string">"utf-8"</span>)
+    <span class="code-builtin">print</span>(<span class="code-string">f"uppercased: {p.name}"</span>)
+
+<span class="code-comment"># 3. delete: remove all *.tmp files</span>
+<span class="code-keyword">for</span> p <span class="code-keyword">in</span> ROOT.glob(<span class="code-string">"*.tmp"</span>):
+    p.unlink()
+    <span class="code-builtin">print</span>(<span class="code-string">f"deleted: {p.name}"</span>)
+
+<span class="code-comment"># 4. create summary</span>
+(ROOT / <span class="code-string">"_summary.txt"</span>).write_text(
+    <span class="code-string">f"processed {len(list(ROOT.iterdir()))} files\n"</span>,
+    encoding=<span class="code-string">"utf-8"</span>
+)
+<span class="code-builtin">print</span>(<span class="code-string">"done."</span>)</pre>
+
+    <div class="file-label" style="margin-top:20px;">💻 <span>Command</span></div>
+    <pre><span class="code-cmd">sandy.exe</span> -c mangle.toml -x C:\Python313\python.exe mangle.py</pre>
+
+    <div class="callout success">
+      <div class="callout-title">✅ Safety guarantee</div>
+      <p>Any bug in <code>mangle.py</code> — a wrong glob pattern, a recursive delete, a path escape — is constrained to <code>C:\work\output</code>. The rest of your filesystem is kernel-protected. No <code>--allow</code> flag needed; protection is structural.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Ex 3: Restricted Token minimal ═══ -->
+<section id="ex-rt-minimal">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <div class="example-header">
+      <span class="example-num">3</span>
+      <h2>Restricted Token <span class="accent">Minimal</span></h2>
+      <span class="tag rt">Restricted Token</span>
+    </div>
+    <p class="section-lead">Smallest valid RT config. Three mandatory lines. Everything else is deny-all.</p>
+
+    <div class="file-label">📄 <span>minimal_rt.toml</span></div>
+    <pre><span class="code-section">[sandbox]</span>
+<span class="code-key">token</span>     = <span class="code-string">'restricted'</span>
+<span class="code-key">integrity</span> = <span class="code-string">'low'</span></pre>
+
+    <div class="file-label" style="margin-top:20px;">💻 <span>Command</span></div>
+    <pre><span class="code-cmd">sandy.exe</span> -c minimal_rt.toml -x powershell.exe -NoProfile -Command "whoami /all"</pre>
+
+    <div class="callout info">
+      <div class="callout-title">💡 RT vs AC defaults</div>
+      <p>Unlike AppContainer, Restricted Token already inherits <code>BUILTIN\Users</code> read access to system dirs and most of <code>HKLM\Software</code> — so no <code>system_dirs</code> or base read grants are needed. Manual <code>[allow]</code> grants add <em>write</em> or <em>execute</em> permissions sandy doesn't have by default.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Ex 4: Claude Code ═══ -->
+<section id="ex-claude">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <div class="example-header">
+      <span class="example-num">4</span>
+      <h2>Claude Code <span class="accent">(Restricted Token)</span></h2>
+      <span class="tag rt">Restricted Token</span>
+    </div>
+    <p class="section-lead">
+      Sandboxes Claude Code CLI to a single project directory (<code>C:\repos\snipps</code>). Restricted Token medium — needed for named pipes (Bun/Node IPC) and interactive stdin. Inherits <code>BUILTIN\Users</code> read/exec, so no base grants needed: only write/delete paths are explicitly listed.
+    </p>
+
+    <div class="file-label">📄 <span>sandy_claude.toml</span></div>
+    <pre><span class="code-section">[sandbox]</span>
+<span class="code-key">token</span>     = <span class="code-string">'restricted'</span>
+<span class="code-key">integrity</span> = <span class="code-string">'medium'</span>
+<span class="code-key">workdir</span>   = <span class="code-string">'C:\repos\snipps'</span>
+
+<span class="code-section">[allow]</span>
+<span class="code-key">write</span> = [<span class="code-string">'C:\Users\H\.claude'</span>]   <span class="code-comment"># session state / cache</span>
+<span class="code-key">all</span>   = [<span class="code-string">'C:\repos\snipps'</span>]    <span class="code-comment"># project — full access</span>
+
+<span class="code-section">[deny]</span>
+<span class="code-key">all</span> = [
+  <span class="code-string">'C:\Users\H\.codex'</span>,
+  <span class="code-string">'C:\Users\H\.gemini'</span>,
+  <span class="code-string">'C:\Users\H\.ssh'</span>,
+  <span class="code-string">'C:\Users\H\.ollama'</span>,
+  <span class="code-string">'C:\Users\H\.antigravity'</span>,
+  <span class="code-string">'C:\Users\H\Downloads'</span>,
+  <span class="code-string">'C:\Users\H\OneDrive'</span>,
+  <span class="code-string">'C:\store'</span>,
+  <span class="code-string">'C:\repos'</span>,   <span class="code-comment"># deny all other projects</span>
+]
+
+<span class="code-section">[privileges]</span>
+<span class="code-key">named_pipes</span> = <span class="code-value">true</span>   <span class="code-comment"># Bun/Node IPC</span>
+<span class="code-key">stdin</span>       = <span class="code-value">true</span>   <span class="code-comment"># interactive CLI</span>
+<span class="code-key">child_processes</span> = <span class="code-value">true</span>   <span class="code-comment"># Claude spawns node, git, etc.</span>
+
+<span class="code-section">[environment]</span>
+<span class="code-key">inherit</span> = <span class="code-value">true</span></pre>
+
+    <div class="file-label" style="margin-top:20px;">💻 <span>Command</span></div>
+    <pre><span class="code-cmd">sandy.exe</span> -c sandy_claude.toml -x claude.exe</pre>
+
+    <div class="callout info" style="margin-top:20px;">
+      <div class="callout-title">💡 Why Restricted Token medium?</div>
+      <p>
+        Claude Code is an interactive CLI that spawns Node.js, Bun, and git — all of which use named pipes for IPC. AppContainer blocks named pipes entirely. Restricted Low would block writes to most of <code>C:\Users\H</code> due to Mandatory Integrity Control. Restricted Medium with explicit <code>[deny].all</code> on sensitive dirs gives Claude the process compat it needs while still hard-blocking credentials, other projects, and secrets at the kernel level.
+      </p>
+    </div>
+
+    <div class="callout success" style="margin-top:0;">
+      <div class="callout-title">✅ How the allow-inside-deny pipeline works here</div>
+      <p>
+        <code>deny.all = ['C:\repos']</code> blocks all access to the entire <code>repos</code> tree. Then <code>allow.all = ['C:\repos\snipps']</code> is detected as inside a deny — Sandy automatically strips the deny ACEs from <code>snipps</code> and grants full access. The pipeline log shows:<br>
+        <code style="font-size:0.8rem;display:block;margin-top:8px;color:var(--text-muted);">PIPELINE: DENY [ALL] C:\repos → ALLOW [ALL] C:\repos\snipps ← strip deny (subtree)</code>
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p><a href="index.html">Sandy</a> &nbsp;·&nbsp; <a href="config.html">Config Reference</a> &nbsp;·&nbsp; <a href="modes.html">Sandbox Modes</a> &nbsp;·&nbsp; <a href="examples.html">Examples</a> &nbsp;·&nbsp; <a href="usage.html">Usage</a></p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.08 });
+  document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
