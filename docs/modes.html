@@ -39,12 +39,14 @@
     nav { position: sticky; top: 0; z-index: 100; background: rgba(253, 246, 227, 0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
     nav .container { display: flex; align-items: center; justify-content: space-between; max-width: 840px; height: 56px; }
     .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
-    .nav-links { display: flex; gap: 4px; list-style: none; }
+    .nav-links { display: flex; align-items: center; gap: 4px; list-style: none; }
     .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
     .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    .nav-icon { display: flex !important; align-items: center; padding: 6px 8px !important; color: var(--text-primary) !important; }
+    .nav-icon:hover { background: var(--bg-glass) !important; }
     .download-btn { color: var(--bg-primary) !important; background: linear-gradient(135deg, var(--accent), var(--accent2)) !important; font-weight: 600 !important; padding: 6px 16px !important; margin-left: 8px; }
     .download-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25); }
-    @media (max-width: 700px) { .nav-links { display: none; } }
+    @media (max-width: 700px) { nav .container { justify-content: flex-start; } .nav-brand { margin-right: 12px; } .nav-links { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; white-space: nowrap; } .nav-links::-webkit-scrollbar { display: none; } .nav-links li { flex-shrink: 0; } }
     .page-hero { padding: 24px 0 48px; text-align: center; }
     .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
     .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 660px; margin: 0 auto 24px; }
@@ -118,11 +120,17 @@
   <div class="container">
     <a href="index.html" class="nav-brand">Sandy</a>
     <ul class="nav-links">
+      <li><a href="internals.html">Internals</a></li>
       <li><a href="config.html">Config</a></li>
       <li><a href="modes.html" class="active">Modes</a></li>
       <li><a href="examples.html">Examples</a></li>
       <li><a href="usage.html">Usage</a></li>
       <li><a href="https://github.com/ahrvoje/sandy_cli/releases" target="_blank" class="download-btn">Download</a></li>
+      <li>
+        <a href="https://github.com/ahrvoje/sandy_cli" target="_blank" class="nav-icon" title="GitHub Repository">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        </a>
+      </li>
     </ul>
   </div>
 </nav>
@@ -376,7 +384,19 @@
 
 <footer>
   <div class="container">
-    <p><a href="index.html">Sandy</a> &nbsp;·&nbsp; <a href="config.html">Config Reference</a> &nbsp;·&nbsp; <a href="modes.html">Sandbox Modes</a> &nbsp;·&nbsp; <a href="examples.html">Examples</a> &nbsp;·&nbsp; <a href="usage.html">Usage</a></p>
+    <p style="margin-bottom: 8px;">
+      <a href="index.html">Sandy</a> &nbsp;&middot;&nbsp; 
+      <a href="internals.html">Internals</a> &nbsp;&middot;&nbsp; 
+      <a href="config.html">Config Reference</a> &nbsp;&middot;&nbsp; 
+      <a href="modes.html">Sandbox Modes</a> &nbsp;&middot;&nbsp; 
+      <a href="examples.html">Examples</a> &nbsp;&middot;&nbsp; 
+      <a href="usage.html">Usage</a>
+    </p>
+    <p>
+      MIT Licensed &middot; 
+      <a href="https://github.com/ahrvoje/sandy_cli" target="_blank" rel="noopener">GitHub</a> &middot; 
+      Built for secure, lean, unprivileged sandboxing on Windows
+    </p>
   </div>
 </footer>
 

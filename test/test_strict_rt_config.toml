@@ -10,5 +10,6 @@ read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\Users\H\test_limits\scripts',
 ]
+
 [environment]
 inherit = true

@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Sandy Internals — Deep dive into DACLs, ACLs, SIDs, and Isolation Pipelines.">
+  <title>Sandy — Internals & Access Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg-primary:   #fdf6e3;
+      --bg-secondary: #eee8d5;
+      --bg-card:      #ffffff;
+      --bg-glass:     rgba(0, 0, 0, 0.02);
+      --border-glass: #e5e0c8;
+      --text-primary: #334155;
+      --text-secondary: #475569;
+      --text-muted:   #64748b;
+      --accent:       #0284c7;
+      --accent-glow:  rgba(2, 132, 199, 0.15);
+      --accent2:      #7c3aed;
+      --accent3:      #059669;
+      --accent4:      #ea580c;
+      --danger:       #e11d48;
+      --radius:       12px;
+      --radius-lg:    20px;
+      --shadow-card:  0 4px 12px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02);
+      --transition:   0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.7; overflow-x: hidden; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 600px 600px at 15% 10%,rgba(56,189,248,0.08),transparent), radial-gradient(ellipse 500px 500px at 85% 30%,rgba(167,139,250,0.07),transparent), radial-gradient(ellipse 400px 400px at 50% 80%,rgba(52,211,153,0.06),transparent); pointer-events: none; z-index: 0; }
+    .container { max-width: 1040px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+    section { padding: 72px 0; }
+    section + section { border-top: 1px solid var(--border-glass); }
+    nav { position: sticky; top: 0; z-index: 100; background: rgba(253, 246, 227, 0.85); backdrop-filter: blur(16px); border-bottom: 1px solid var(--border-glass); }
+    nav .container { display: flex; align-items: center; justify-content: space-between; max-width: 840px; height: 56px; }
+    .nav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-primary); text-decoration: none; letter-spacing: -0.02em; }
+    .nav-links { display: flex; align-items: center; gap: 4px; list-style: none; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; font-weight: 500; padding: 6px 12px; border-radius: 8px; transition: color var(--transition), background var(--transition); }
+    .nav-links a:hover, .nav-links a.active { color: var(--text-primary); background: var(--bg-glass); }
+    .nav-icon { display: flex !important; align-items: center; padding: 6px 8px !important; color: var(--text-primary) !important; }
+    .nav-icon:hover { background: var(--bg-glass) !important; }
+    .download-btn { color: var(--bg-primary) !important; background: linear-gradient(135deg, var(--accent), var(--accent2)) !important; font-weight: 600 !important; padding: 6px 16px !important; margin-left: 8px; }
+    .download-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25); }
+    @media (max-width: 700px) { nav .container { justify-content: flex-start; } .nav-brand { margin-right: 12px; } .nav-links { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; white-space: nowrap; } .nav-links::-webkit-scrollbar { display: none; } .nav-links li { flex-shrink: 0; } }
+    .page-hero { padding: 24px 0 48px; text-align: center; }
+    .page-hero h1 { font-size: clamp(2rem,5vw,3rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; background: linear-gradient(135deg,var(--text-primary) 0%,var(--accent) 50%,var(--accent2) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-hero p { font-size: 1.05rem; color: var(--text-secondary); max-width: 660px; margin: 0 auto 24px; }
+    .breadcrumb { display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 20px; }
+    .breadcrumb a { color: var(--accent); text-decoration: none; }
+    h2 { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 10px; }
+    h2 .accent { color: var(--accent); }
+    .section-lead { color: var(--text-secondary); font-size: 1rem; margin-bottom: 32px; max-width: 720px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: var(--text-primary); }
+    .divider { width: 60px; height: 3px; background: linear-gradient(90deg,var(--accent),var(--accent2)); border-radius: 2px; margin-bottom: 28px; }
+    .card { background: var(--bg-card); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 24px; backdrop-filter: blur(16px); box-shadow: var(--shadow-card); margin-bottom: 24px; }
+    .card-grid { display: grid; gap: 20px; }
+    .card-grid.cols-2 { grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); }
+    pre, code { font-family: 'JetBrains Mono','Cascadia Code',monospace; }
+    pre { background: var(--bg-secondary); border: 1px solid var(--border-glass); border-radius: var(--radius); padding: 20px 24px; overflow-x: auto; font-size: 0.84rem; line-height: 1.9; color: var(--text-secondary); position: relative; }
+    code { background: var(--bg-glass); padding: 2px 7px; border-radius: 5px; font-size: 0.88em; color: var(--accent); }
+    pre code { background: none; padding: 0; border-radius: 0; color: inherit; }
+    .code-comment { color: var(--text-muted); }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border-glass); margin: 16px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+    th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-glass); }
+    th { background: var(--bg-glass); font-weight: 600; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary); white-space: nowrap; }
+    td { color: var(--text-secondary); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--bg-glass); }
+    .callout { border-radius: var(--radius); padding: 16px 20px; margin: 20px 0; border-left: 3px solid; font-size: 0.90rem; line-height: 1.65; }
+    .callout.info    { border-color: var(--accent);  background: rgba(2, 132, 199, 0.06); }
+    .callout.success { border-color: var(--accent3); background: rgba(5, 150, 105, 0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(234, 88, 12, 0.06); }
+    .callout.danger  { border-color: var(--danger);  background: rgba(248,113,113,0.06); }
+    .callout-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .callout p { color: var(--text-secondary); }
+    .tag { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 0.74rem; font-weight: 600; }
+    .tag.ac   { background: rgba(56,189,248,0.15);  color: var(--accent); }
+    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
+    .tag.both { background: rgba(52,211,153,0.15);  color: var(--accent3); }
+    .section-header { display: flex; align-items: center; gap: 10px; margin-top: 36px; margin-bottom: 12px; }
+    .diagram-box { background: var(--bg-secondary); border: 1px dashed var(--border-glass); border-radius: var(--radius); padding: 20px; text-align: center; margin: 16px 0; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--text-secondary); }
+    .fade-in { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+    .fade-in.visible { opacity: 1; transform: none; }
+    footer { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border-glass); }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <a href="index.html" class="nav-brand">Sandy</a>
+    <ul class="nav-links">
+      <li><a href="internals.html" class="active">Internals</a></li>
+      <li><a href="config.html">Config</a></li>
+      <li><a href="modes.html">Modes</a></li>
+      <li><a href="examples.html">Examples</a></li>
+      <li><a href="usage.html">Usage</a></li>
+      <li><a href="https://github.com/ahrvoje/sandy_cli/releases" target="_blank" class="download-btn">Download</a></li>
+      <li>
+        <a href="https://github.com/ahrvoje/sandy_cli" target="_blank" class="nav-icon" title="GitHub Repository">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+        </a>
+      </li>
+    </ul>
+  </div>
+</nav>
+
+<header class="page-hero">
+  <div class="container">
+    <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>Internals</span></div>
+    <h1>Internals & Access Control</h1>
+    <p>A deep dive into how Sandy manipulates DACLs, SIDs, and ACL Pipelines to achieve perfect, leak-free isolation in both AppContainer and Restricted Token modes.</p>
+  </div>
+</header>
+
+<section id="primer">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>DACLs, SIDs, and <span class="accent">Grants</span></h2>
+    <p class="section-lead">The fundamentals of the Windows Security Model and Sandy's per-instance isolation architecture.</p>
+
+    <div class="card-grid cols-2">
+      <div class="card">
+        <h3>Security Identifiers (SID)</h3>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:12px;">A SID is a unique text or binary string representing a user or group. Both Sandbox modes rely on <strong>unique, per-instance SIDs</strong>, not a shared identity. This guarantees zero crossover between concurrent sandboxes.</p>
+        <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
+          <li><strong style="color:var(--accent);">AppContainer:</strong> Unique profile SID (e.g., <code>S-1-15-2-&lt;uuid&gt;</code>)</li>
+          <li><strong style="color:var(--accent2);">Restricted Token:</strong> Unique third-party SID under <code>SECURITY_RESOURCE_MANAGER_AUTHORITY</code> (e.g., <code>S-1-9-&lt;uuid&gt;</code>)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>DACLs and ACEs</h3>
+        <p style="color:var(--text-secondary);font-size:0.9rem;">Every file and folder on Windows has a Security Descriptor containing a DACL (Discretionary Access Control List). A DACL is a list of Access Control Entries (ACEs). An ACE binds a <strong>SID</strong> to a <strong>Permission Mask</strong> (e.g., "Allow S-1-9-123 to Read").</p>
+      </div>
+    </div>
+
+    <!-- Access Check Interaction Diagram -->
+    <div class="interaction-diagram" style="margin-top: 48px; text-align: center;">
+      <h3 style="margin-bottom: 24px; font-size: 1.2rem;">Access Check Interaction</h3>
+      <div style="display: flex; align-items: center; justify-content: center; gap: 32px; flex-wrap: wrap;">
+        
+        <!-- Access Token -->
+        <div class="card" style="padding: 20px; width: 280px; text-align: left; box-shadow: 0 4px 12px rgba(124, 58, 237, 0.08); border: 1px solid rgba(124, 58, 237, 0.3);">
+          <div style="font-weight: 700; color: var(--accent2); margin-bottom: 12px; border-bottom: 1px solid var(--border-glass); padding-bottom: 8px;">Access Token (Thread)</div>
+          <ul style="list-style: none; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.8;">
+            <li>👤 <strong>User SID</strong></li>
+            <li>👥 Group SIDs</li>
+            <li>🔑 Privileges</li>
+          </ul>
+        </div>
+
+        <!-- Arrow / Comparison -->
+        <div style="display: flex; flex-direction: column; align-items: center; color: var(--text-muted); font-size: 0.9rem; font-weight: 600;">
+          <span style="letter-spacing: 0.05em; text-transform: uppercase; font-size: 0.75rem;">Access Check</span>
+          <span style="font-size: 2rem; color: var(--accent); line-height: 1;">⟷</span>
+          <span style="font-size: 0.8rem; font-style: italic; color: var(--text-secondary);">Matches SIDs to ACEs</span>
+        </div>
+
+        <!-- Security Descriptor -->
+        <div class="card" style="padding: 20px; width: 280px; text-align: left; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.08); border: 1px solid rgba(2, 132, 199, 0.3);">
+          <div style="font-weight: 700; color: var(--accent); margin-bottom: 12px; border-bottom: 1px solid var(--border-glass); padding-bottom: 8px;">Security Descriptor (Object)</div>
+          <ul style="list-style: none; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.8;">
+            <li>👑 Owner SID</li>
+            <li>🛡️ <strong>DACL</strong>
+              <ul style="list-style: none; padding-left: 18px; margin-top: 6px; border-left: 2px solid var(--border-glass);">
+                <li style="position: relative; padding-left: 12px; margin-bottom: 4px;">
+                  <span style="position: absolute; left: 0; color: var(--border-glass);">↳</span> 
+                  ACE <span class="tag both" style="padding: 1px 6px; font-size: 0.7rem; margin-left: 4px;">Allow</span>
+                </li>
+                <li style="position: relative; padding-left: 12px;">
+                  <span style="position: absolute; left: 0; color: var(--border-glass);">↳</span> 
+                  ACE <span class="tag both" style="padding: 1px 6px; font-size: 0.7rem; margin-left: 4px; background: rgba(234, 88, 12, 0.1); color: var(--accent4);">Deny</span>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+        
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="pipelines">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>The ACL <span class="accent">Pipelines</span></h2>
+    <p class="section-lead">Sandy translates your <code>[allow]</code> and <code>[deny]</code> rules into ACEs. Because the Windows Kernel treats AppContainer SIDs differently than standard SIDs, the pipelines actively diverge per mode.</p>
+
+    <div class="callout warning">
+      <div class="callout-title">⚠️ The AppContainer DENY Quirk</div>
+      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. A deny ACE placed before an allow ACE has zero effect. Therefore, Sandy must use an advanced mechanism—Mask Reduction—for AC.</p>
+    </div>
+
+    <!-- Case 1: Standard Allow -->
+    <div class="card">
+      <h3 style="margin-bottom:12px;">Case 1: Single Item Allow</h3>
+      <pre><code>[allow]
+read = ['C:\Data']</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Pipeline</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag rt">Restricted Token</span></td><td>Injects an <code>ACCESS_ALLOWED_ACE</code> for <code>S-1-9-...</code> with the Read mask. Done.</td></tr>
+            <tr><td><span class="tag ac">AppContainer</span></td><td>Injects an <code>ACCESS_ALLOWED_ACE</code> for <code>S-1-15-2-...</code> with the Read mask. Done.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="diagram-box">
+        [ DACL for C:\Data ]<br>
+        1. Allow SYSTEM (Full Control)<br>
+        2. Allow Administrators (Full Control)<br>
+        <strong style="color:var(--accent);">3. Allow Sandy_SID (Read)</strong>
+      </div>
+    </div>
+
+    <!-- Case 2: Mixed Allow/Deny -->
+    <div class="card">
+      <h3 style="margin-bottom:12px;">Case 2: Single Item Mixed Grants</h3>
+      <pre><code>[allow]
+all = ['C:\Data']
+
+[deny]
+write = ['C:\Data']</code></pre>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Pipeline</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag rt">Restricted Token</span></td><td>Injects a <code>DENY_ACCESS_ACE</code> (Write) before the <code>ACCESS_ALLOWED_ACE</code> (All). Windows evaluates Deny first.</td></tr>
+            <tr><td><span class="tag ac">AppContainer</span></td><td>Since <code>DENY_ACCESS</code> is ignored, Sandy performs <strong>Mask Reduction</strong>. It subtracts Write bits from the All mask <em>(preserving shared Read bits like SYNCHRONIZE)</em>, and injects a single <code>ACCESS_ALLOWED_ACE</code> with the resulting <code>(All - Write)</code> mask.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="diagram-box">
+        [ RT DACL for C:\Data ]<br>
+        <strong style="color:var(--danger);">1. Deny Sandy_SID (Write)</strong><br>
+        <strong style="color:var(--accent);">2. Allow Sandy_SID (All)</strong><br><br>
+        [ AC DACL for C:\Data ]<br>
+        <strong style="color:var(--accent);">1. Allow Sandy_SID (All minus Write bits)</strong>
+      </div>
+    </div>
+
+    <!-- Case 3: Overlapping Hierarchies -->
+    <div class="card">
+      <h3 style="margin-bottom:12px;">Case 3: Overlapping Hierarchies</h3>
+      <pre style="margin-bottom:16px;"><code>[allow]
+all = ['C:\Data']
+
+[deny]
+write = ['C:\Data\Temp']</code></pre>
+      <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">The <code>C:\Data</code> grant uses <code>TreeSetNamedSecurityInfoW</code> to recursively propagate inheritable ACEs to all child folders, including <code>\Temp</code>. Sandy then targets <code>\Temp</code> explicitly.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Pipeline</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><span class="tag rt">Restricted Token</span></td><td>Places an explicit <code>DENY_ACCESS_ACE</code> (Write) on <code>\Temp</code>. Because Windows evaluates explicit ACEs before inherited ACEs, Deny Write wins over the inherited Allow All.</td></tr>
+            <tr><td><span class="tag ac">AppContainer</span></td><td>Replaces the DACL on <code>\Temp</code> with the reduced mask (All - Write), but applies it with the <code>PROTECTED_DACL_SECURITY_INFORMATION</code> flag to sever inheritance. This prevents the parent's Allow All from flowing back down and overriding the reduced mask.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    
+    <div class="callout info">
+      <div class="callout-title">💡 The Overlap Cleanup Pipeline</div>
+      <p>If you specify an <code>allow</code> <em>inside</em> a <code>deny</code> (e.g., Allow on <code>\Temp\Cache</code>), the ACL Pipeline sorts paths by depth and applies them shallow-to-deep. When applying the deepest allow, it actively scrubs inherited sandbox deny/reduced ACEs off the target subtree to ensure the allow rule wins definitively over the parent deny.</p>
+    </div>
+
+  </div>
+</section>
+
+<section id="cleanup">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Sandbox <span class="accent">Cleanup</span></h2>
+    <p class="section-lead">Because Sandy leverages the native Windows Security Model, the sandbox has no background daemon and requires meticulous environment restoration after execution.</p>
+
+    <div class="card-grid cols-2">
+      <!-- Standard Clean Exit -->
+      <div class="card">
+        <h3 style="margin-bottom:12px;">Standard Clean Exits</h3>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">When the sandbox process finishes normally (exit code 0), Sandy meticulously unwinds all isolation state via a specialized RAII Pipeline.</p>
+        <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
+          <li><strong style="color:var(--accent);">DACL Restoration:</strong> Sandy doesn't wipe ACLs. It loops through every grant, searches the DACL for ACEs matching the instance's unique SID, and precisely deletes them. Native permissions remain untouched.</li>
+          <li><strong style="color:var(--accent);">Profile Cleanup:</strong> The temporary AppContainer profile and all mapping rules from the kernel's firewall (WFP) are cleanly removed.</li>
+          <li><strong style="color:var(--accent);">Persistent State Clear:</strong> The registry entries tracking the grants for this instance ID are gracefully deleted to mark the session entirely clean.</li>
+          <li><strong style="color:var(--accent);">Loopback Cleanup:</strong> If UWP loopback exemptions were granted, they are removed from the AppContainer.</li>
+        </ul>
+      </div>
+
+      <!-- Irregular Exit & Resilience -->
+      <div class="card">
+        <h3 style="margin-bottom:12px;">Irregular Exits & Resilience</h3>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">What happens if the power dies, or a user runs <code>taskkill /f /im sandy.exe</code>? The RAII cleanup is completely bypassed.</p>
+        <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
+          <li><strong style="color:var(--accent2);">Registry Persistence:</strong> Because of sudden death scenarios, Sandy writes the SDDL state to the registry <em>before</em> modifying the disk. If Sandy crashes mid-run, those registry records remain behind indefinitely.</li>
+          <li><strong style="color:var(--accent2);">Detection & Warning:</strong> A new instance of Sandy detects those orphaned records left by dead PIDs, logs a warning about stale grants, but runs concurrently unaffected.</li>
+          <li><strong style="color:var(--accent2);">Manual Recovery:</strong> Running <code>sandy.exe --cleanup</code> forces Sandy into a full-system audit. It sweeps for dead processes, cleans up obsolete registry records, removes orphaned ACEs on the disk, and safely unregisters abandoned AppContainers.</li>
+          <li><strong style="color:var(--accent2);">Scheduled Fallback:</strong> To ensure garbage collection without user intervention, a transient Scheduled Task is created at startup matching the instance ID. Upon completion, Sandy deletes its own Task. If Sandy crashes, the task runs one week later, self-executing <code>--cleanup</code> silently in the background.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="references">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>References</h2>
+    <p class="section-lead">For further understanding of the Windows Security Model, consult the official documentation:</p>
+    <ul style="color:var(--text-secondary);font-size:0.95rem;margin-left:20px;line-height:1.8;">
+      <li><a href="https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object" target="_blank" style="color:var(--accent);text-decoration:none;">How DACLs Control Access to an Object <span style="font-size:0.85em">↗</span></a></li>
+      <li><a href="https://learn.microsoft.com/en-us/windows/win32/secauthz/access-tokens" target="_blank" style="color:var(--accent);text-decoration:none;">Access Tokens <span style="font-size:0.85em">↗</span></a></li>
+      <li><a href="https://learn.microsoft.com/en-us/windows/win32/secauthz/access-control-entries" target="_blank" style="color:var(--accent);text-decoration:none;">Access Control Entries <span style="font-size:0.85em">↗</span></a></li>
+      <li><a href="https://learn.microsoft.com/en-us/windows/win32/secauthz/interaction-between-threads-and-securable-objects" target="_blank" style="color:var(--accent);text-decoration:none;">Interaction Between Threads and Securable Objects <span style="font-size:0.85em">↗</span></a></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p style="margin-bottom: 8px;">
+      <a href="index.html">Sandy</a> &nbsp;&middot;&nbsp; 
+      <a href="internals.html">Internals</a> &nbsp;&middot;&nbsp; 
+      <a href="config.html">Config Reference</a> &nbsp;&middot;&nbsp; 
+      <a href="modes.html">Sandbox Modes</a> &nbsp;&middot;&nbsp; 
+      <a href="examples.html">Examples</a> &nbsp;&middot;&nbsp; 
+      <a href="usage.html">Usage</a>
+    </p>
+    <p>
+      MIT Licensed &middot; 
+      <a href="https://github.com/ahrvoje/sandy_cli" target="_blank" rel="noopener">GitHub</a> &middot; 
+      Built for secure, lean, unprivileged sandboxing on Windows
+    </p>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } }), { threshold: 0.08 });
+  document.querySelectorAll('.fade-in').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

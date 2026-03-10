@@ -7,6 +7,10 @@
   Run any executable in an isolated sandbox with fine-grained file, folder, and network access control.
 </p>
 
+<p align="center">
+  <a href="https://ahrvoje.github.io/sandy_cli/"><strong>📖 View Documentation</strong></a>
+</p>
+
 ---
 
 ## Quick Start

@@ -190,6 +190,9 @@ running processes, or the host platform. Every rule below is mandatory.
 
 ### General
 
+- **NEVER** run the full test suite automatically (e.g. `test_all.bat` or `run_all_tests.bat`).
+  - These tests are long-running and require UAC elevation/admin privileges.
+  - They should ONLY be run when explicitly prompted by the user in the conversation.
 - Tests must not create, modify, or delete files outside the test's own
   working directory (`test\`) and the system `%TEMP%` folder.
 - Tests must clean up all temporary files and directories they create.
