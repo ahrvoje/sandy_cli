@@ -10,5 +10,9 @@ read = ['C:\Users\H\test_collusion\scripts']
 all = ['C:\Users\H\test_collusion\shared']
 [privileges]
 child_processes = false
+
+[environment]
+inherit = true
+
 [limit]
 timeout = 60

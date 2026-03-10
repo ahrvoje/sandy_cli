@@ -1,0 +1,10 @@
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+workdir = 'C:\Windows\Temp'
+
+[allow]
+read = ['C:\Windows\System32']
+
+[limit]
+timeout = 30

@@ -14,5 +14,9 @@ all = ['C:\Users\H\test_collusion\shared\locked']
 
 [privileges]
 child_processes = false
+
+[environment]
+inherit = true
+
 [limit]
 timeout = 60

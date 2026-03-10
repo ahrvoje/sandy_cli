@@ -34,6 +34,8 @@ for %%F in (
     test_resilience.bat
     test_stress.bat
     test_profile.bat
+    test_clean.bat
+    test_dryrun.bat
 ) do (
     echo ----------------------------------------------------------------
     echo  RUNNING: %%F
@@ -51,7 +53,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 24
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 26
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

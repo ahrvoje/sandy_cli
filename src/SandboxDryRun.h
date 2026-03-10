@@ -10,6 +10,7 @@
 #pragma once
 
 #include "SandboxTypes.h"
+#include "SandboxSavedProfile.h"
 
 namespace Sandbox {
 
@@ -126,6 +127,80 @@ inline int HandleDryRun(const SandboxConfig& config,
     }
 
     printf("\n=== Config valid. No system state modified. ===\n");
+    return 0;
+}
+
+// -----------------------------------------------------------------------
+// Dry-run mode for --create-profile — validate only, no system changes
+// -----------------------------------------------------------------------
+inline int HandleDryRunCreateProfile(const std::wstring& name,
+                                     const std::wstring& configPath)
+{
+    printf("=== Sandy Dry Run: create-profile '%ls' ===\n\n", name.c_str());
+
+    // --- Validate name ---
+    if (name.empty()) {
+        fprintf(stderr, "Error: profile name cannot be empty.\n");
+        return SandyExit::ConfigError;
+    }
+    for (wchar_t c : name) {
+        if (c == L'\\' || c == L'/' || c == L'|' || c == L'"' || c < 32) {
+            fprintf(stderr, "Error: profile name contains invalid characters.\n");
+            return SandyExit::ConfigError;
+        }
+    }
+
+    // --- Duplicate check ---
+    if (ProfileExists(name)) {
+        fprintf(stderr, "Error: profile '%ls' already exists. Use --delete-profile first.\n",
+                name.c_str());
+        return SandyExit::ConfigError;
+    }
+
+    // --- Read and parse TOML ---
+    std::wstring tomlText = ReadTomlFileText(configPath);
+    if (tomlText.empty()) {
+        fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
+        return SandyExit::ConfigError;
+    }
+    SandboxConfig config = ParseConfig(tomlText);
+    if (config.parseError) {
+        fprintf(stderr, "Error: config contains unknown sections or keys.\n");
+        return SandyExit::ConfigError;
+    }
+
+    bool isAC = (config.tokenMode == TokenMode::AppContainer);
+    const wchar_t* typeStr      = isAC ? L"appcontainer" : L"restricted";
+    const wchar_t* integrityStr = (config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
+
+    // --- Print what would happen ---
+    printf("Profile name: %ls\n", name.c_str());
+    printf("Type:         %ls\n", typeStr);
+    if (!isAC)
+        printf("Integrity:    %ls\n", integrityStr);
+    if (isAC)
+        printf("Container:    Sandy_%ls  (would be created via CreateAppContainerProfile)\n",
+               name.c_str());
+    printf("SID:          (would be generated at creation time)\n");
+    printf("Registry key: HKCU\\Software\\Sandy\\Profiles\\%ls\n\n", name.c_str());
+
+    printf("[allow] — %zu path(s) would be granted\n", config.folders.size());
+    for (auto& f : config.folders)
+        printf("  [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
+
+    if (!config.denyFolders.empty()) {
+        printf("[deny] — %zu path(s)\n", config.denyFolders.size());
+        for (auto& f : config.denyFolders)
+            printf("  [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
+    }
+
+    if (!isAC && (!config.registryRead.empty() || !config.registryWrite.empty())) {
+        printf("[registry]\n");
+        for (auto& k : config.registryRead)  printf("  read:  %ls\n", k.c_str());
+        for (auto& k : config.registryWrite) printf("  write: %ls\n", k.c_str());
+    }
+
+    printf("\n=== Dry run complete. No system state modified. ===\n");
     return 0;
 }
 

@@ -13,23 +13,23 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg-primary:   #0a0e17;
-      --bg-secondary: #111827;
-      --bg-card:      rgba(17, 24, 39, 0.65);
-      --bg-glass:     rgba(255, 255, 255, 0.04);
-      --border-glass: rgba(255, 255, 255, 0.08);
-      --text-primary: #f1f5f9;
-      --text-secondary: #94a3b8;
+      --bg-primary:   #fdf6e3;
+      --bg-secondary: #eee8d5;
+      --bg-card:      #ffffff;
+      --bg-glass:     rgba(0, 0, 0, 0.02);
+      --border-glass: #e5e0c8;
+      --text-primary: #334155;
+      --text-secondary: #475569;
       --text-muted:   #64748b;
-      --accent:       #38bdf8;
-      --accent-glow:  rgba(56, 189, 248, 0.25);
-      --accent2:      #a78bfa;
-      --accent3:      #34d399;
-      --accent4:      #fb923c;
-      --danger:       #f87171;
+      --accent:       #0284c7;
+      --accent-glow:  rgba(2, 132, 199, 0.15);
+      --accent2:      #7c3aed;
+      --accent3:      #059669;
+      --accent4:      #ea580c;
+      --danger:       #e11d48;
       --radius:       12px;
       --radius-lg:    20px;
-      --shadow-card:  0 4px 24px rgba(0,0,0,0.35);
+      --shadow-card:  0 4px 12px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.02);
       --transition:   0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
@@ -57,7 +57,7 @@
 
     /* ── Layout ──────────────────────────────── */
     .container {
-      max-width: 960px;
+      max-width: 1040px;
       margin: 0 auto;
       padding: 0 24px;
       position: relative;
@@ -75,7 +75,7 @@
     /* ── Header ──────────────────────────────── */
     .hero {
       text-align: center;
-      padding: 100px 0 80px;
+      padding: 40px 0 80px;
     }
 
     .hero-logo {
@@ -240,7 +240,7 @@
     }
 
     pre {
-      background: rgba(0, 0, 0, 0.35);
+      background: var(--bg-secondary);
       border: 1px solid var(--border-glass);
       border-radius: var(--radius);
       padding: 20px 24px;
@@ -251,7 +251,7 @@
     }
 
     code {
-      background: rgba(56, 189, 248, 0.1);
+      background: var(--bg-glass);
       padding: 2px 7px;
       border-radius: 5px;
       font-size: 0.88em;
@@ -291,7 +291,7 @@
     }
 
     th {
-      background: rgba(56, 189, 248, 0.06);
+      background: var(--bg-glass);
       font-weight: 600;
       font-size: 0.82rem;
       text-transform: uppercase;
@@ -303,7 +303,7 @@
     td { color: var(--text-secondary); }
 
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: rgba(255,255,255,0.02); }
+    tr:hover td { background: var(--bg-glass); }
 
     /* ── Callout ──────────────────────────────── */
     .callout {
@@ -315,10 +315,10 @@
       line-height: 1.65;
     }
 
-    .callout.info    { border-color: var(--accent);  background: rgba(56,189,248,0.06); }
-    .callout.success { border-color: var(--accent3); background: rgba(52,211,153,0.06); }
-    .callout.warning { border-color: var(--accent4); background: rgba(251,146,60,0.06); }
-    .callout.danger  { border-color: var(--danger);  background: rgba(248,113,113,0.06); }
+    .callout.info    { border-color: var(--accent);  background: rgba(2, 132, 199, 0.06); }
+    .callout.success { border-color: var(--accent3); background: rgba(5, 150, 105, 0.06); }
+    .callout.warning { border-color: var(--accent4); background: rgba(234, 88, 12, 0.06); }
+    .callout.danger  { border-color: var(--danger);  background: rgba(225, 29, 72, 0.06); }
 
     .callout-title {
       font-weight: 600;
@@ -372,9 +372,9 @@
       letter-spacing: 0.03em;
     }
 
-    .tag.ac   { background: rgba(56,189,248,0.15); color: var(--accent); }
-    .tag.rt   { background: rgba(167,139,250,0.15); color: var(--accent2); }
-    .tag.both { background: rgba(52,211,153,0.15); color: var(--accent3); }
+    .tag.ac   { background: rgba(2, 132, 199, 0.1); color: var(--accent); }
+    .tag.rt   { background: rgba(124, 58, 237, 0.1); color: var(--accent2); }
+    .tag.both { background: rgba(5, 150, 105, 0.1); color: var(--accent3); }
 
     /* ── Divider / Deco ──────────────────────── */
     .divider {
@@ -390,7 +390,7 @@
       position: sticky;
       top: 0;
       z-index: 100;
-      background: rgba(10, 14, 23, 0.85);
+      background: rgba(253, 246, 227, 0.85);
       backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border-glass);
     }
@@ -399,6 +399,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      max-width: 840px;
       height: 56px;
     }
 
@@ -429,6 +430,19 @@
     .nav-links a:hover {
       color: var(--text-primary);
       background: var(--bg-glass);
+    }
+
+    .download-btn {
+      color: var(--bg-primary) !important;
+      background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
+      font-weight: 600 !important;
+      padding: 6px 16px !important;
+      margin-left: 8px;
+    }
+
+    .download-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
     }
 
     @media (max-width: 700px) {
@@ -548,16 +562,11 @@
   <div class="container">
     <a href="#" class="nav-brand">Sandy</a>
     <ul class="nav-links">
-      <li><a href="#motivation">Motivation</a></li>
-      <li><a href="#use-cases">Use Cases</a></li>
-      <li><a href="#how-it-works">How It Works</a></li>
-      <li><a href="#acl">ACL</a></li>
-      <li><a href="#resilience">Resilience</a></li>
-      <li><a href="#safety">Safety</a></li>
       <li><a href="config.html">Config</a></li>
       <li><a href="modes.html">Modes</a></li>
       <li><a href="examples.html">Examples</a></li>
       <li><a href="usage.html">Usage</a></li>
+      <li><a href="https://github.com/ahrvoje/sandy_cli/releases" target="_blank" class="download-btn">Download</a></li>
     </ul>
   </div>
 </nav>

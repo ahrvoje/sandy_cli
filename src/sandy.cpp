@@ -10,7 +10,7 @@
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
 
-constexpr const char* kVersion = "0.991";
+constexpr const char* kVersion = "0.992";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
@@ -213,7 +213,9 @@ static int RunMain(int argc, wchar_t* argv[])
         }
         if (!logPath.empty())
             g_logger.Start(logPath);
-        int result = HandleCreateProfile(createProfileName, configPath);
+        int result = dryRun
+            ? HandleDryRunCreateProfile(createProfileName, configPath)
+            : HandleCreateProfile(createProfileName, configPath);
         g_logger.Stop();
         return result;
     }

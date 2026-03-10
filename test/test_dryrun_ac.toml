@@ -1,0 +1,9 @@
+[sandbox]
+token = 'appcontainer'
+workdir = 'C:\Windows\Temp'
+
+[allow]
+execute = ['C:\Windows\System32']
+
+[limit]
+timeout = 30

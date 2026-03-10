@@ -53,7 +53,8 @@ sandy.exe --print-restricted-toml         (print default restricted config)
 sandy.exe --cleanup                       (restore stale state from crashed runs)
 sandy.exe --status [--json]                (show active instances and stale state)
 sandy.exe --explain <code>                 (decode exit code: Sandy, NTSTATUS, Win32)
-sandy.exe --dry-run -c <config.toml> [-x <exec>]  (validate + show plan, no changes)
+sandy.exe --dry-run -c <config.toml> [-x <exec>]              (validate + show plan, no changes)
+sandy.exe --dry-run --create-profile <name> -c <config.toml>  (preview profile creation, no changes)
 sandy.exe --print-config -c <config.toml>  (print resolved config)
 ```
 
@@ -78,8 +79,9 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--print-restricted-toml` | Print default Restricted Token config to stdout |
 | `--cleanup` | Restore stale state from crashed runs (loopback, ACLs, WER, scheduled task) |
 | `--status [--json]` | Show active sandy instances, stale grants, scheduled tasks, and a summary count |
+| `--json` | JSON output (with `--status`, includes summary counts) |
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
-| `--dry-run`, `--check` | Validate config + show planned changes (no system modifications) |
+| `--dry-run`, `--check` | Validate config + show planned changes (no system modifications). Also supported with `--create-profile` to preview what would be created. |
 | `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
 
 All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it.
