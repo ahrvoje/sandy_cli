@@ -17,6 +17,8 @@ inline void PrintUsage(const char* version)
 {
     printf(
         "Sandy - Windows Sandbox Runner  v%s\n"
+        "Lightweight, unprivileged isolation with independent instance-specific grants\n"
+        "and persistent profile management.\n"
         "\n"
         "Usage:\n"
         "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"

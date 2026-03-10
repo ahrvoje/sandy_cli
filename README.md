@@ -4,7 +4,8 @@
 
 <p align="center">
   <strong>A lightweight Windows sandbox runner</strong><br/>
-  Run any executable in an isolated sandbox with fine-grained file, folder, and network access control.
+  Run any executable in an isolated sandbox with fine-grained file, folder, and network access control.<br/>
+  Features independent instance-specific grants and persistent profile management.
 </p>
 
 <p align="center">
@@ -26,7 +27,7 @@ sandy.exe --explain 131                              # decode exit code
 
 ## What is Sandy?
 
-Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). All settings are configured explicitly via TOML — no hidden defaults.
+Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Two isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (the same technology used by UWP apps and Edge) and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
 
 No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is lean, unprivileged sandboxing for agentic AI workflows, automation scripts, and tool-use pipelines: you define exactly which folders, files, and network access the process gets.
 
@@ -35,7 +36,9 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 - 🔒 **Dual sandbox modes** — AppContainer or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, peek, or full access per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
-- 🛡️ **Explicit configuration** — all settings mandatory, no hidden defaults or implicit behavior
+- 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
+- 💾 **Profile system** — persistent profile management for saving and reusing sandboxes
+- 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - 📝 **Audit logging** — session logs, Procmon-based denial auditing, and crash dumps
 - ⚡ **Zero dependencies** — single native executable, no runtime needed

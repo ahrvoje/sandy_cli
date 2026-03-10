@@ -604,7 +604,7 @@
     <p class="hero-sub">
       A lightweight Windows sandbox runner. Run any executable in an isolated, kernel-enforced
       sandbox with fine-grained file, folder, and network access control — no VMs, no Docker,
-      no elevation required.
+      no elevation required. Features independent instance-specific grants and persistent profile management.
     </p>
     <div class="hero-badges">
       <span class="badge"><span class="icon">⚡</span> Single native executable</span>
@@ -642,11 +642,10 @@ timeout = 30
     <div class="card-grid cols-2">
       <div class="card">
         <span class="card-icon">⚡</span>
-        <h3>Too fast to skip</h3>
+        <h3>A practical alternative</h3>
         <p>
           VMs take minutes to boot. Windows Sandbox needs Hyper-V. OS-level isolation is overkill
-          when you just need to run a quick script safely. Sandy is instant — a single native
-          <code>sandy.exe</code>, no runtime, no setup, no waiting.
+          when you just need to run a quick script safely. While setting large ACL grants takes a moment, Sandy remains a highly practical, native alternative — no bloated runtime, no setup, no VM waiting.
         </p>
       </div>
       <div class="card">
@@ -1040,8 +1039,8 @@ PIPELINE: sorted 3 entries by path depth:
         <span class="card-icon">🔐</span>
         <h3>No implicit defaults</h3>
         <p>
-          Every TOML key for the active mode must be explicitly declared. There are no hidden defaults —
-          if a key is missing, Sandy exits with a configuration error. This eliminates
+          Every TOML key for the active mode acts additively. Optional settings use safe, locked-down defaults —
+          if you don't list a directory, the sandbox process cannot access it. Period. This eliminates
           "I forgot to disable network" surprises.
         </p>
       </div>
