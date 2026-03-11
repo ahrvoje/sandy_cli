@@ -51,6 +51,7 @@ inline void PrintUsage(const char* version)
         "  --delete-profile <n>  Delete a saved profile and revoke its persistent ACLs\n"
         "  --profile-info <n>    Show saved profile details (type, SID, config, grants)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
+        "  -y, --dynamic         Live config reload: polls every 2s, applies only grant deltas (requires -c)\n"
         "  --dry-run, --check    Validate config + show plan, or preview --create-profile (no system changes)\n"
         "  --print-config        Print resolved config to stdout\n"
         "  --json                JSON output (with --status, includes summary counts)\n"

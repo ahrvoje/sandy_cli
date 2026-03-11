@@ -1087,6 +1087,15 @@ PIPELINE: sorted 3 entries by path depth:
           One instance's cleanup never touches another's grants — verified by dedicated concurrent test suites.
         </p>
       </div>
+      <div class="card">
+        <span class="card-icon">🔄</span>
+        <h3>Dynamic config reload</h3>
+        <p>
+          With <code>--dynamic</code>, Sandy polls the config file every 2 seconds while the child runs.
+          When grants change, they are revoked and reapplied live — the running process sees updated permissions
+          without restart.
+        </p>
+      </div>
     </div>
 
     <div class="callout danger" style="margin-top: 32px;">

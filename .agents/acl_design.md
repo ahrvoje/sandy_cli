@@ -309,3 +309,27 @@ mutating real desktop/window-station objects.
 
 **Never** revert to snapshot-based desktop DACL restoration. ACE-level
 removal is the only approach safe for concurrent multi-instance operation.
+
+## Dynamic Reload ACL Interactions
+
+When `--dynamic` applies a delta, deny/allow interactions require care:
+
+- **Allow-under-deny:** Deny ACEs propagate recursively via `TreeSet`. A
+  new allow under an existing deny must strip those inherited deny ACEs
+  before granting — same `RemoveSidFromDacl(isDeny=true)` as the pipeline.
+  Peek uses dir-only (non-recursive) stripping.
+
+- **Deny-over-existing-allows:** A new deny propagates DENY ACEs to all
+  children. Existing child allows would be blocked. After applying the deny,
+  `DynamicWatcherThread` finds affected allows and re-grants them
+  (strip deny + re-apply) to preserve their access.
+
+- **Independent entries:** No interaction — direct `GrantObjectAccess` /
+  `RemoveSidFromDacl`. This is the common case and costs 1 operation.
+
+- **Registry (RT):** Same delta logic, no deny interaction (registry
+  grants are all allow).
+
+The `RevokeGrant()` function removes ACEs for a single path + SID
+and updates `g_aclGrants` in-memory. Registry persistence is not
+re-written per revoke — final `RevokeAllGrants()` handles cleanup.

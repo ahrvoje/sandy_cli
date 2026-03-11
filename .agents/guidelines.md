@@ -218,6 +218,37 @@ running processes, or the host platform. Every rule below is mandatory.
 - **Entry point**: `RunSandboxed()` → generates instance ID, starts logger,
   cleans stale state → calls `RunPipeline()`.
 
+# Dynamic Config Reload (`--dynamic` / `-y`)
+
+A watcher thread polls the config file every 2 seconds during Phase 4
+(child is running). On change, only the **delta** is applied:
+
+1. Build `GrantKey` set from old and new configs (key = path + access + isDeny)
+2. `removed = old − new` → `RevokeGrant()` per entry
+3. `added = new − old` → deny-first, then allows:
+   - New denies: `DenyObjectAccess()` + fixup existing child allows
+   - New allows under a deny: strip deny ACEs first, then `GrantObjectAccess()`
+   - Independent allows: `GrantObjectAccess()` directly
+4. Registry delta (RT mode): same `set_difference` on `RegGrantKey`
+
+**Correctness:** deny interaction is handled — allow-under-deny gets
+strip-deny, deny-over-existing-allows gets fixup re-grant. Result is
+provably identical to a full pipeline run.
+
+**Efficiency:** O(delta) operations. Adding 1 peek to a 200-entry config
+= 1–2 API calls. Unchanged entries cost zero.
+
+**Immutable after launch:** `token`, `integrity`, `workdir`, `[privileges]`,
+`[environment]`, `[limit]`, network flags. Warned but ignored.
+
+**Only dynamic:** `[allow]`, `[deny]`, `[registry]` entries.
+
+**Compatibility:** Requires `-c <file>`. Incompatible with `-s`, `-p`,
+`--dry-run`, `--print-config`, `--trace`, `--create-profile`.
+
+**Key types:** `GrantKey`, `RegGrantKey` (in `SandboxDynamic.h`)
+**Key functions:** `DynamicWatcherThread`, `RevokeGrant`, `BuildGrantKeySet`
+
 # Shell Environment
 
 - Sandy development runs under **PowerShell Constrained Language Mode**.

@@ -1,0 +1,8 @@
+# Initial dynamic test config — AppContainer mode
+# Grants read access to test folder A only
+
+[sandbox]
+token = 'appcontainer'
+
+[allow]
+read = ['%DYNAMIC_DIR_A%']

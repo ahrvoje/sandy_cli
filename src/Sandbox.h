@@ -19,6 +19,7 @@
 #include "SandboxCapabilities.h"
 #include "SandboxEnvironment.h"
 #include "SandboxProcess.h"
+#include "SandboxDynamic.h"
 
 namespace Sandbox {
 
@@ -413,6 +414,230 @@ namespace Sandbox {
         bool   profileMode = false;      // skip grants + revocation
     };
 
+    // -----------------------------------------------------------------------
+    // DynamicWatcherThread — polls config file, applies only grant deltas.
+    //
+    // Computes the set difference between old and new grant entries.
+    // Only grants added entries and revokes removed entries.
+    // A small config change (e.g. adding one peek path) results in
+    // exactly one grant operation — no regranting of existing entries.
+    //
+    // Lives in Sandbox.h because it calls GrantObjectAccess, DenyObjectAccess,
+    // RemoveSidFromDacl, and GrantRegistryAccess defined above.
+    // -----------------------------------------------------------------------
+    static DWORD WINAPI DynamicWatcherThread(LPVOID param)
+    {
+        auto* ctx = static_cast<DynamicContext*>(param);
+        ULONGLONG lastWriteTime = GetFileLastWriteTime(ctx->configPath);
+        int reloadCount = 0;
+
+        // Build initial grant key sets
+        std::set<GrantKey> currentKeys = BuildGrantKeySet(ctx->currentConfig);
+        std::set<RegGrantKey> currentRegKeys = BuildRegKeySet(ctx->currentConfig);
+
+        g_logger.LogFmt(L"DYNAMIC: watcher started (polling every 2s, %zu file + %zu reg entries tracked)",
+                        currentKeys.size(), currentRegKeys.size());
+
+        while (true) {
+            // Wait 2s or until stop event is signaled (child exited)
+            DWORD waitResult = WaitForSingleObject(ctx->hStopEvent, 2000);
+            if (waitResult == WAIT_OBJECT_0)
+                break;
+
+            // Check if child process is still alive
+            if (WaitForSingleObject(ctx->hProcess, 0) != WAIT_TIMEOUT)
+                break;
+
+            // Check file modification time
+            ULONGLONG newWriteTime = GetFileLastWriteTime(ctx->configPath);
+            if (newWriteTime == 0 || newWriteTime == lastWriteTime)
+                continue;
+
+            lastWriteTime = newWriteTime;
+            g_logger.Log(L"DYNAMIC: config file changed, reloading...");
+
+            // Load and parse new config
+            SandboxConfig newConfig = LoadConfig(ctx->configPath);
+            if (newConfig.parseError) {
+                g_logger.Log(L"DYNAMIC: config reload FAILED (parse error), keeping current grants");
+                continue;
+            }
+
+            // Warn about immutable setting changes
+            WarnImmutableChanges(ctx->currentConfig, newConfig);
+
+            // ---- File/folder grant delta ----
+            std::set<GrantKey> newKeys = BuildGrantKeySet(newConfig);
+
+            // Compute delta: removed = in current but not in new
+            std::vector<GrantKey> removed;
+            std::set_difference(currentKeys.begin(), currentKeys.end(),
+                                newKeys.begin(), newKeys.end(),
+                                std::back_inserter(removed));
+
+            // Compute delta: added = in new but not in current
+            std::vector<GrantKey> added;
+            std::set_difference(newKeys.begin(), newKeys.end(),
+                                currentKeys.begin(), currentKeys.end(),
+                                std::back_inserter(added));
+
+            // ---- Registry grant delta (RT mode only) ----
+            std::set<RegGrantKey> newRegKeys = BuildRegKeySet(newConfig);
+            std::vector<RegGrantKey> regRemoved, regAdded;
+
+            if (!ctx->isAppContainer) {
+                std::set_difference(currentRegKeys.begin(), currentRegKeys.end(),
+                                    newRegKeys.begin(), newRegKeys.end(),
+                                    std::back_inserter(regRemoved));
+                std::set_difference(newRegKeys.begin(), newRegKeys.end(),
+                                    currentRegKeys.begin(), currentRegKeys.end(),
+                                    std::back_inserter(regAdded));
+            }
+
+            // Skip if no grant changes
+            if (removed.empty() && added.empty() && regRemoved.empty() && regAdded.empty()) {
+                g_logger.Log(L"DYNAMIC: config reloaded, no grant changes");
+                continue;
+            }
+
+            ULONGLONG tStart = GetTickCount64();
+            int revokeCount = 0, grantCount = 0, failCount = 0;
+
+            // ---- Phase 1: Revoke removed entries ----
+            for (const auto& r : removed) {
+                RevokeGrant(r.path, ctx->sidString, r.isDeny, SE_FILE_OBJECT);
+                revokeCount++;
+            }
+
+            // ---- Phase 2: Apply added entries (context-aware) ----
+            //
+            // Correctness requires replicating the pipeline's deny interaction:
+            //   a) New allow under existing deny → strip deny ACEs first
+            //   b) New deny over existing allows → re-grant affected allows
+            //
+            // Collect ALL deny paths from the full NEW config for context.
+            std::vector<std::wstring> allNewDenyPaths;
+            for (const auto& k : newKeys) {
+                if (k.isDeny) allNewDenyPaths.push_back(k.path);
+            }
+
+            // Phase 2a: Apply denies first, then allows (depth-order within delta)
+            //           This mirrors the pipeline's deny-before-allow rule.
+            std::vector<GrantKey> addedDenies, addedAllows;
+            for (const auto& a : added) {
+                if (a.isDeny) addedDenies.push_back(a);
+                else          addedAllows.push_back(a);
+            }
+
+            // Apply new deny entries
+            for (const auto& d : addedDenies) {
+                DWORD rc = DenyObjectAccess(ctx->pSid, d.path, d.access,
+                                            ctx->isAppContainer, RecordGrantCallback);
+                if (rc == ERROR_SUCCESS) {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT: [deny] %s -> OK", d.path.c_str());
+                    grantCount++;
+                } else {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT: [deny] %s -> FAILED (0x%08X)",
+                                    d.path.c_str(), rc);
+                    failCount++;
+                    continue;
+                }
+
+                // Phase 2b: New deny may block existing allows underneath.
+                // Find EXISTING (unchanged) allows that are children of this
+                // new deny and re-grant them: strip deny ACEs → re-apply allow.
+                for (const auto& existing : newKeys) {
+                    if (existing.isDeny) continue;
+                    if (!IsPathUnder(existing.path, d.path)) continue;
+                    // Skip if this allow was also just added (handled below)
+                    bool isNewlyAdded = false;
+                    for (const auto& aa : addedAllows) {
+                        if (aa == existing) { isNewlyAdded = true; break; }
+                    }
+                    if (isNewlyAdded) continue;
+
+                    // Strip deny ACEs from this existing allow path, then re-grant
+                    bool isPeek = (existing.access == AccessLevel::Peek);
+                    g_logger.LogFmt(L"DYNAMIC_FIXUP: strip deny + re-grant [%s] %s",
+                                    AccessTag(existing.access), existing.path.c_str());
+                    RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
+                                     true, L"", isPeek);
+                    GrantObjectAccess(ctx->pSid, existing.path, existing.access,
+                                     RecordGrantCallback);
+                    grantCount++;
+                }
+            }
+
+            // Apply new allow entries (with deny-context awareness)
+            for (const auto& a : addedAllows) {
+                // Check if this allow is under any deny path in the full config
+                bool underDeny = false;
+                for (const auto& dp : allNewDenyPaths) {
+                    if (IsPathUnder(a.path, dp)) { underDeny = true; break; }
+                }
+
+                // Strip deny ACEs first if under a deny (pipeline semantics)
+                if (underDeny && !ctx->sidString.empty()) {
+                    bool isPeek = (a.access == AccessLevel::Peek);
+                    g_logger.LogFmt(L"DYNAMIC_STRIP: %s (%s)",
+                                    a.path.c_str(), isPeek ? L"dir only" : L"subtree");
+                    RemoveSidFromDacl(a.path, ctx->sidString, SE_FILE_OBJECT,
+                                     true, L"", isPeek);
+                }
+
+                DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback);
+                if (rc == ERROR_SUCCESS) {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT: [%s] %s -> OK",
+                                    AccessTag(a.access), a.path.c_str());
+                    grantCount++;
+                } else {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT: [%s] %s -> FAILED (0x%08X)",
+                                    AccessTag(a.access), a.path.c_str(), rc);
+                    failCount++;
+                }
+            }
+
+            // ---- Phase 3: Registry delta (RT mode) ----
+            for (const auto& r : regRemoved) {
+                std::wstring win32Path = RegistryToWin32Path(r.path);
+                RevokeGrant(win32Path, ctx->sidString, false, SE_REGISTRY_KEY);
+                revokeCount++;
+            }
+            for (const auto& a : regAdded) {
+                std::wstring win32Path = RegistryToWin32Path(a.path);
+                DWORD rc = GrantObjectAccess(ctx->pSid, win32Path, a.access,
+                                              RecordGrantCallback, SE_REGISTRY_KEY);
+                if (rc == ERROR_SUCCESS) {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT_REG: [%s] %s -> OK",
+                                    a.access == AccessLevel::Read ? L"R" : L"W",
+                                    a.path.c_str());
+                    grantCount++;
+                } else {
+                    g_logger.LogFmt(L"DYNAMIC_GRANT_REG: [%s] %s -> FAILED (0x%08X)",
+                                    a.access == AccessLevel::Read ? L"R" : L"W",
+                                    a.path.c_str(), rc);
+                    failCount++;
+                }
+            }
+
+            // Update tracked state
+            currentKeys = newKeys;
+            currentRegKeys = newRegKeys;
+            ctx->currentConfig.folders = newConfig.folders;
+            ctx->currentConfig.denyFolders = newConfig.denyFolders;
+            ctx->currentConfig.registryRead = newConfig.registryRead;
+            ctx->currentConfig.registryWrite = newConfig.registryWrite;
+
+            reloadCount++;
+            g_logger.LogFmt(L"DYNAMIC: reload #%d — %d granted, %d revoked, %d failed (%llums)",
+                reloadCount, grantCount, revokeCount, failCount,
+                GetTickCount64() - tStart);
+        }
+
+        g_logger.LogFmt(L"DYNAMIC: watcher stopped (%d reloads performed)", reloadCount);
+        return 0;
+    }
+
     // =====================================================================
     // RunPipeline — single unified sandbox pipeline
     //
@@ -433,7 +658,9 @@ namespace Sandbox {
                             const std::wstring& exeFolder,
                             const std::wstring& auditLogPath,
                             const std::wstring& dumpPath,
-                            const PipelineContext& ctx = {})
+                            const PipelineContext& ctx = {},
+                            bool dynamic = false,
+                            const std::wstring& configPath = L"")
     {
         bool isRestricted = (config.tokenMode == TokenMode::Restricted);
         bool isAppContainer = !isRestricted;
@@ -646,10 +873,42 @@ namespace Sandbox {
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
         HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
 
-        // Step 4d: Wait for child exit (console passthrough — no pipe relay)
+        // Step 4d: [DYNAMIC] Start config watcher if enabled
+        HANDLE hDynamicThread = nullptr;
+        HANDLE hStopEvent = nullptr;
+        DynamicContext dynCtx{};
+        if (dynamic && !configPath.empty() && !ctx.profileMode) {
+            hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            dynCtx.pSid = pSid;
+            // Convert SID to string for RevokGrant calls
+            {
+                LPWSTR s = nullptr;
+                if (ConvertSidToStringSidW(pSid, &s)) {
+                    dynCtx.sidString = s;
+                    LocalFree(s);
+                }
+            }
+            dynCtx.configPath = configPath;
+            dynCtx.hProcess = pi.hProcess;
+            dynCtx.isAppContainer = isAppContainer;
+            dynCtx.currentConfig = config;
+            dynCtx.hStopEvent = hStopEvent;
+            hDynamicThread = CreateThread(nullptr, 0, DynamicWatcherThread,
+                                          &dynCtx, 0, nullptr);
+        }
+
+        // Step 4e: Wait for child exit (console passthrough — no pipe relay)
         DWORD exitCode = WaitForChildExit(pi.hProcess,
                                            hTimeoutThread, timeoutCtx,
                                            config.timeoutSeconds);
+
+        // Stop dynamic watcher
+        if (hDynamicThread) {
+            SetEvent(hStopEvent);
+            WaitForSingleObject(hDynamicThread, 5000);
+            CloseHandle(hDynamicThread);
+            CloseHandle(hStopEvent);
+        }
 
 
         // =================================================================
@@ -720,7 +979,9 @@ namespace Sandbox {
                             const std::wstring& exePath,
                             const std::wstring& exeArgs,
                             const std::wstring& auditLogPath = L"",
-                            const std::wstring& dumpPath = L"")
+                            const std::wstring& dumpPath = L"",
+                            bool dynamic = false,
+                            const std::wstring& configPath = L"")
     {
         // --- Generate instance ID (UUID) for this run ---
         g_instanceId = GenerateInstanceId();
@@ -741,10 +1002,13 @@ namespace Sandbox {
         g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
         if (!config.configSource.empty())
             g_logger.Log((L"CONFIG_SOURCE: " + config.configSource).c_str());
+        if (dynamic)
+            g_logger.Log(L"DYNAMIC: enabled (live config reload)");
 
         // --- Run the unified pipeline ---
         return RunPipeline(config, exePath, exeArgs, containerName,
-                            exeFolder, auditLogPath, dumpPath);
+                            exeFolder, auditLogPath, dumpPath, {},
+                            dynamic, configPath);
     }
 
     // -----------------------------------------------------------------------

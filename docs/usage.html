@@ -190,6 +190,7 @@
           <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show active instances, stale grants, and scheduled tasks — optionally as JSON</td></tr>
           <tr><td class="td-flag"><code>--cleanup</code></td><td>Restore stale state left by a crashed run — removes orphaned ACLs, loopback exemptions, scheduled tasks, and WER keys</td></tr>
           <tr><td class="td-flag"><code>--explain &lt;code&gt;</code></td><td>Decode a numeric exit code — distinguishes Sandy codes (125–131), NTSTATUS, and Win32 error codes</td></tr>
+          <tr><td class="td-flag"><code>-y</code>, <code>--dynamic</code></td><td>Live config reload: polls every 2s, applies only grant deltas (added/removed entries). Deny interactions handled correctly. Requires <code>-c</code></td></tr>
 
           <tr class="group-row"><td colspan="2">Info</td></tr>
           <tr><td class="td-flag"><code>-v</code>, <code>--version</code></td><td>Print version and exit</td></tr>
