@@ -1036,30 +1036,11 @@ PIPELINE: sorted 3 entries by path depth:
 
     <div class="card-grid cols-2">
       <div class="card">
-        <span class="card-icon">🔐</span>
-        <h3>No implicit defaults</h3>
+        <span class="card-icon">🧬</span>
+        <h3>Multi-instance isolation</h3>
         <p>
-          Every TOML key for the active mode acts additively. Optional settings use safe, locked-down defaults —
-          if you don't list a directory, the sandbox process cannot access it. Period. This eliminates
-          "I forgot to disable network" surprises.
-        </p>
-      </div>
-      <div class="card">
-        <span class="card-icon">🚫</span>
-        <h3>Stripped dangerous bits</h3>
-        <p>
-          Even with <code>all</code> access, three bits are permanently excluded:
-          <code>WRITE_DAC</code> (can't modify ACLs), <code>WRITE_OWNER</code> (can't take ownership),
-          <code>FILE_DELETE_CHILD</code> (can't bypass child deny).
-        </p>
-      </div>
-      <div class="card">
-        <span class="card-icon">🧱</span>
-        <h3>Fail-closed resource limits</h3>
-        <p>
-          If a configured resource limit (memory, process count) cannot be enforced via the job object,
-          Sandy terminates the child immediately with exit code 129. The sandbox never runs with
-          unenforced limits.
+          Concurrent Sandy instances have completely independent SIDs, ACE sets, and registry subkeys.
+          One instance's cleanup never touches another's grants — verified by dedicated concurrent test suites.
         </p>
       </div>
       <div class="card">
@@ -1072,19 +1053,20 @@ PIPELINE: sorted 3 entries by path depth:
         </p>
       </div>
       <div class="card">
+        <span class="card-icon">🧱</span>
+        <h3>Fail-closed resource limits</h3>
+        <p>
+          If a configured resource limit (memory, process count) cannot be enforced via the job object,
+          Sandy terminates the child immediately with exit code 129. The sandbox never runs with
+          unenforced limits.
+        </p>
+      </div>
+      <div class="card">
         <span class="card-icon">📊</span>
         <h3>Full audit trail</h3>
         <p>
           Session logs capture every ACL operation, deny rule application, and error with Win32 error codes.
           Audit mode (<code>-a</code>) uses Procmon to record all denied resource accesses with deduplication.
-        </p>
-      </div>
-      <div class="card">
-        <span class="card-icon">🧬</span>
-        <h3>Multi-instance isolation</h3>
-        <p>
-          Concurrent Sandy instances have completely independent SIDs, ACE sets, and registry subkeys.
-          One instance's cleanup never touches another's grants — verified by dedicated concurrent test suites.
         </p>
       </div>
       <div class="card">
@@ -1094,6 +1076,15 @@ PIPELINE: sorted 3 entries by path depth:
           With <code>--dynamic</code>, Sandy polls the config file every 2 seconds while the child runs.
           When grants change, they are revoked and reapplied live — the running process sees updated permissions
           without restart.
+        </p>
+      </div>
+      <div class="card">
+        <span class="card-icon">🚫</span>
+        <h3>Stripped dangerous bits</h3>
+        <p>
+          Even with <code>all</code> access, three bits are permanently excluded:
+          <code>WRITE_DAC</code> (can't modify ACLs), <code>WRITE_OWNER</code> (can't take ownership),
+          <code>FILE_DELETE_CHILD</code> (can't bypass child deny).
         </p>
       </div>
     </div>
