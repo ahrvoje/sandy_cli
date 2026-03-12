@@ -10,7 +10,7 @@
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
 
-constexpr const char* kVersion = "0.992";
+constexpr const char* kVersion = "0.993";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------

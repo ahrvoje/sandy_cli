@@ -21,7 +21,7 @@ inline void PrintUsage(const char* version)
         "and persistent profile management.\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-y] [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]\n"
         "  sandy.exe -p <profile>     [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]\n"
         "  sandy.exe -t <report>       -x <executable> [args...]\n"

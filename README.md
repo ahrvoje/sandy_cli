@@ -49,7 +49,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ## Usage
 
 ```
-sandy.exe -c <config.toml> [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -c <config.toml> [-y] [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -p <profile>     [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
 sandy.exe -t <report>       -x <executable> [args...]
