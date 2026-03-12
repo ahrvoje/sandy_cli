@@ -41,7 +41,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - 📝 **Audit logging** — session logs, Procmon-based denial auditing, and crash dumps
-- 🔄 **Dynamic reload** — delta-based live config monitoring: only changed grants are applied or revoked while the sandbox runs
+- 🔄 **Dynamic reload** — live config monitoring, applies only grant deltas while the sandbox runs
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
 ---
@@ -67,7 +67,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 ```
 
 | Flag | Description |
-|------|-------------|
+|-------------------------------------|-------------|
 | `-c <path>`, `--config <path>` | Path to TOML config file |
 | `-s <toml>`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
 | `-l <path>`, `--log <path>` | Session log (config, output, exit code) |
