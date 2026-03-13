@@ -30,11 +30,34 @@ namespace Sandbox {
         // Prefer native 64-bit Procmon — the 32-bit Procmon.exe is a wrapper
         // that extracts Procmon64.exe to %TEMP% and re-launches, which can fail
         // if exe execution from temp is restricted.
-        const wchar_t* names[] = { L"Procmon64.exe", L"Procmon64a.exe", L"Procmon.exe" };
-        for (const auto* n : names)
-            if (SearchPathW(nullptr, n, nullptr, MAX_PATH, buf, nullptr))
-                return buf;
 
+        // F4/R11: Use explicit search directories instead of SearchPathW(nullptr, ...)
+        // which consults current directory and full PATH — vulnerable to
+        // search-order hijacking by a malicious binary placed earlier in PATH
+        // or in the working directory.
+        //
+        // Build explicit search path: System32 + known Sysinternals locations + PATH.
+        // SearchPathW with explicit first argument does NOT search current directory.
+        wchar_t sysDir[MAX_PATH];
+        GetSystemDirectoryW(sysDir, MAX_PATH);
+        std::wstring searchDirs = std::wstring(sysDir) +
+            L";C:\\SysinternalsSuite;C:\\Tools";
+        wchar_t pathEnv[8192];
+        if (GetEnvironmentVariableW(L"PATH", pathEnv, 8192))
+            searchDirs += L";" + std::wstring(pathEnv);
+
+        const wchar_t* names[] = { L"Procmon64.exe", L"Procmon64a.exe", L"Procmon.exe" };
+        for (const auto* n : names) {
+            if (SearchPathW(searchDirs.c_str(), n, nullptr, MAX_PATH, buf, nullptr)) {
+                // Verify result is absolute (drive letter or UNC path)
+                if ((buf[0] >= L'A' && buf[0] <= L'Z' && buf[1] == L':') ||
+                    (buf[0] >= L'a' && buf[0] <= L'z' && buf[1] == L':') ||
+                    (buf[0] == L'\\' && buf[1] == L'\\'))
+                    return buf;
+            }
+        }
+
+        // Fallback: known absolute paths (already trusted)
         const wchar_t* paths[] = {
             L"C:\\SysinternalsSuite\\Procmon64.exe",  L"C:\\SysinternalsSuite\\Procmon.exe",
             L"C:\\Tools\\Procmon64.exe",              L"C:\\Tools\\Procmon.exe",
@@ -48,18 +71,25 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Helper: run a process and wait for its handle to signal
     // -----------------------------------------------------------------------
-    inline bool RunProcAndWait(const std::wstring& cmdLine, DWORD timeoutMs = 30000)
+    inline bool RunProcAndWait(const std::wstring& cmdLine, DWORD timeoutMs = 30000,
+                               const std::wstring& appPath = L"")
     {
         STARTUPINFOW si = { sizeof(si) };
         PROCESS_INFORMATION pi = {};
         std::wstring cmd = cmdLine;
-        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
+        const wchar_t* app = appPath.empty() ? nullptr : appPath.c_str();
+        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, FALSE,
                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             return false;
-        WaitForSingleObject(pi.hProcess, timeoutMs);
+        DWORD waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
+        bool ok = (waitResult == WAIT_OBJECT_0);
+        if (waitResult == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 5000);
+        }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        return true;
+        return ok;
     }
 
     // -----------------------------------------------------------------------
@@ -91,6 +121,59 @@ namespace Sandbox {
             if (!found) return true;
         }
         return false;  // timed out
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper: wait for the root process's live descendant tree to quiesce.
+    // This lets trace mode capture differently-named child processes instead
+    // of stopping as soon as the launcher/root process exits.
+    // -----------------------------------------------------------------------
+    inline bool WaitForProcessTreeExit(DWORD rootPid, DWORD timeoutMs = 30000)
+    {
+        if (rootPid == 0) return true;
+
+        DWORD elapsed = 0;
+        const DWORD poll = 500;
+        while (elapsed < timeoutMs) {
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snap == INVALID_HANDLE_VALUE)
+                return false;
+
+            std::map<DWORD, DWORD> parents;
+            PROCESSENTRY32W pe = { sizeof(pe) };
+            if (Process32FirstW(snap, &pe)) {
+                do {
+                    parents[pe.th32ProcessID] = pe.th32ParentProcessID;
+                } while (Process32NextW(snap, &pe));
+            }
+            CloseHandle(snap);
+
+            bool foundDescendant = false;
+            for (const auto& it : parents) {
+                DWORD parent = it.second;
+                std::set<DWORD> seen;
+                while (parent != 0 && seen.insert(parent).second) {
+                    if (parent == rootPid) {
+                        foundDescendant = true;
+                        break;
+                    }
+                    auto pIt = parents.find(parent);
+                    if (pIt == parents.end())
+                        break;
+                    parent = pIt->second;
+                }
+                if (foundDescendant)
+                    break;
+            }
+
+            if (!foundDescendant)
+                return true;
+
+            Sleep(poll);
+            elapsed += poll;
+        }
+
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -395,8 +478,126 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Backup current Procmon FilterRules registry value.
+    // Returns empty vector if no prior filter exists.
+    // -----------------------------------------------------------------------
+    inline std::vector<BYTE> BackupProcmonFilter()
+    {
+        std::vector<BYTE> backup;
+        HKEY hk;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Sysinternals\\Process Monitor",
+                         0, KEY_QUERY_VALUE, &hk) != ERROR_SUCCESS)
+            return backup;
+        DWORD type = 0, size = 0;
+        if (RegQueryValueExW(hk, L"FilterRules", nullptr, &type, nullptr, &size) == ERROR_SUCCESS
+            && type == REG_BINARY && size > 0) {
+            backup.resize(size);
+            RegQueryValueExW(hk, L"FilterRules", nullptr, nullptr, backup.data(), &size);
+        }
+        RegCloseKey(hk);
+        return backup;
+    }
+
+    // -----------------------------------------------------------------------
+    // Restore Procmon FilterRules from backup.
+    // If backup is empty (no prior filter), deletes the value.
+    // -----------------------------------------------------------------------
+    inline void RestoreProcmonFilter(const std::vector<BYTE>& backup)
+    {
+        HKEY hk;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Sysinternals\\Process Monitor",
+                         0, KEY_SET_VALUE, &hk) != ERROR_SUCCESS)
+            return;
+        if (backup.empty()) {
+            RegDeleteValueW(hk, L"FilterRules");
+        } else {
+            RegSetValueExW(hk, L"FilterRules", 0, REG_BINARY,
+                          backup.data(), static_cast<DWORD>(backup.size()));
+        }
+        RegCloseKey(hk);
+    }
+
+    struct ProcmonFilterScope {
+        std::vector<BYTE> backup;
+        bool active = false;
+
+        ProcmonFilterScope()
+            : backup(BackupProcmonFilter()), active(true) {}
+
+        void RestoreNow()
+        {
+            if (!active) return;
+            RestoreProcmonFilter(backup);
+            active = false;
+        }
+
+        ~ProcmonFilterScope()
+        {
+            RestoreNow();
+        }
+    };
+
+    struct ProcmonCaptureScope {
+        std::wstring procmonPath;
+        std::wstring pmlPath;
+        bool active = false;
+
+        ProcmonCaptureScope() = default;
+
+        ProcmonCaptureScope(const std::wstring& procmonExe,
+                            const std::wstring& pml)
+            : procmonPath(procmonExe), pmlPath(pml), active(true) {}
+
+        void Dismiss()
+        {
+            active = false;
+        }
+
+        ~ProcmonCaptureScope()
+        {
+            if (!active || procmonPath.empty())
+                return;
+            RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000, procmonPath);
+            WaitForProcmonExit(10000);
+            if (!pmlPath.empty()) {
+                DeleteFileW(pmlPath.c_str());
+                std::wstring csvPath = pmlPath;
+                auto dot = csvPath.rfind(L'.');
+                if (dot != std::wstring::npos)
+                    csvPath = csvPath.substr(0, dot);
+                csvPath += L".csv";
+                DeleteFileW(csvPath.c_str());
+            }
+        }
+    };
+
+    // -----------------------------------------------------------------------
+    // Check if any Procmon instance is currently running.
+    // -----------------------------------------------------------------------
+    inline bool IsProcmonRunning()
+    {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return false;
+        PROCESSENTRY32W pe = { sizeof(pe) };
+        bool found = false;
+        if (Process32FirstW(snap, &pe)) {
+            do {
+                if (_wcsicmp(pe.szExeFile, L"Procmon.exe") == 0 ||
+                    _wcsicmp(pe.szExeFile, L"Procmon64.exe") == 0 ||
+                    _wcsicmp(pe.szExeFile, L"Procmon64a.exe") == 0) {
+                    found = true;
+                    break;
+                }
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+        return found;
+    }
+
+    // -----------------------------------------------------------------------
     // Launch Procmon for capture — shared by audit and trace modes.
-    // Terminates any existing instance, starts a new one with the given
+    // Refuses to proceed if Procmon is already running (to avoid killing
+    // an unrelated user session). Starts a new instance with the given
     // backing file, and waits for the PML file to appear.
     // pmlPathOut receives the unique PML path for later stop/convert.
     // -----------------------------------------------------------------------
@@ -407,9 +608,13 @@ namespace Sandbox {
         pmlPathOut = AuditTempPath(L"sandy_audit", L".pml");
         DeleteFileW(pmlPathOut.c_str());
 
-        // Kill any existing Procmon instance and wait for it to fully exit
-        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 5000);
-        WaitForProcmonExit(10000);
+        // Refuse to proceed if Procmon is already running — we must not
+        // kill an unrelated user debugging session.
+        if (IsProcmonRunning()) {
+            fprintf(stderr, "[%ls] Procmon is already running. Close it first to use Sandy %ls mode.\n",
+                    tag, tag);
+            return false;
+        }
 
         // Start Procmon headless with backing file — CREATE_NO_WINDOW + SW_HIDE
         // ensures no UI appears even momentarily.
@@ -420,7 +625,7 @@ namespace Sandbox {
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
-        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
+        if (!CreateProcessW(procmonPath.c_str(), &cmd[0], nullptr, nullptr, FALSE,
                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
             fprintf(stderr, "[%ls] Failed to start Procmon (error %lu).\n", tag, GetLastError());
             return false;
@@ -430,6 +635,9 @@ namespace Sandbox {
 
         if (!WaitForFile(pmlPathOut, 10000)) {
             fprintf(stderr, "[%ls] Procmon did not start capturing.\n", tag);
+            // F5/R9: Kill the Procmon instance we just started to avoid leaking it
+            RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000, procmonPath);
+            WaitForProcmonExit(10000);
             return false;
         }
         if (startupSleepMs > 0) Sleep(startupSleepMs);
@@ -437,17 +645,14 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Start Procmon for trace mode with include filter for target process
+    // Start Procmon for trace mode.
+    // Capture-all is intentional: filtering by process name misses differently-
+    // named descendants and forces Sandy to mutate the user's Procmon profile.
     // -----------------------------------------------------------------------
     inline bool StartProcmonProfile(const std::wstring& procmonPath, const std::wstring& exeName,
                                      std::wstring& pmlPathOut)
     {
-        // Write FilterRules to registry: include only the target process name.
-        // Procmon reads this at startup, so it must be set before launch.
-        if (!WriteProcmonIncludeFilter(exeName)) {
-            fprintf(stderr, "[Profile] Failed to set Procmon filter.\n");
-            return false;
-        }
+        (void)exeName;
         // 3s sleep lets the kernel driver fully initialize before profiling
         return LaunchProcmon(procmonPath, L"Profile", pmlPathOut, 3000);
     }
@@ -470,7 +675,7 @@ namespace Sandbox {
                                      const std::wstring& csvPath,
                                      const wchar_t* tag)
     {
-        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000);
+        RunProcAndWait(L"\"" + procmonPath + L"\" /Terminate", 10000, procmonPath);
         if (!WaitForProcmonExit(15000))
             fprintf(stderr, "[%ls] Warning: Procmon did not exit cleanly.\n", tag);
 
@@ -484,7 +689,7 @@ namespace Sandbox {
 
         std::wstring cvt = L"\"" + procmonPath + L"\" /Quiet /AcceptEula "
                            L"/OpenLog \"" + pmlPath + L"\" /SaveAs \"" + csvPath + L"\"";
-        RunProcAndWait(cvt, 60000);
+        RunProcAndWait(cvt, 60000, procmonPath);
 
         if (!WaitForFile(csvPath, 60000)) {
             WaitForProcmonExit(30000);

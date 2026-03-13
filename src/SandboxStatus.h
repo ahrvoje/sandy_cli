@@ -53,7 +53,7 @@ inline int HandleStatus(bool json = false)
         RegCloseKey(hGrants);
     }
 
-    // WER registry — uses IsProcessAlive with zombie detection (bug fix)
+    // WER registry — F5/R8: uses ParseWEREntry + creation time for safe liveness
     HKEY hWER = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
                       KEY_READ, &hWER) == ERROR_SUCCESS) {
@@ -63,11 +63,13 @@ inline int HandleStatus(bool json = false)
             wchar_t nm[64]; DWORD nl = 64, ds = 0;
             if (RegEnumValueW(hWER, i, nm, &nl, 0, 0, 0, &ds) != ERROR_SUCCESS) continue;
             DWORD pid = (DWORD)_wtoi(nm);
-            std::wstring exe(ds / sizeof(wchar_t), L'\0');
+            std::wstring rawData(ds / sizeof(wchar_t), L'\0');
             nl = 64;
-            RegEnumValueW(hWER, i, nm, &nl, 0, 0, (BYTE*)&exe[0], &ds);
-            while (!exe.empty() && exe.back() == L'\0') exe.pop_back();
-            bool alive = Sandbox::IsProcessAlive(pid, 0);
+            RegEnumValueW(hWER, i, nm, &nl, 0, 0, (BYTE*)&rawData[0], &ds);
+            while (!rawData.empty() && rawData.back() == L'\0') rawData.pop_back();
+            std::wstring exe; ULONGLONG werCtime = 0;
+            Sandbox::ParseWEREntry(rawData, exe, werCtime);
+            bool alive = Sandbox::IsProcessAlive(pid, werCtime);
             if (!alive) staleWer++;
             wers.push_back({ pid, exe, alive });
         }
@@ -76,7 +78,8 @@ inline int HandleStatus(bool json = false)
 
     // Scheduled tasks
     {
-        std::wstring cmd = L"schtasks.exe /Query /FO CSV /NH";
+        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
+        std::wstring cmd = L"\"" + schtasksExe + L"\" /Query /FO CSV /NH";
         HANDLE hR = 0, hW = 0;
         SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
         if (CreatePipe(&hR, &hW, &sa, 0)) {
@@ -85,7 +88,7 @@ inline int HandleStatus(bool json = false)
             si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
             si.wShowWindow = SW_HIDE;
             PROCESS_INFORMATION pi{};
-            if (CreateProcessW(0, (LPWSTR)cmd.c_str(), 0, 0, TRUE,
+            if (CreateProcessW(schtasksExe.c_str(), (LPWSTR)cmd.c_str(), 0, 0, TRUE,
                                CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
                 CloseHandle(hW);
                 std::string out; char buf[4096]; DWORD br;
@@ -179,21 +182,37 @@ inline int HandleStatus(bool json = false)
 // -----------------------------------------------------------------------
 inline int HandleCleanup()
 {
-    // Enumerate all Sandy AppContainer profiles for comprehensive cleanup
-    auto orphans = EnumSandyProfiles();
+    // Enumerate all Sandy AppContainer profiles
+    auto allProfiles = EnumSandyProfiles();
 
-    // Remove loopback exemptions for ALL stale Sandy profiles (not just legacy)
-    Sandbox::ForceDisableLoopback(orphans);
+    // Filter to stale-only: preserve containers whose owning instance is live
+    // AND containers belonging to saved profiles (permanent, never cleaned)
+    auto liveContainers = Sandbox::GetLiveContainerNames();
+    auto savedContainers = Sandbox::GetSavedProfileContainerNames();
+    std::vector<std::wstring> staleProfiles;
+    for (const auto& m : allProfiles) {
+        if (liveContainers.count(m)) {
+            printf("  [PROFILE] %ls -> SKIPPED (live instance)\n", m.c_str());
+        } else if (savedContainers.count(m)) {
+            printf("  [PROFILE] %ls -> SKIPPED (saved profile)\n", m.c_str());
+        } else {
+            staleProfiles.push_back(m);
+        }
+    }
+
+    // Remove loopback exemptions for STALE profiles only
+    Sandbox::ForceDisableLoopback(staleProfiles);
 
     Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
+    Sandbox::CleanStagingProfiles(); // roll back incomplete --create-profile operations
     Sandbox::RestoreStaleWER();
     Sandbox::DeleteStaleCleanupTasks();
 
     // Clean orphaned Sandy AppContainer profiles from Windows Mappings
-    if (!orphans.empty())
+    if (!staleProfiles.empty())
         printf("  Cleaning %zu orphaned AppContainer profile(s)...\n",
-                orphans.size());
-    for (const auto& m : orphans) {
+                staleProfiles.size());
+    for (const auto& m : staleProfiles) {
         HRESULT hr = DeleteAppContainerProfile(m.c_str());
         if (SUCCEEDED(hr))
             printf("  [PROFILE] %ls -> deleted\n", m.c_str());

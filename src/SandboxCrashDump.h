@@ -50,6 +50,7 @@ namespace Sandbox {
         RegDeleteKeyW(HKEY_LOCAL_MACHINE, keyPath.c_str());
     }
 
+
     // -----------------------------------------------------------------------
     // WER state persistence — allow all cleanup paths to revert WER keys
     // Stores exe basename under HKCU\Software\Sandy\WER (PID as value name)
@@ -64,9 +65,14 @@ namespace Sandbox {
             return;
         wchar_t valueName[32];
         swprintf(valueName, 32, L"%lu", GetCurrentProcessId());
+        // F5/R8: Persist exeName|ctime for PID-reuse-safe liveness checks
+        ULONGLONG ct = GetCurrentProcessCreationTime();
+        wchar_t ctBuf[32];
+        swprintf(ctBuf, 32, L"%llu", ct);
+        std::wstring data = exeName + L"|" + ctBuf;
         RegSetValueExW(hKey, valueName, 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(exeName.c_str()),
-                       static_cast<DWORD>((exeName.size() + 1) * sizeof(wchar_t)));
+                       reinterpret_cast<const BYTE*>(data.c_str()),
+                       static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
     }
 
@@ -83,6 +89,75 @@ namespace Sandbox {
         // Parent key (Software\Sandy\WER) is permanent — never delete it
     }
 
+    // -----------------------------------------------------------------------
+    // ParseWEREntry — parse WER value data.
+    //
+    // F5/R8: Handles both new "exeName|ctime" and legacy "exeName" formats.
+    // -----------------------------------------------------------------------
+    inline void ParseWEREntry(const std::wstring& data,
+                               std::wstring& outExeName, ULONGLONG& outCtime)
+    {
+        auto pipe = data.find(L'|');
+        if (pipe != std::wstring::npos) {
+            outExeName = data.substr(0, pipe);
+            outCtime = _wcstoui64(data.c_str() + pipe + 1, nullptr, 10);
+        } else {
+            outExeName = data;
+            outCtime = 0;  // legacy entry — no ctime available
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CountLiveWERReferences — count how many live Sandy instances are
+    // tracking a given executable name under HKCU\Software\Sandy\WER.
+    //
+    // Used for reference-counted WER cleanup: only delete the shared HKLM
+    // LocalDumps key when the last Sandy owner for that exe exits.
+    //
+    // F5/R8: Uses creation time from value data for PID-reuse-safe checks.
+    // excludePid: PID to exclude from the count (typically our own).
+    // -----------------------------------------------------------------------
+    inline int CountLiveWERReferences(const std::wstring& exeName, DWORD excludePid = 0)
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+                          KEY_READ, &hKey) != ERROR_SUCCESS)
+            return 0;
+
+        DWORD valueCount = 0;
+        RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                         &valueCount, nullptr, nullptr, nullptr, nullptr);
+
+        int count = 0;
+        for (DWORD i = 0; i < valueCount; i++) {
+            wchar_t name[64]; DWORD nameLen = 64;
+            DWORD dataSize = 0;
+            if (RegEnumValueW(hKey, i, name, &nameLen, nullptr, nullptr,
+                              nullptr, &dataSize) != ERROR_SUCCESS)
+                continue;
+            DWORD pid = (DWORD)_wtoi(name);
+            if (pid == excludePid) continue;
+
+            // Read value data
+            std::wstring data(dataSize / sizeof(wchar_t), L'\0');
+            nameLen = 64;
+            if (RegEnumValueW(hKey, i, name, &nameLen, nullptr, nullptr,
+                              reinterpret_cast<BYTE*>(&data[0]), &dataSize) == ERROR_SUCCESS) {
+                while (!data.empty() && data.back() == L'\0') data.pop_back();
+
+                // F5/R8: Parse exeName|ctime and use ctime for liveness check
+                std::wstring entryExe; ULONGLONG entryCtime = 0;
+                ParseWEREntry(data, entryExe, entryCtime);
+
+                if (!IsProcessAlive(pid, entryCtime)) continue;
+                if (_wcsicmp(entryExe.c_str(), exeName.c_str()) == 0)
+                    count++;
+            }
+        }
+        RegCloseKey(hKey);
+        return count;
+    }
+
     // Enumerate persisted WER entries and clean only dead-PID ones.
     // Parent key (Software\Sandy\WER) is permanent — never deleted.
     inline void RestoreStaleWER()
@@ -96,7 +171,7 @@ namespace Sandbox {
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
-        // Collect all entries first (value name = PID, data = exe basename)
+        // Collect all entries first (value name = PID, data = exe basename|ctime)
         std::vector<std::pair<std::wstring, std::wstring>> entries;
         for (DWORD i = 0; i < valueCount; i++) {
             wchar_t name[64];
@@ -114,17 +189,28 @@ namespace Sandbox {
         }
         RegCloseKey(hKey);
 
-        // Clean only dead-PID entries — skip live ones
+        // Collect stale entries and count live references per exe
+        // Only delete the HKLM LocalDumps key when no live instance tracks the same exe
         std::vector<std::wstring> toDelete;
         for (const auto& entry : entries) {
             DWORD pid = (DWORD)_wtoi(entry.first.c_str());
-            if (IsProcessAlive(pid, 0)) continue;  // skip live instances
+            // F5/R8: Parse exeName|ctime from value data
+            std::wstring exeName; ULONGLONG entryCtime = 0;
+            ParseWEREntry(entry.second, exeName, entryCtime);
+            if (IsProcessAlive(pid, entryCtime)) continue;  // skip live instances
 
-            if (!entry.second.empty()) {
-                DisableCrashDumps(entry.second);
-                g_logger.Log((L"WER_RESTORE: " + entry.second).c_str());
+            if (!exeName.empty()) {
+                // Check if any other live Sandy instance still tracks this exe
+                int liveRefs = CountLiveWERReferences(exeName, pid);
+                if (liveRefs == 0) {
+                    DisableCrashDumps(exeName);
+                    g_logger.Log((L"WER_RESTORE: " + exeName + L" (last owner)").c_str());
+                } else {
+                    g_logger.LogFmt(L"WER_RESTORE: %ls SKIPPED (%d live owner(s) remain)",
+                                    exeName.c_str(), liveRefs);
+                }
                 printf("  [WER]  PID %ls crash dumps for %ls -> cleaned\n",
-                       entry.first.c_str(), entry.second.c_str());
+                       entry.first.c_str(), exeName.c_str());
             }
             toDelete.push_back(entry.first);
         }
@@ -150,9 +236,13 @@ namespace Sandbox {
     }
 
     // Find a crash dump in %LOCALAPPDATA%\CrashDumps matching exeName.
+    // Prefers a PID-specific match (e.g. "python.exe.1234.dmp") to avoid
+    // misattribution in concurrent same-exe runs.  Falls back to newest
+    // file matching the exe name if no PID-specific dump is found.
     // If auditLogPath is set, copies the dump next to it (audit.log -> audit.dmp).
     inline std::wstring ReportCrashDump(const std::wstring& exeName,
-                                         const std::wstring& auditLogPath)
+                                         const std::wstring& auditLogPath,
+                                         DWORD childPid = 0)
     {
         wchar_t localAppData[MAX_PATH];
         if (!GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH))
@@ -165,21 +255,38 @@ namespace Sandbox {
         HANDLE hFind = FindFirstFileW(pattern.c_str(), &fd);
         if (hFind == INVALID_HANDLE_VALUE) return L"";
 
-        std::wstring bestName;
+        // Build PID-specific substring for priority matching
+        std::wstring pidToken;
+        if (childPid != 0) {
+            wchar_t pidBuf[32];
+            swprintf(pidBuf, 32, L".%lu.", childPid);
+            pidToken = pidBuf;
+        }
+
+        std::wstring pidMatch;     // PID-specific match (preferred)
+        std::wstring bestName;     // newest file fallback
         FILETIME bestTime = {};
         do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                if (CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
-                    bestTime = fd.ftLastWriteTime;
-                    bestName = fd.cFileName;
-                }
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+
+            // Check for PID-specific match first
+            if (!pidToken.empty() && pidMatch.empty()) {
+                if (wcsstr(fd.cFileName, pidToken.c_str()) != nullptr)
+                    pidMatch = fd.cFileName;
+            }
+            // Track newest file as fallback
+            if (CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
+                bestTime = fd.ftLastWriteTime;
+                bestName = fd.cFileName;
             }
         } while (FindNextFileW(hFind, &fd));
         FindClose(hFind);
 
-        if (bestName.empty()) return L"";
+        // Prefer PID-specific match, fall back to newest
+        std::wstring chosen = !pidMatch.empty() ? pidMatch : bestName;
+        if (chosen.empty()) return L"";
 
-        std::wstring srcPath = dumpDir + L"\\" + bestName;
+        std::wstring srcPath = dumpDir + L"\\" + chosen;
 
         // Copy dump next to the audit log (audit.log -> audit.dmp)
         std::wstring dstPath;

@@ -81,7 +81,8 @@ namespace Sandbox {
     {
         // Query all tasks matching our prefix
         // schtasks /Query /FO CSV /NH gives: "TaskName","Next Run Time","Status"
-        std::wstring cmd = L"schtasks.exe /Query /FO CSV /NH";
+        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
+        std::wstring cmd = L"\"" + schtasksExe + L"\" /Query /FO CSV /NH";
         HANDLE hRead = nullptr, hWrite = nullptr;
         SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
         if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
@@ -92,7 +93,7 @@ namespace Sandbox {
         si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(nullptr, const_cast<LPWSTR>(cmd.c_str()),
+        if (!CreateProcessW(schtasksExe.c_str(), const_cast<LPWSTR>(cmd.c_str()),
                 nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
             CloseHandle(hRead);
             CloseHandle(hWrite);
@@ -161,8 +162,9 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline bool EnableLoopback(const std::wstring& containerName)
     {
-        std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -a -n=" + containerName;
-        DWORD exitCode = RunHiddenProcess(cmd);
+        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
+        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -a -n=" + containerName;
+        DWORD exitCode = RunHiddenProcess(cmd, 5000, cniExe);
         g_loopbackGranted = (exitCode == 0);
         if (g_loopbackGranted) g_loopbackContainerName = containerName;
         return g_loopbackGranted;
@@ -178,8 +180,9 @@ namespace Sandbox {
     inline void DisableLoopback() {
         if (!g_loopbackGranted || g_loopbackContainerName.empty()) return;
         g_logger.Log((L"LOOPBACK: disabling (" + g_loopbackContainerName + L")").c_str());
-        std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + g_loopbackContainerName;
-        RunHiddenProcess(cmd);
+        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
+        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + g_loopbackContainerName;
+        RunHiddenProcess(cmd, 5000, cniExe);
         g_loopbackGranted = false;
         g_loopbackContainerName.clear();
     }
@@ -194,12 +197,13 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void ForceDisableLoopback(const std::wstring& containerName = L"")
     {
+        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
         // Remove legacy hardcoded moniker (from pre-fix builds)
-        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
+        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=SandySandbox", 5000, cniExe);
         // Remove per-instance moniker if provided
         if (!containerName.empty()) {
-            std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + containerName;
-            RunHiddenProcess(cmd);
+            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + containerName;
+            RunHiddenProcess(cmd, 5000, cniExe);
         }
         g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
     }
@@ -211,10 +215,11 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void ForceDisableLoopback(const std::vector<std::wstring>& containerNames)
     {
-        RunHiddenProcess(L"CheckNetIsolation.exe LoopbackExempt -d -n=SandySandbox");
+        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
+        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=SandySandbox", 5000, cniExe);
         for (const auto& name : containerNames) {
-            std::wstring cmd = L"CheckNetIsolation.exe LoopbackExempt -d -n=" + name;
-            RunHiddenProcess(cmd);
+            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + name;
+            RunHiddenProcess(cmd, 5000, cniExe);
             printf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
         }
         if (!containerNames.empty())
@@ -266,22 +271,32 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // CleanupStaleStartupState — clear non-instance-specific stale state.
+    // CleanupStaleStartupState — clear stale state from previous crashed runs.
     //
     // Cleans loopback exemptions and stale WER keys for the target exe.
-    // Safe to call during concurrent use (does not touch instance grants).
+    // Multi-instance safe: only removes loopback for containers whose owning
+    // instance is proven dead. Only disables WER for PIDs proven dead.
     //
     // Inputs:  exePath — target executable path (for WER key matching)
-    // Effect:  loopback exemption removed, stale WER key for target cleaned
-    // Verifiable: no stale loopback/WER entries remain for this exe
+    // Effect:  stale loopback exemptions removed, stale WER key cleaned
+    // Verifiable: live instances retain loopback and WER configuration
     // -----------------------------------------------------------------------
     inline void CleanupStaleStartupState(const std::wstring& exePath)
     {
-        // Sweep stale per-instance loopback exemptions (not just legacy moniker)
-        auto staleProfiles = EnumSandyProfiles();
+        // Filter profiles through liveness check — only clean stale ones
+        // Also exclude saved-profile containers (permanent, never cleaned)
+        auto allProfiles = EnumSandyProfiles();
+        auto liveContainers = GetLiveContainerNames();
+        auto savedContainers = GetSavedProfileContainerNames();
+        std::vector<std::wstring> staleProfiles;
+        for (const auto& p : allProfiles) {
+            if (!liveContainers.count(p) && !savedContainers.count(p))
+                staleProfiles.push_back(p);
+        }
         ForceDisableLoopback(staleProfiles);
 
         // Clean stale WER key for the current target exe if Sandy left it
+        // Only disable if the owning PID is dead (multi-instance safe)
         auto slash = exePath.find_last_of(L"\\/");
         std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
         {
@@ -302,14 +317,32 @@ namespace Sandbox {
                         if (RegEnumValueW(hWER, i, vname, &vnameLen, nullptr, nullptr,
                                           reinterpret_cast<BYTE*>(&data[0]), &dataSize) == ERROR_SUCCESS) {
                             while (!data.empty() && data.back() == L'\0') data.pop_back();
-                            if (_wcsicmp(data.c_str(), exeBaseName.c_str()) == 0)
-                                foundStale = true;
+                            // F5/R8: Parse exeName|ctime from WER value data
+                            std::wstring werExe; ULONGLONG werCtime = 0;
+                            ParseWEREntry(data, werExe, werCtime);
+                            if (_wcsicmp(werExe.c_str(), exeBaseName.c_str()) == 0) {
+                                // Check if the owning PID is still alive (with ctime)
+                                DWORD werPid = (DWORD)_wtoi(vname);
+                                if (!IsProcessAlive(werPid, werCtime))
+                                    foundStale = true;
+                            }
                         }
                     }
                 }
                 RegCloseKey(hWER);
-                if (foundStale)
-                    DisableCrashDumps(exeBaseName);
+                if (foundStale) {
+                    // Reference-counted: only delete the shared HKLM LocalDumps key
+                    // if no other live Sandy instance is tracking this exe name
+                    int liveRefs = CountLiveWERReferences(exeBaseName);
+                    if (liveRefs == 0) {
+                        DisableCrashDumps(exeBaseName);
+                        g_logger.LogFmt(L"STARTUP_WER: cleaned %ls (no live owners)",
+                                        exeBaseName.c_str());
+                    } else {
+                        g_logger.LogFmt(L"STARTUP_WER: %ls SKIPPED (%d live owner(s) remain)",
+                                        exeBaseName.c_str(), liveRefs);
+                    }
+                }
             }
         }
         g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");

@@ -159,30 +159,69 @@ namespace Sandbox {
     // Registry persistence is not updated here — the in-memory list
     // is the source of truth for final RevokeAllGrants() on exit,
     // and --cleanup handles crash recovery for any stale state.
+    //
+    // NOTE: when multiple allow rules share a path with different access
+    // levels, the caller must re-apply remaining allows after this call
+    // (see DynamicWatcherThread).
     // -----------------------------------------------------------------------
-    inline void RevokeGrant(const std::wstring& path, const std::wstring& sidStr,
+    inline bool RevokeGrant(const std::wstring& path, const std::wstring& sidStr,
                             bool isDeny, SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
     {
-        // Find and remove matching grant records, capture trapped SIDs
+        // Snapshot matching grant metadata first. We only remove the in-memory
+        // records after the ACL revoke succeeds; otherwise retries/final cleanup
+        // would lose the information needed to clean the path correctly.
         std::wstring trappedSids;
         bool wasPeek = false;
         AcquireSRWLockExclusive(&g_aclGrantsLock);
-        for (auto it = g_aclGrants.begin(); it != g_aclGrants.end(); ) {
-            if (_wcsicmp(it->path.c_str(), path.c_str()) == 0 &&
-                it->wasDenied == isDeny && it->objType == objType) {
-                trappedSids = it->trappedSids;
-                wasPeek = it->wasPeek;
-                it = g_aclGrants.erase(it);
-            } else {
-                ++it;
+        for (const auto& grant : g_aclGrants) {
+            if (_wcsicmp(grant.path.c_str(), path.c_str()) == 0 &&
+                grant.wasDenied == isDeny && grant.objType == objType) {
+                trappedSids = grant.trappedSids;
+                wasPeek = grant.wasPeek;
             }
         }
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
 
         // Remove ACEs from the object DACL
         int removed = RemoveSidFromDacl(path, sidStr, objType, isDeny, trappedSids, wasPeek);
+        bool targetExists = false;
+        if (objType == SE_FILE_OBJECT) {
+            DWORD attrs = GetFileAttributesW(path.c_str());
+            targetExists = (attrs != INVALID_FILE_ATTRIBUTES);
+        } else if (objType == SE_REGISTRY_KEY) {
+            HKEY root = HKEY_CURRENT_USER;
+            std::wstring subPath = path;
+            if (subPath.compare(0, 13, L"CURRENT_USER\\") == 0) {
+                subPath = subPath.substr(13);
+            } else if (subPath.compare(0, 8, L"MACHINE\\") == 0) {
+                root = HKEY_LOCAL_MACHINE;
+                subPath = subPath.substr(8);
+            }
+            HKEY hTest = nullptr;
+            if (RegOpenKeyExW(root, subPath.c_str(), 0, KEY_READ, &hTest) == ERROR_SUCCESS) {
+                targetExists = true;
+                RegCloseKey(hTest);
+            }
+        }
         g_logger.LogFmt(L"DYNAMIC_REVOKE: %s [%s] -> %d ACEs removed",
                         path.c_str(), isDeny ? L"deny" : L"allow", removed);
+        if (removed == 0 && targetExists) {
+            g_logger.LogFmt(L"DYNAMIC_REVOKE: %s [%s] FAILED (target still exists, no ACEs removed)",
+                            path.c_str(), isDeny ? L"deny" : L"allow");
+            return false;
+        }
+
+        AcquireSRWLockExclusive(&g_aclGrantsLock);
+        for (auto it = g_aclGrants.begin(); it != g_aclGrants.end(); ) {
+            if (_wcsicmp(it->path.c_str(), path.c_str()) == 0 &&
+                it->wasDenied == isDeny && it->objType == objType) {
+                it = g_aclGrants.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        ReleaseSRWLockExclusive(&g_aclGrantsLock);
+        return true;
     }
 
 } // namespace Sandbox

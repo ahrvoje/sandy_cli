@@ -22,6 +22,13 @@ namespace Sandbox {
                        static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
     }
 
+    inline bool TryWriteRegSz(HKEY hKey, const wchar_t* name, const std::wstring& val)
+    {
+        return RegSetValueExW(hKey, name, 0, REG_SZ,
+                              reinterpret_cast<const BYTE*>(val.c_str()),
+                              static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+    }
+
     inline std::wstring ReadRegSz(HKEY hKey, const wchar_t* name)
     {
         DWORD size = 0;
@@ -41,6 +48,18 @@ namespace Sandbox {
     {
         RegSetValueExW(hKey, name, 0, REG_DWORD,
                        reinterpret_cast<const BYTE*>(&val), sizeof(DWORD));
+    }
+
+    inline bool TryWriteRegDword(HKEY hKey, const wchar_t* name, DWORD val)
+    {
+        return RegSetValueExW(hKey, name, 0, REG_DWORD,
+                              reinterpret_cast<const BYTE*>(&val), sizeof(DWORD)) == ERROR_SUCCESS;
+    }
+
+    inline bool TryWriteRegQword(HKEY hKey, const wchar_t* name, ULONGLONG val)
+    {
+        return RegSetValueExW(hKey, name, 0, REG_QWORD,
+                              reinterpret_cast<const BYTE*>(&val), sizeof(ULONGLONG)) == ERROR_SUCCESS;
     }
 
     inline DWORD ReadRegDword(HKEY hKey, const wchar_t* name, DWORD defaultVal = 0)

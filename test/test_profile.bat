@@ -743,6 +743,44 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
+REM P14c: --cleanup output should mention "saved profile" for AC profile's container
+"!SANDY!" --cleanup >"%TEMP%\sandy_p14c.txt" 2>&1
+findstr /C:"saved profile" "%TEMP%\sandy_p14c.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P14c: --cleanup output says "saved profile"
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14c: --cleanup did not mention saved profile
+    set /a FAIL+=1
+)
+del "%TEMP%\sandy_p14c.txt" 2>nul
+
+REM P14d: Verify the Windows AppContainer profile (not just registry) survives cleanup
+REM   Container name format: Sandy_<profileName>
+REM   If the AC profile was deleted, DeriveAppContainerSidFromAppContainerName
+REM   would fail. We test by running with the profile after cleanup.
+"!SANDY!" -p test_ac -x C:\Windows\System32\cmd.exe -- /c exit >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P14d: AC profile runnable after --cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14d: AC profile not runnable after --cleanup
+    set /a FAIL+=1
+)
+
+REM P14e: Profile-mode run creates and clears Grants live-state
+REM   During a run, a lightweight Grants\<instanceId> entry should exist
+REM   for liveness tracking. After clean exit, it must be removed.
+REM   Verify: no Grants subkeys remain after a clean profile-mode run.
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] P14e: Grants clean after profile-mode run
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14e: Grants leaked after profile-mode run
+    set /a FAIL+=1
+)
+
 REM ===================================================================
 REM P15 — Delete Profiles
 REM ===================================================================

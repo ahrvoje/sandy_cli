@@ -81,7 +81,7 @@ namespace Sandbox {
 
         EXPLICIT_ACCESSW ea{};
         ea.grfAccessPermissions = permissions;
-        ea.grfAccessMode = SET_ACCESS;
+        ea.grfAccessMode = GRANT_ACCESS;  // GRANT_ACCESS unions with existing ACE for same SID
         // Peek: non-recursive — ACE applies only to this directory, not children
         ea.grfInheritance = (level == AccessLevel::Peek)
             ? 0
@@ -104,14 +104,7 @@ namespace Sandbox {
         if (rc != ERROR_SUCCESS) { LocalFree(pSD); return rc; }
         LocalFree(pSD);
 
-        // 3. Record the grant (path + SID string for ACE-level removal)
-        if (recordFn) {
-            LPWSTR sidStr = nullptr;
-            if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", false, level == AccessLevel::Peek);
-                LocalFree(sidStr);
-            }
-        }
+        // 3. (moved below — record only after ACL application succeeds)
 
         // 4. Apply new DACL
         DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
@@ -151,6 +144,15 @@ namespace Sandbox {
                 DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
         }
         LocalFree(pNewDacl);
+
+        // 3. Record the grant AFTER successful ACL application
+        if (rc == ERROR_SUCCESS && recordFn) {
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(pSid, &sidStr)) {
+                recordFn(path, objType, sidStr, L"", false, level == AccessLevel::Peek);
+                LocalFree(sidStr);
+            }
+        }
 
         // 5. Log resulting SDDL
         if (rc == ERROR_SUCCESS) {
@@ -242,14 +244,7 @@ namespace Sandbox {
             }
         }
 
-        // Record the grant (path + SID + trapped SIDs for ACE-level removal)
-        if (recordFn) {
-            LPWSTR sidStr = nullptr;
-            if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, trappedSids, true, false);
-                LocalFree(sidStr);
-            }
-        }
+        // (grant recording moved below — record only after ACL application succeeds)
 
         PACL pNewDacl = nullptr;
 
@@ -364,6 +359,15 @@ namespace Sandbox {
                 siFlags, nullptr, nullptr, pNewDacl, nullptr);
         }
         LocalFree(pNewDacl);
+
+        // Record the grant AFTER successful ACL application
+        if (rc == ERROR_SUCCESS && recordFn) {
+            LPWSTR sidStr = nullptr;
+            if (ConvertSidToStringSidW(pSid, &sidStr)) {
+                recordFn(path, objType, sidStr, trappedSids, true, false);
+                LocalFree(sidStr);
+            }
+        }
 
         // Log resulting DACL
         if (rc == ERROR_SUCCESS) {
@@ -530,7 +534,7 @@ namespace Sandbox {
                 SECURITY_DESCRIPTOR sd;
                 InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
                 SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
-                rc = SetKernelObjectSecurity(hDir, DACL_SECURITY_INFORMATION, &sd)
+                rc = SetKernelObjectSecurity(hDir, siFlags, &sd)
                      ? ERROR_SUCCESS : GetLastError();
                 CloseHandle(hDir);
             }

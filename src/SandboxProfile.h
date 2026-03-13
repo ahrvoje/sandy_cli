@@ -491,16 +491,19 @@ namespace Sandbox {
             return 1;
         }
 
-        // Extract exe basename for Procmon filter and analysis
+        // Extract exe basename for post-analysis
         auto exeSlash = exePath.find_last_of(L"\\/");
         std::wstring exeBase = (exeSlash != std::wstring::npos) ? exePath.substr(exeSlash + 1) : exePath;
 
-        // Start Procmon with include filter for target process
+        // Start Procmon without mutating the user's FilterRules. Capture is
+        // filtered in post-processing by PID tree so differently-named
+        // descendants are not missed.
         std::wstring pmlPath;
         if (!StartProcmonProfile(procmonExe, exeBase, pmlPath)) {
             fprintf(stderr, "[Trace] Failed to start Procmon capture.\n");
             return 1;
         }
+        ProcmonCaptureScope procmonCaptureScope(procmonExe, pmlPath);
         fprintf(stderr, "[Trace] Capturing resource usage...\n");
 
         // Launch the process unsandboxed (normal token)
@@ -513,15 +516,18 @@ namespace Sandbox {
         if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE,
                            0, nullptr, nullptr, &si, &pi)) {
             fprintf(stderr, "[Trace] Failed to launch process (error %lu).\n", GetLastError());
-            RunProcAndWait(L"\"" + procmonExe + L"\" /Terminate", 5000);
             return 1;
         }
 
+        DWORD rootPid = pi.dwProcessId;
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD exitCode = 0;
         GetExitCodeProcess(pi.hProcess, &exitCode);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
+
+        if (!WaitForProcessTreeExit(rootPid, 30000))
+            fprintf(stderr, "[Trace] Warning: descendant processes still running after 30s; report may be incomplete.\n");
 
         fprintf(stderr, "[Trace] Process exited with code %lu (0x%08lX). Analyzing...\n", exitCode, exitCode);
 
@@ -532,13 +538,18 @@ namespace Sandbox {
         if (csvDot != std::wstring::npos) csvPath = csvPath.substr(0, csvDot);
         csvPath += L".csv";
 
-        if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Trace"))
+        if (!StopAndConvertProcmon(procmonExe, pmlPath, csvPath, L"Trace")) {
             return 1;
+        }
+
+        // Procmon is already stopped after conversion; release the capture
+        // guard so its destructor only remains a safety net for early aborts.
+        procmonCaptureScope.Dismiss();
 
         // Analyze events
         char exeNameA[MAX_PATH];
         WideCharToMultiByte(CP_ACP, 0, exeBase.c_str(), -1, exeNameA, MAX_PATH, nullptr, nullptr);
-        ProfileResult result = AnalyzeProfileCsv(csvPath, pi.dwProcessId, exeNameA);
+        ProfileResult result = AnalyzeProfileCsv(csvPath, rootPid, exeNameA);
         result.exitCode = exitCode;
 
         // Write report

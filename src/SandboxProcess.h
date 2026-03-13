@@ -12,21 +12,43 @@
 namespace Sandbox {
 
     // -----------------------------------------------------------------------
+    // GetSystemDirectoryPath — resolve %SystemRoot%\System32\ safely.
+    //
+    // Returns: e.g. L"C:\\Windows\\System32\\"  (always trailing backslash)
+    // Used to build fully-qualified paths for host-side tool launches,
+    // preventing search-order hijacking from CWD or PATH.
+    // -----------------------------------------------------------------------
+    inline std::wstring GetSystemDirectoryPath()
+    {
+        wchar_t buf[MAX_PATH];
+        UINT len = GetSystemDirectoryW(buf, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) return L"";
+        std::wstring dir(buf, len);
+        if (dir.back() != L'\\') dir += L'\\';
+        return dir;
+    }
+
+    // -----------------------------------------------------------------------
     // RunHiddenProcess — run a process with no window and wait for exit.
     //
     // Inputs:  cmdLine     — full command line to execute
     //          timeoutMs   — max wait time in milliseconds
+    //          appPath     — fully-qualified exe path for lpApplicationName
+    //                        (empty = use cmdLine search order — AVOID for
+    //                        system tools to prevent search-order hijacking)
     // Returns: process exit code, or (DWORD)-1 on failure
     // Verifiable: exit code reflects the child's actual result
     // -----------------------------------------------------------------------
-    inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000)
+    inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000,
+                                  const std::wstring& appPath = L"")
     {
         STARTUPINFOW si = { sizeof(si) };
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
         PROCESS_INFORMATION pi = {};
         std::wstring cmd = cmdLine;  // CreateProcessW needs mutable buffer
-        if (!CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE,
+        const wchar_t* app = appPath.empty() ? nullptr : appPath.c_str();
+        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, FALSE,
                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
             return (DWORD)-1;
         DWORD exitCode = (DWORD)-1;
@@ -46,7 +68,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline DWORD RunSchtasks(const std::wstring& args)
     {
-        return RunHiddenProcess(L"schtasks " + args, 15000);
+        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
+        return RunHiddenProcess(L"\"" + schtasksExe + L"\" " + args, 15000, schtasksExe);
     }
 
     // -----------------------------------------------------------------------
@@ -213,7 +236,13 @@ namespace Sandbox {
             jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
             jeli.BasicLimitInformation.ActiveProcessLimit = config.maxProcesses;
         }
-        SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli));
+        if (jeli.BasicLimitInformation.LimitFlags != 0) {
+            if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
+                g_logger.LogFmt(L"JOB_LIMIT: SetInformationJobObject(Extended) failed (error %lu)", GetLastError());
+                CloseHandle(hJob);
+                return nullptr;
+            }
+        }
 
         // UI restrictions (clipboard blocking)
         DWORD uiFlags = 0;
@@ -222,7 +251,11 @@ namespace Sandbox {
         if (uiFlags) {
             JOBOBJECT_BASIC_UI_RESTRICTIONS uiRestrict{};
             uiRestrict.UIRestrictionsClass = uiFlags;
-            SetInformationJobObject(hJob, JobObjectBasicUIRestrictions, &uiRestrict, sizeof(uiRestrict));
+            if (!SetInformationJobObject(hJob, JobObjectBasicUIRestrictions, &uiRestrict, sizeof(uiRestrict))) {
+                g_logger.LogFmt(L"JOB_LIMIT: SetInformationJobObject(UIRestrictions) failed (error %lu)", GetLastError());
+                CloseHandle(hJob);
+                return nullptr;
+            }
             g_logger.Log(L"CLIPBOARD: restricted via job UI limits");
         }
 
@@ -281,7 +314,12 @@ namespace Sandbox {
         if (ctx.seconds == 0) return nullptr;
 
         HANDLE hThread = CreateThread(nullptr, 0, TimeoutThread, &ctx, 0, nullptr);
-        g_logger.LogFmt(L"TIMEOUT: armed %lus", ctx.seconds);
+        // F4/R8: Log failure — caller must check for nullptr to fail closed
+        if (!hThread)
+            g_logger.LogFmt(L"TIMEOUT: CreateThread FAILED (error %lu) — watchdog NOT armed",
+                            GetLastError());
+        else
+            g_logger.LogFmt(L"TIMEOUT: armed %lus", ctx.seconds);
         return hThread;
     }
 

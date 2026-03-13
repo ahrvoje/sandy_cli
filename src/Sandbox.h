@@ -23,6 +23,10 @@
 
 namespace Sandbox {
 
+    // Global child process handle for emergency cleanup coordination.
+    // Set after LaunchChildProcess succeeds, cleared after CloseHandle in Phase 5.
+    inline HANDLE g_childProcess = nullptr;
+
     // -----------------------------------------------------------------------
     // RecordGrant callback — bridges SandboxACL.h → SandboxGrants.h
     // -----------------------------------------------------------------------
@@ -233,24 +237,32 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // SetupAudit — start Procmon audit capture if requested.
+    //
+    // F3/R10: Returns false when audit was explicitly requested but could
+    // not be started (Procmon missing or capture startup failed).
+    // Callers should abort the run on false — audit is fail-closed.
     // -----------------------------------------------------------------------
-    inline void SetupAudit(const std::wstring& auditLogPath,
+    inline bool SetupAudit(const std::wstring& auditLogPath,
                            std::wstring& procmonExe, bool& auditActive,
                            std::wstring& auditPmlPath)
     {
         procmonExe.clear();
         auditActive = false;
         auditPmlPath.clear();
-        if (auditLogPath.empty()) return;
+        if (auditLogPath.empty()) return true;  // not requested — OK
 
         procmonExe = FindProcmon();
         if (procmonExe.empty()) {
-            g_logger.Log(L"AUDIT: Procmon not found on PATH, audit disabled");
-            return;
+            g_logger.Log(L"AUDIT: Procmon not found — cannot start requested audit");
+            return false;
         }
         auditActive = StartProcmonAudit(procmonExe, auditPmlPath);
-        if (auditActive)
+        if (auditActive) {
             g_logger.Log(L"AUDIT: active (Procmon)");
+            return true;
+        }
+        g_logger.Log(L"AUDIT: Procmon capture startup failed");
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -268,10 +280,14 @@ namespace Sandbox {
 
         auto slash = exePath.find_last_of(L"\\/");
         crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
+        // Persist HKCU ownership BEFORE enabling HKLM — crash-safe ordering.
+        // If power is lost after HKCU but before HKLM, cleanup sees a dangling
+        // ownership entry and harmlessly removes it.
+        PersistWERExeName(crashExeName);
         crashDumpsEnabled = EnableCrashDumps(crashExeName);
         g_logger.Log(crashDumpsEnabled ? L"WER_DUMP: enabled" : L"WER_DUMP: failed to enable");
-        if (crashDumpsEnabled)
-            PersistWERExeName(crashExeName);
+        if (!crashDumpsEnabled)
+            ClearWERExeName();  // undo ownership if HKLM setup failed
     }
 
     // -----------------------------------------------------------------------
@@ -303,15 +319,53 @@ namespace Sandbox {
             if (IsCrashExitCode(exitCode)) {
                 Sleep(2000);
                 std::wstring reportTarget = !dumpPath.empty() ? dumpPath : auditLogPath;
-                std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget);
+                std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget, childPid);
                 if (!foundDump.empty()) {
                     g_logger.Log((L"DUMP: captured -> " + foundDump).c_str());
                 } else {
                     g_logger.Log(L"DUMP: process crashed but no dump generated");
                 }
             }
-            DisableCrashDumps(crashExeName);
+            // Reference-counted cleanup: clear our tracking entry first,
+            // then only delete the shared HKLM LocalDumps key if we're the
+            // last Sandy instance tracking this exe name.
             ClearWERExeName();
+            int liveRefs = CountLiveWERReferences(crashExeName);
+            if (liveRefs == 0) {
+                DisableCrashDumps(crashExeName);
+                g_logger.Log((L"WER_CLEANUP: " + crashExeName + L" (last owner, HKLM key deleted)").c_str());
+            } else {
+                g_logger.LogFmt(L"WER_CLEANUP: %ls SKIPPED (%d live owner(s) remain)",
+                                crashExeName.c_str(), liveRefs);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // TeardownAuditAndDumps — symmetric abort-path cleanup for Procmon/WER.
+    //
+    // F3/R11: After SetupAudit and SetupCrashDumps succeed, any later abort
+    // (stdin, launch, job, watchdog, dynamic) must tear down both features.
+    // Previously each abort path hand-coded partial WER cleanup but none
+    // stopped Procmon.  This single helper replaces all of them.
+    // -----------------------------------------------------------------------
+    inline void TeardownAuditAndDumps(bool auditActive,
+                                      const std::wstring& procmonExe,
+                                      const std::wstring& auditPmlPath,
+                                      bool crashDumpsEnabled,
+                                      const std::wstring& crashExeName)
+    {
+        if (auditActive && !procmonExe.empty()) {
+            RunProcAndWait(L"\"" + procmonExe + L"\" /Terminate", 10000, procmonExe);
+            WaitForProcmonExit(10000);
+            if (!auditPmlPath.empty())
+                DeleteFileW(auditPmlPath.c_str());
+            g_logger.Log(L"TEARDOWN: Procmon stopped (abort path)");
+        }
+        if (crashDumpsEnabled) {
+            ClearWERExeName();
+            if (CountLiveWERReferences(crashExeName) == 0)
+                DisableCrashDumps(crashExeName);
         }
     }
 
@@ -502,11 +556,35 @@ namespace Sandbox {
 
             ULONGLONG tStart = GetTickCount64();
             int revokeCount = 0, grantCount = 0, failCount = 0;
+            ResetGrantTrackingHealth();
 
             // ---- Phase 1: Revoke removed entries ----
             for (const auto& r : removed) {
-                RevokeGrant(r.path, ctx->sidString, r.isDeny, SE_FILE_OBJECT);
-                revokeCount++;
+                if (RevokeGrant(r.path, ctx->sidString, r.isDeny, SE_FILE_OBJECT))
+                    revokeCount++;
+                else
+                    failCount++;
+
+                // After revoking an allow, re-apply any remaining allows on the
+                // same path from the NEW config.  RevokeGrant strips our SID from
+                // the DACL entirely, so any surviving same-path allows must be
+                // re-granted to keep their permissions intact.
+                if (!r.isDeny) {
+                    for (const auto& k : newKeys) {
+                        if (k.isDeny) continue;
+                        if (_wcsicmp(k.path.c_str(), r.path.c_str()) != 0) continue;
+                        DWORD rc = GrantObjectAccess(ctx->pSid, k.path, k.access,
+                                                     RecordGrantCallback);
+                        if (rc == ERROR_SUCCESS) {
+                            g_logger.LogFmt(L"DYNAMIC_REGRANT: [%s] %s -> OK (same-path surviving allow)",
+                                            AccessTag(k.access), k.path.c_str());
+                        } else {
+                            g_logger.LogFmt(L"DYNAMIC_REGRANT: [%s] %s -> FAILED (0x%08X)",
+                                            AccessTag(k.access), k.path.c_str(), rc);
+                            failCount++;
+                        }
+                    }
+                }
             }
 
             // ---- Phase 2: Apply added entries (context-aware) ----
@@ -562,9 +640,15 @@ namespace Sandbox {
                                     AccessTag(existing.access), existing.path.c_str());
                     RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
                                      true, L"", isPeek);
-                    GrantObjectAccess(ctx->pSid, existing.path, existing.access,
-                                     RecordGrantCallback);
-                    grantCount++;
+                    DWORD rc = GrantObjectAccess(ctx->pSid, existing.path, existing.access,
+                                                 RecordGrantCallback);
+                    if (rc == ERROR_SUCCESS) {
+                        grantCount++;
+                    } else {
+                        g_logger.LogFmt(L"DYNAMIC_FIXUP: re-grant [%s] %s FAILED (0x%08X)",
+                                        AccessTag(existing.access), existing.path.c_str(), rc);
+                        failCount++;
+                    }
                 }
             }
 
@@ -600,8 +684,10 @@ namespace Sandbox {
             // ---- Phase 3: Registry delta (RT mode) ----
             for (const auto& r : regRemoved) {
                 std::wstring win32Path = RegistryToWin32Path(r.path);
-                RevokeGrant(win32Path, ctx->sidString, false, SE_REGISTRY_KEY);
-                revokeCount++;
+                if (RevokeGrant(win32Path, ctx->sidString, false, SE_REGISTRY_KEY))
+                    revokeCount++;
+                else
+                    failCount++;
             }
             for (const auto& a : regAdded) {
                 std::wstring win32Path = RegistryToWin32Path(a.path);
@@ -619,14 +705,24 @@ namespace Sandbox {
                     failCount++;
                 }
             }
+            if (!GrantTrackingHealthy()) {
+                g_logger.Log(L"DYNAMIC: grant tracking persistence FAILED during reload");
+                failCount++;
+            }
 
-            // Update tracked state
-            currentKeys = newKeys;
-            currentRegKeys = newRegKeys;
-            ctx->currentConfig.folders = newConfig.folders;
-            ctx->currentConfig.denyFolders = newConfig.denyFolders;
-            ctx->currentConfig.registryRead = newConfig.registryRead;
-            ctx->currentConfig.registryWrite = newConfig.registryWrite;
+            // F4/R9: Only update tracked state when all changes succeeded.
+            // If any failed, keep the old baseline so failed changes are
+            // retried on the next poll cycle.
+            if (failCount == 0) {
+                currentKeys = newKeys;
+                currentRegKeys = newRegKeys;
+                ctx->currentConfig.folders = newConfig.folders;
+                ctx->currentConfig.denyFolders = newConfig.denyFolders;
+                ctx->currentConfig.registryRead = newConfig.registryRead;
+                ctx->currentConfig.registryWrite = newConfig.registryWrite;
+            } else {
+                g_logger.LogFmt(L"DYNAMIC: %d failure(s) — keeping previous baseline for retry", failCount);
+            }
 
             reloadCount++;
             g_logger.LogFmt(L"DYNAMIC: reload #%d — %d granted, %d revoked, %d failed (%llums)",
@@ -699,6 +795,7 @@ namespace Sandbox {
             g_logger.Log(L"GRANTS: skipped (persistent profile)");
         } else {
             ULONGLONG tGrantStart = GetTickCount64();
+            ResetGrantTrackingHealth();
 
             // Step 2a: Auto-grant read access to exe folders
             AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
@@ -710,6 +807,10 @@ namespace Sandbox {
             if (isRestricted) {
                 if (!GrantRegistryAccess(pSid, config))
                     grantFailed = true;
+            }
+            if (!GrantTrackingHealthy()) {
+                g_logger.Log(L"WARNING: grant tracking persistence failed (cleanup inventory incomplete)");
+                grantFailed = true;
             }
 
             if (grantFailed) {
@@ -770,7 +871,15 @@ namespace Sandbox {
         std::wstring procmonExe;
         bool auditActive = false;
         std::wstring auditPmlPath;
-        SetupAudit(auditLogPath, procmonExe, auditActive, auditPmlPath);
+        // F3/R10: Fail-closed — abort if requested audit cannot start
+        if (!SetupAudit(auditLogPath, procmonExe, auditActive, auditPmlPath)) {
+            fprintf(stderr, "Error: audit capture requested but could not be started.\n");
+            guard.RunAll();
+            DeleteCleanupTask(g_instanceId);
+            g_logger.Log(L"CLEANUP: complete (audit startup failure)");
+            g_logger.Stop();
+            return SandyExit::SetupError;
+        }
 
         std::wstring crashExeName;
         bool crashDumpsEnabled = false;
@@ -779,6 +888,13 @@ namespace Sandbox {
         // Step 3e: Setup stdin handle
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
         if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
+            // F3/R11: Symmetric teardown for Procmon and WER on stdin failure
+            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                  crashDumpsEnabled, crashExeName);
+            guard.RunAll();
+            DeleteCleanupTask(g_instanceId);
+            g_logger.Log(L"CLEANUP: complete (stdin setup failure)");
+            g_logger.Stop();
             return SandyExit::SetupError;
         }
 
@@ -809,8 +925,11 @@ namespace Sandbox {
                         g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
                                         expectedIL, actualIL);
                         if (hStdinFile) CloseHandle(hStdinFile);
+                        // F3/R11: Symmetric teardown on token validation failure
+                        TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                              crashDumpsEnabled, crashExeName);
                         guard.RunAll();
-                        if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
+                        DeleteCleanupTask(g_instanceId);
                         g_logger.Stop();
                         return SandyExit::SetupError;
                     }
@@ -837,8 +956,11 @@ namespace Sandbox {
             // [AC] Delete profile on launch failure (normal mode only)
             if (isAppContainer && !ctx.profileMode)
                 DeleteAppContainerProfile(containerName.c_str());
+            // F3/R11: Symmetric teardown on launch failure
+            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                  crashDumpsEnabled, crashExeName);
             guard.RunAll();
-            if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
+            DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (launch failure)");
             g_logger.Stop();
             // POSIX convention: 127 = not found, 126 = cannot execute
@@ -858,12 +980,18 @@ namespace Sandbox {
             CloseHandle(pi.hProcess);
             if (isAppContainer && !ctx.profileMode)
                 DeleteAppContainerProfile(containerName.c_str());
+            // F3/R11: Symmetric teardown on job assignment failure
+            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                  crashDumpsEnabled, crashExeName);
             guard.RunAll();
-            if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
+            DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (job assignment failure)");
             g_logger.Stop();
             return SandyExit::SetupError;
         }
+
+        // Expose child handle for emergency cleanup (Ctrl+C / SEH)
+        g_childProcess = pi.hProcess;
 
         // Step 4c: Resume child and start timeout watchdog
         ResumeThread(pi.hThread);
@@ -873,14 +1001,51 @@ namespace Sandbox {
         TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
         HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
 
+        // F4/R8: Fail closed — if timeout is configured but watchdog couldn't
+        // start, abort launch.  The child is already resumed but we terminate
+        // it immediately to prevent running without time limits.
+        if (config.timeoutSeconds > 0 && !hTimeoutThread) {
+            g_logger.Log(L"ERROR: timeout configured but watchdog thread failed — aborting");
+            TerminateProcess(pi.hProcess, SandyExit::SetupError);
+            WaitForSingleObject(pi.hProcess, 5000);
+            CloseHandle(pi.hProcess);
+            if (hJob) CloseHandle(hJob);
+            // F3/R11: Symmetric teardown on watchdog failure
+            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                  crashDumpsEnabled, crashExeName);
+            guard.RunAll();
+            DeleteCleanupTask(g_instanceId);
+            g_logger.Log(L"CLEANUP: complete (watchdog failure)");
+            g_logger.Stop();
+            return SandyExit::SetupError;
+        }
+
         // Step 4d: [DYNAMIC] Start config watcher if enabled
         HANDLE hDynamicThread = nullptr;
         HANDLE hStopEvent = nullptr;
         DynamicContext dynCtx{};
         if (dynamic && !configPath.empty() && !ctx.profileMode) {
             hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            // F5/R10: Fail-closed — abort if event creation fails
+            if (!hStopEvent) {
+                fprintf(stderr, "Error: dynamic config reload requested but event creation failed.\n");
+                g_logger.LogFmt(L"DYNAMIC: CreateEventW failed (error %lu)", GetLastError());
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, 5000);
+                g_childProcess = nullptr;
+                CloseHandle(pi.hProcess);
+                if (hJob) CloseHandle(hJob);
+                // F3/R11: Symmetric teardown on dynamic event failure
+                TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                      crashDumpsEnabled, crashExeName);
+                guard.RunAll();
+                DeleteCleanupTask(g_instanceId);
+                g_logger.Log(L"CLEANUP: complete (dynamic event failure)");
+                g_logger.Stop();
+                return SandyExit::SetupError;
+            }
             dynCtx.pSid = pSid;
-            // Convert SID to string for RevokGrant calls
+            // Convert SID to string for RevokeGrant calls
             {
                 LPWSTR s = nullptr;
                 if (ConvertSidToStringSidW(pSid, &s)) {
@@ -895,6 +1060,25 @@ namespace Sandbox {
             dynCtx.hStopEvent = hStopEvent;
             hDynamicThread = CreateThread(nullptr, 0, DynamicWatcherThread,
                                           &dynCtx, 0, nullptr);
+            // F5/R10: Fail-closed — abort if watcher thread cannot start
+            if (!hDynamicThread) {
+                fprintf(stderr, "Error: dynamic config reload requested but watcher thread failed to start.\n");
+                g_logger.LogFmt(L"DYNAMIC: CreateThread failed (error %lu)", GetLastError());
+                CloseHandle(hStopEvent);
+                TerminateProcess(pi.hProcess, 1);
+                WaitForSingleObject(pi.hProcess, 5000);
+                g_childProcess = nullptr;
+                CloseHandle(pi.hProcess);
+                if (hJob) CloseHandle(hJob);
+                // F3/R11: Symmetric teardown on dynamic watcher failure
+                TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
+                                      crashDumpsEnabled, crashExeName);
+                guard.RunAll();
+                DeleteCleanupTask(g_instanceId);
+                g_logger.Log(L"CLEANUP: complete (dynamic watcher failure)");
+                g_logger.Stop();
+                return SandyExit::SetupError;
+            }
         }
 
         // Step 4e: Wait for child exit (console passthrough — no pipe relay)
@@ -929,6 +1113,7 @@ namespace Sandbox {
                               crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
 
         // Step 5b: Close process and job handles
+        g_childProcess = nullptr;  // clear before close — emergency path must not use stale handle
         CloseHandle(pi.hProcess);
         if (hJob) CloseHandle(hJob);
 
@@ -951,7 +1136,7 @@ namespace Sandbox {
         // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
         guard.RunAll();
 
-        if (!ctx.profileMode) DeleteCleanupTask(g_instanceId);
+        DeleteCleanupTask(g_instanceId);
         g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
         g_logger.Stop();
 
@@ -969,6 +1154,9 @@ namespace Sandbox {
 
         return sandyExit;
     }
+
+    // Forward declaration — defined in SandboxSavedProfile.h
+    inline void CleanStagingProfiles();
 
     // =====================================================================
     // RunSandboxed — common entry point.
@@ -996,6 +1184,8 @@ namespace Sandbox {
 
         // --- Common startup: clean stale state, warn, create safety net ---
         CleanupStaleStartupState(exePath);
+        CleanStagingProfiles();
+        RestoreStaleGrants();  // F3/R9: retry deferred stale cleanup on every normal startup
         WarnStaleRegistryEntries();
         CreateCleanupTask(g_instanceId);
         LogSandyIdentity();
@@ -1012,11 +1202,34 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // CleanupSandbox — full cleanup for --cleanup command (stale recovery)
+    // CleanupSandbox — emergency cleanup for Ctrl+C / SEH crash paths.
+    //
+    // MUST terminate the child process before dismantling sandbox state.
+    // If the child cannot be confirmed dead, skip in-place teardown and
+    // let stale-state recovery handle it on next run.
     // -----------------------------------------------------------------------
     inline void CleanupSandbox()
     {
         g_logger.Log(L"EMERGENCY_CLEANUP: starting");
+
+        // Step 0: Terminate child before revoking any sandbox state.
+        // Without this, a child that survives Ctrl+C would lose access
+        // mid-execution, causing erratic failures.
+        HANDLE hChild = g_childProcess;
+        if (hChild) {
+            g_logger.Log(L"EMERGENCY_CLEANUP: terminating child process");
+            TerminateProcess(hChild, 1);
+            DWORD waitResult = WaitForSingleObject(hChild, 5000);
+            if (waitResult != WAIT_OBJECT_0) {
+                // Child could not be confirmed dead — skip in-place teardown.
+                // Stale-state recovery on next run will clean up.
+                g_logger.Log(L"EMERGENCY_CLEANUP: child did not terminate within 5s, deferring cleanup to next run");
+                g_logger.Stop();
+                return;
+            }
+            g_logger.Log(L"EMERGENCY_CLEANUP: child terminated");
+        }
+
         RevokeDesktopAccess();
         RevokeAllGrants();
         DisableLoopback();
