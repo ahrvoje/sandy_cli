@@ -49,15 +49,6 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] No stale WER key after clean run
-    set /a PASS+=1
-) else (
-    echo   [FAIL] WER key still exists after clean run
-    set /a FAIL+=1
-)
-
 REM ===================================================================
 REM Test 3: Stale Grants entry detected by --status
 REM ===================================================================
@@ -111,35 +102,6 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM ===================================================================
-REM Test 5: Stale WER entry detected and --cleanup clears it
-REM ===================================================================
-echo.
-echo --- Test 5: Stale WER detection and cleanup ---
-reg add "HKCU\Software\Sandy\WER" /v 88888 /t REG_SZ /d "fake_test.exe" /f >nul 2>nul
-"!SANDY!" --status >"%TEMP%\sandy_wer_status.txt" 2>nul
-
-findstr /C:"WER" "%TEMP%\sandy_wer_status.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Stale WER detected by --status
-    set /a PASS+=1
-) else (
-    echo   [FAIL] No WER shown by --status
-    set /a FAIL+=1
-)
-del "%TEMP%\sandy_wer_status.txt" 2>nul
-
-"!SANDY!" --cleanup >nul 2>nul
-
-reg query "HKCU\Software\Sandy\WER" /v 88888 >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] WER key removed after --cleanup
-    set /a PASS+=1
-) else (
-    echo   [FAIL] WER key still exists after --cleanup
-    set /a FAIL+=1
-)
-
-REM ===================================================================
 REM Test 6: --cleanup is idempotent (running twice is safe)
 REM ===================================================================
 echo.
@@ -185,9 +147,6 @@ echo --- Test 8: Multiple stale PIDs cleaned ---
 reg add "HKCU\Software\Sandy\Test\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-11111" /f >nul 2>nul
 reg add "HKCU\Software\Sandy\Test\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-22222" /f >nul 2>nul
 reg add "HKCU\Software\Sandy\Test\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|S-1-5-21-0-0-0-33333" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\WER" /v 11111 /t REG_SZ /d "a.exe" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\WER" /v 22222 /t REG_SZ /d "b.exe" /f >nul 2>nul
-
 "!SANDY!" --cleanup >nul 2>nul
 
 reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
@@ -196,15 +155,6 @@ if !ERRORLEVEL! NEQ 0 (
     set /a PASS+=1
 ) else (
     echo   [FAIL] Grants still exist after cleanup
-    set /a FAIL+=1
-)
-
-reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] All 2 stale WER PIDs cleaned
-    set /a PASS+=1
-) else (
-    echo   [FAIL] WER still exists after cleanup
     set /a FAIL+=1
 )
 

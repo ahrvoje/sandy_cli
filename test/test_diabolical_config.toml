@@ -1,28 +1,22 @@
-# Diabolical test config — targets Sandy's IMPLEMENTATION, not Windows kernel
+# Diabolical test config (AC, no deny)
 #
 # TREE:
 #   test_diabolical/
 #     scripts/              [allow read]
-#     arena/                [allow all]
-#       killzone/           [deny all]  — empty, target for delete-recreate
-#       fortress/           [deny all]  — has files, rename target
-#       readonly_zone/      [deny write] — partial deny
-#       playground/         inherits all — self-DACL escalation testing
+#     arena/
+#       killzone/           (no grant) — empty, target for delete-recreate
+#       fortress/           (no grant) — has files, rename target
+#       readonly_zone/      [allow read] (was deny.write)
+#       playground/         [allow all] — self-DACL escalation testing
 
 [sandbox]
 token = 'appcontainer'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_diabolical\scripts']
-all = ['C:\Users\H\test_diabolical\arena']
-
-[deny]
-all = [
-    'C:\Users\H\test_diabolical\arena\killzone',
-    'C:\Users\H\test_diabolical\arena\fortress',
-]
-write = ['C:\Users\H\test_diabolical\arena\readonly_zone']
+read = ['C:\Users\H\test_diabolical\scripts', 'C:\Users\H\test_diabolical\arena\readonly_zone']
+all = ['C:\Users\H\test_diabolical\arena\playground']
+peek = ['C:\Users\H\test_diabolical\arena']
 
 [privileges]
 child_processes = false

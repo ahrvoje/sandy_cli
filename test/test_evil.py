@@ -51,9 +51,9 @@ def p(*parts):
 # ===========================================================================
 print("=== BASELINE: Verify arena access works ===")
 test("arena: list",   True, lambda: os.listdir(ARENA))
-test("arena: write",  True, lambda: open(p('baseline.tmp'), 'w').write('ok'))
-test("arena: read",   True, lambda: open(p('baseline.tmp'), 'r').read())
-test("arena: delete", True, lambda: os.remove(p('baseline.tmp')))
+test("arena: write",  True, lambda: open(p('passage', 'baseline.tmp'), 'w').write('ok'))
+test("arena: read",   True, lambda: open(p('passage', 'baseline.tmp'), 'r').read())
+test("arena: delete", True, lambda: os.remove(p('passage', 'baseline.tmp')))
 test("vault: denied", False, lambda: os.listdir(p('vault')))
 
 # ===========================================================================
@@ -253,7 +253,7 @@ except OSError as e:
 # Files created AFTER Sandy applies ACLs should inherit parent permissions.
 # ===========================================================================
 print("\n=== ATTACK 9: Post-grant file creation ===")
-new_dir = p('newdir_postgrant')
+new_dir = p('deep', 'newdir_postgrant')
 try:
     os.makedirs(new_dir, exist_ok=True)
     test("postgrant: write in new dir",  True, lambda: open(os.path.join(new_dir, 'f.txt'), 'w').write('ok'))

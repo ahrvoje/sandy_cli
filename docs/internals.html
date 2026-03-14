@@ -192,11 +192,11 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>The ACL <span class="accent">Pipelines</span></h2>
-    <p class="section-lead">Sandy translates your <code>[allow]</code> and <code>[deny]</code> rules into ACEs. Because the Windows Kernel treats AppContainer SIDs differently than standard SIDs, the pipelines actively diverge per mode.</p>
+    <p class="section-lead">Sandy translates your <code>[allow]</code> rules into ACEs. <code>[deny]</code> is only supported in Restricted Token mode — AppContainer mode rejects deny rules at config validation time.</p>
 
     <div class="callout warning">
-      <div class="callout-title">⚠️ The AppContainer DENY Quirk</div>
-      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. A deny ACE placed before an allow ACE has zero effect. Therefore, Sandy must use an advanced mechanism—Mask Reduction—for AC.</p>
+      <div class="callout-title">⚠️ AppContainer: Allow-Only Model</div>
+      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. Sandy therefore rejects <code>[deny]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.—Mask Reduction—for AC.</p>
     </div>
 
     <!-- Case 1: Standard Allow -->
@@ -299,10 +299,10 @@ write = ['C:\Data\Temp']</code></pre>
         <h3 style="margin-bottom:12px;">Irregular Exits & Resilience</h3>
         <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">What happens if the power dies, or a user runs <code>taskkill /f /im sandy.exe</code>? The RAII cleanup is completely bypassed.</p>
         <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
-          <li><strong style="color:var(--accent2);">Registry Persistence:</strong> Because of sudden death scenarios, Sandy writes the SDDL state to the registry <em>before</em> modifying the disk. If Sandy crashes mid-run, those registry records remain behind indefinitely.</li>
-          <li><strong style="color:var(--accent2);">Detection & Warning:</strong> A new instance of Sandy detects those orphaned records left by dead PIDs, logs a warning about stale grants, but runs concurrently unaffected.</li>
-          <li><strong style="color:var(--accent2);">Manual Recovery:</strong> Running <code>sandy.exe --cleanup</code> forces Sandy into a full-system audit. It sweeps for dead processes, cleans up obsolete registry records, removes orphaned ACEs on the disk, and safely unregisters abandoned AppContainers.</li>
-          <li><strong style="color:var(--accent2);">Scheduled Fallback:</strong> To ensure garbage collection without user intervention, a transient Scheduled Task is created at startup matching the instance ID. Upon completion, Sandy deletes its own Task. If Sandy crashes, the task runs one week later, self-executing <code>--cleanup</code> silently in the background.</li>
+          <li><strong style="color:var(--accent2);">Durable Recovery Metadata:</strong> Sandy records the minimum ownership metadata needed to recover transient run state after abnormal termination. Profile-owned state is tracked separately from run-owned state so recovery can distinguish durable identities from crashed one-shot runs.</li>
+          <li><strong style="color:var(--accent2);">Detection &amp; Warning:</strong> A new instance audits stale run metadata, orphaned cleanup tasks, and transient containers at startup, then reports what was recovered or still needs attention.</li>
+          <li><strong style="color:var(--accent2);">Manual Recovery:</strong> Running <code>sandy.exe --cleanup</code> performs the same recovery work on demand: remove orphaned run ACLs, loopback state, scheduled tasks, and transient AppContainer profiles while preserving live runs and durable saved profiles.</li>
+          <li><strong style="color:var(--accent2);">Scheduled Fallback:</strong> Each run also registers a per-instance logon task that invokes <code>--cleanup</code>. Sandy deletes its own task on clean exit; if the process or machine dies unexpectedly, the task provides a later self-healing path on the next logon.</li>
         </ul>
       </div>
     </div>

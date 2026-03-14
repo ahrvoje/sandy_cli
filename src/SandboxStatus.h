@@ -9,9 +9,7 @@
 #include "SandboxTypes.h"
 #include "SandboxGrants.h"
 #include "SandboxCleanup.h"
-#include "SandboxAudit.h"
 #include "SandboxSavedProfile.h"
-#include <sstream>
 
 namespace Sandbox {
 
@@ -24,13 +22,10 @@ inline int HandleStatus(bool json = false)
 {
     // --- Collect data ---
     struct Inst { std::wstring uuid; DWORD pid; bool alive; };
-    struct Wer  { DWORD pid; std::wstring exe; bool alive; };
     std::vector<Inst> insts;
-    std::vector<Wer>  wers;
     std::vector<std::wstring> tasks;
     std::vector<std::wstring> profiles;
     int staleInstances = 0;
-    int staleWer = 0;
 
     // Grants registry
     HKEY hGrants = nullptr;
@@ -53,63 +48,7 @@ inline int HandleStatus(bool json = false)
         RegCloseKey(hGrants);
     }
 
-    // WER registry — F5/R8: uses ParseWEREntry + creation time for safe liveness
-    HKEY hWER = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kWERParentKey, 0,
-                      KEY_READ, &hWER) == ERROR_SUCCESS) {
-        DWORD vc = 0;
-        RegQueryInfoKeyW(hWER, 0, 0, 0, 0, 0, 0, &vc, 0, 0, 0, 0);
-        for (DWORD i = 0; i < vc; i++) {
-            wchar_t nm[64]; DWORD nl = 64, ds = 0;
-            if (RegEnumValueW(hWER, i, nm, &nl, 0, 0, 0, &ds) != ERROR_SUCCESS) continue;
-            DWORD pid = (DWORD)_wtoi(nm);
-            std::wstring rawData(ds / sizeof(wchar_t), L'\0');
-            nl = 64;
-            RegEnumValueW(hWER, i, nm, &nl, 0, 0, (BYTE*)&rawData[0], &ds);
-            while (!rawData.empty() && rawData.back() == L'\0') rawData.pop_back();
-            std::wstring exe; ULONGLONG werCtime = 0;
-            Sandbox::ParseWEREntry(rawData, exe, werCtime);
-            bool alive = Sandbox::IsProcessAlive(pid, werCtime);
-            if (!alive) staleWer++;
-            wers.push_back({ pid, exe, alive });
-        }
-        RegCloseKey(hWER);
-    }
-
-    // Scheduled tasks
-    {
-        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
-        std::wstring cmd = L"\"" + schtasksExe + L"\" /Query /FO CSV /NH";
-        HANDLE hR = 0, hW = 0;
-        SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
-        if (CreatePipe(&hR, &hW, &sa, 0)) {
-            STARTUPINFOW si = { sizeof(si) };
-            si.hStdOutput = hW; si.hStdError = hW;
-            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            PROCESS_INFORMATION pi{};
-            if (CreateProcessW(schtasksExe.c_str(), (LPWSTR)cmd.c_str(), 0, 0, TRUE,
-                               CREATE_NO_WINDOW, 0, 0, &si, &pi)) {
-                CloseHandle(hW);
-                std::string out; char buf[4096]; DWORD br;
-                while (ReadFile(hR, buf, sizeof(buf), &br, 0) && br > 0) out.append(buf, br);
-                CloseHandle(hR);
-                WaitForSingleObject(pi.hProcess, 5000);
-                CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
-                std::istringstream ss(out); std::string line;
-                while (std::getline(ss, line)) {
-                    std::wstring wl(line.begin(), line.end());
-                    if (wl.find(Sandbox::kCleanupTaskPrefix) == std::wstring::npos) continue;
-                    auto q1 = wl.find(L'"'), q2 = wl.find(L'"', q1 + 1);
-                    if (q1 != std::wstring::npos && q2 != std::wstring::npos) {
-                        auto tp = wl.substr(q1 + 1, q2 - q1 - 1);
-                        auto bs = tp.find_last_of(L'\\');
-                        tasks.push_back(bs != std::wstring::npos ? tp.substr(bs + 1) : tp);
-                    }
-                }
-            } else { CloseHandle(hR); CloseHandle(hW); }
-        }
-    }
+    tasks = ListCleanupTasks();
 
     profiles = EnumSandyProfiles();
 
@@ -130,11 +69,6 @@ inline int HandleStatus(bool json = false)
             printf("%s{\"uuid\":\"%s\",\"pid\":%lu,\"status\":\"%s\"}",
                    i ? "," : "", esc(insts[i].uuid).c_str(),
                    insts[i].pid, insts[i].alive ? "active" : "stale");
-        printf("],\"wer\":[");
-        for (size_t i = 0; i < wers.size(); i++)
-            printf("%s{\"pid\":%lu,\"exe\":\"%s\",\"status\":\"%s\"}",
-                   i ? "," : "", wers[i].pid,
-                   esc(wers[i].exe).c_str(), wers[i].alive ? "active" : "stale");
         printf("],\"tasks\":[");
         for (size_t i = 0; i < tasks.size(); i++)
             printf("%s\"%s\"", i ? "," : "", esc(tasks[i]).c_str());
@@ -147,20 +81,14 @@ inline int HandleStatus(bool json = false)
                    i ? "," : "", esc(savedProfiles[i].name).c_str(),
                    esc(savedProfiles[i].type).c_str(),
                    esc(savedProfiles[i].created).c_str());
-        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"wer\":%zu,\"stale_wer\":%d,\"tasks\":%zu,\"profiles\":%zu,\"saved_profiles\":%zu}}\n",
-               insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size(), savedProfiles.size());
+        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"tasks\":%zu,\"profiles\":%zu,\"saved_profiles\":%zu}}\n",
+               insts.size(), staleInstances, tasks.size(), profiles.size(), savedProfiles.size());
     } else {
         bool found = false;
         for (auto& x : insts) {
             printf("  [%s]  PID %-6lu  %ls%s\n",
                    x.alive ? "ACTIVE" : "STALE ", x.pid, x.uuid.c_str(),
                    x.alive ? "" : " (dead process)");
-            found = true;
-        }
-        for (auto& w : wers) {
-            printf("  [%s]  PID %-6lu  WER key for %ls%s\n",
-                   w.alive ? "ACTIVE" : "STALE ", w.pid, w.exe.c_str(),
-                   w.alive ? "" : " (dead process)");
             found = true;
         }
         for (auto& t : tasks) { printf("  [TASK]    %ls scheduled task exists\n", t.c_str()); found = true; }
@@ -171,8 +99,8 @@ inline int HandleStatus(bool json = false)
             found = true;
         }
         if (!found) printf("Sandy - no active instances or stale state.\n");
-        else printf("Summary: %zu instance(s), %d stale instance(s), %zu WER entry/entries, %d stale WER, %zu task(s), %zu profile(s), %zu saved profile(s).\n",
-                    insts.size(), staleInstances, wers.size(), staleWer, tasks.size(), profiles.size(), savedProfiles.size());
+        else printf("Summary: %zu instance(s), %d stale instance(s), %zu task(s), %zu profile(s), %zu saved profile(s).\n",
+                    insts.size(), staleInstances, tasks.size(), profiles.size(), savedProfiles.size());
     }
     return 0;
 }
@@ -191,9 +119,10 @@ inline int HandleCleanup()
     auto savedContainers = Sandbox::GetSavedProfileContainerNames();
     std::vector<std::wstring> staleProfiles;
     for (const auto& m : allProfiles) {
-        if (liveContainers.count(m)) {
+        std::wstring lookup = NormalizeLookupKey(m);
+        if (liveContainers.count(lookup)) {
             printf("  [PROFILE] %ls -> SKIPPED (live instance)\n", m.c_str());
-        } else if (savedContainers.count(m)) {
+        } else if (savedContainers.count(lookup)) {
             printf("  [PROFILE] %ls -> SKIPPED (saved profile)\n", m.c_str());
         } else {
             staleProfiles.push_back(m);
@@ -205,7 +134,6 @@ inline int HandleCleanup()
 
     Sandbox::RestoreStaleGrants();   // restores DACLs + deletes stale container profiles
     Sandbox::CleanStagingProfiles(); // roll back incomplete --create-profile operations
-    Sandbox::RestoreStaleWER();
     Sandbox::DeleteStaleCleanupTasks();
 
     // Clean orphaned Sandy AppContainer profiles from Windows Mappings
@@ -213,16 +141,19 @@ inline int HandleCleanup()
         printf("  Cleaning %zu orphaned AppContainer profile(s)...\n",
                 staleProfiles.size());
     for (const auto& m : staleProfiles) {
-        HRESULT hr = DeleteAppContainerProfile(m.c_str());
-        if (SUCCEEDED(hr))
+        if (DeleteTransientContainerNow(m, L"MANUAL_CLEANUP")) {
+            ClearTransientContainerCleanup(m);
             printf("  [PROFILE] %ls -> deleted\n", m.c_str());
-        else
+        } else if (PersistTransientContainerCleanup(m, m)) {
+            fprintf(stderr, "  [PROFILE] %ls -> deferred for retry\n", m.c_str());
+        } else {
             fprintf(stderr, "  [PROFILE] %ls -> FAILED\n", m.c_str());
+        }
     }
 
     // Remove test registry tree (tests use Software\Sandy\Test\ instead of
     // production keys so they never interfere with real sandbox state)
-    if (RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\Sandy\\Test") == ERROR_SUCCESS)
+    if (DeleteRegTreeIfExists(HKEY_CURRENT_USER, L"Software\\Sandy\\Test"))
         printf("  [TEST]    Software\\Sandy\\Test -> cleaned\n");
 
     printf("Sandy - cleanup complete.\n");
@@ -276,7 +207,7 @@ inline int HandleExplain(const wchar_t* codeStr)
         { 0xC000008C, "STATUS_ARRAY_BOUNDS_EXCEEDED" },
         { 0xC0000135, "STATUS_DLL_NOT_FOUND" },
         { 0xC0000142, "STATUS_DLL_INIT_FAILED" },
-        { 0x40010004, "STATUS_DEBUGGER_INACTIVE (WerFault)" },
+        { 0x40010004, "STATUS_DEBUGGER_INACTIVE" },
     };
     for (auto& c : crashCodes) {
         if (c.code == dw) {

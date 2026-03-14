@@ -5,7 +5,7 @@
 <p align="center">
   <strong>A lightweight Windows sandbox runner</strong><br/>
   Run any executable in an isolated sandbox with fine-grained file, folder, and network access control.<br/>
-  Features independent instance-specific grants and persistent profile management.
+  Features first-class persistent profiles and transient one-shot sandboxes.
 </p>
 
 <p align="center">
@@ -37,10 +37,10 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 - 📁 **Granular access control** — read, write, execute, append, delete, peek, or full access per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
 - 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
-- 💾 **Profile system** — persistent profile management for saving and reusing sandboxes
+- 💾 **Profile-first design** — persistent sandbox identities with reusable grants and config
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
-- 📝 **Audit logging** — session logs, Procmon-based denial auditing, and crash dumps
+- 📝 **Operational logging** — session logs and cleanup diagnostics
 - 🔄 **Dynamic reload** — live config monitoring, applies only grant deltas while the sandbox runs
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
@@ -49,10 +49,9 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ## Usage
 
 ```
-sandy.exe -c <config.toml> [-y] [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
-sandy.exe -s "<toml>"      [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-L] [-q] -x <executable> [args...]
-sandy.exe -p <profile>     [-l <logfile>] [-a <auditlog>] [-d <dumpfile>] [-q] -x <executable> [args...]
-sandy.exe -t <report>       -x <executable> [args...]
+sandy.exe -c <config.toml> [-y] [-l <logfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -s "<toml>"      [-l <logfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -p <profile>     [-l <logfile>] [-q] -x <executable> [args...]
 sandy.exe --create-profile <name> -c <config.toml>  (create persistent sandbox profile)
 sandy.exe --delete-profile <name>                   (delete profile + revoke ACLs)
 sandy.exe --profile-info <name>                     (show profile details)
@@ -70,12 +69,9 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 |-------------------------------------|-------------|
 | `-c <path>`, `--config <path>` | Path to TOML config file |
 | `-s <toml>`, `--string <toml>` | Inline TOML config string (alternative to `-c`) |
-| `-l <path>`, `--log <path>` | Session log (config, output, exit code) |
-| `-a <path>`, `--audit <path>` | Audit log of denied resource access (requires Procmon + admin) |
-| `-d <path>`, `--dump <path>` | Crash dump output path (independent of `-a`) |
-| `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log/audit/dump filenames |
-| `-t <path>`, `--trace <path>` | Trace unsandboxed run for sandbox feasibility (requires Procmon + admin) |
-| `-p <name>`, `--profile <name>` | Run with a saved profile (mutually exclusive with `-c`/`-s`) |
+| `-l <path>`, `--log <path>` | Session log (operational events, config, exit code) |
+| `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log filenames |
+| `-p <name>`, `--profile <name>` | Run with a persistent saved profile (mutually exclusive with `-c`/`-s`) |
 | `--create-profile <name>` | Create a persistent sandbox profile with SID + ACLs from TOML config |
 | `--delete-profile <name>` | Delete a saved profile and revoke its persistent ACLs |
 | `--profile-info <name>` | Show saved profile details (type, SID, config, grants) |
@@ -86,7 +82,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--print-container-toml` | Print default AppContainer config to stdout |
 | `--print-restricted-toml` | Print default Restricted Token config to stdout |
 | `--cleanup` | Restore stale state from crashed runs (liveness-gated: preserves live instances) |
-| `--status [--json]` | Show active sandy instances, stale grants, scheduled tasks, and a summary count |
+| `--status [--json]` | Show active instances, stale state, saved profiles, and summary counts |
 | `--json` | JSON output (with `--status`, includes summary counts) |
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
 | `--dry-run`, `--check` | Validate config + show planned changes (no system modifications). Also supported with `--create-profile` to preview what would be created. |
@@ -133,7 +129,7 @@ See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_c
 [sandbox]
 token = 'appcontainer'    # or 'restricted'
 integrity = 'low'         # restricted only: 'low' or 'medium' (required)
-workdir = 'C:\projects'   # child working directory (default: 'inherit')
+workdir = 'C:\projects'   # child working directory (default: inherit Sandy current working directory)
 ```
 
 | Key | Values | Modes | Description |
@@ -173,9 +169,12 @@ all     = ['C:\workspace']
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
 
-### `[deny]` — Deny access to specific paths
+### `[deny]` — Deny access to specific paths *(restricted token only)*
 
 Block specific permissions on paths that would otherwise be accessible. Uses the same 6 access keys as `[allow]` (except `peek`). All keys optional (default `[]`).
+
+> [!CAUTION]
+> `[deny]` is **not available in AppContainer mode**. The Windows kernel ignores DENY ACEs for AppContainer SIDs. Use Restricted Token mode for deny rules.
 
 ```toml
 [deny]
@@ -319,7 +318,7 @@ processes = 10      # max total active processes (default: 0)
 > **Resource limits are strictly enforced (fail-closed).** If a resource limit (memory, process count, or clipboard restriction) is configured but cannot be applied to the job object, Sandy will terminate the child and exit with code 129 (setup error). This includes scenarios where `SetInformationJobObject` fails as well as cases where the job cannot be assigned to the child process. The sandbox never runs with unenforced limits.
 
 > [!NOTE]
-> **Effective enforcement visibility.** `--status` reports active and stale instances, WER entries, scheduled tasks, and AppContainer profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.
+> **Effective enforcement visibility.** `--status` reports active and stale instances, scheduled tasks, AppContainer profiles, and saved profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.
 
 ### Config availability summary
 
@@ -330,7 +329,7 @@ processes = 10      # max total active processes (default: 0)
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
 | &ensp; `workdir` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` |
 | **`[allow]`** | 🔵 default: `[]` | 🔵 default: `[]` |
-| **`[deny]`** | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[deny]`** | 🔴 n/a | 🔵 default: `[]` |
 | **`[privileges]`** | 🔵 optional | 🔵 optional |
 | &ensp; `system_dirs` | 🔵 default: `true` | 🔴 n/a |
 | &ensp; `network` | 🔵 default: `false` | 🔴 n/a |
@@ -403,13 +402,6 @@ token = 'appcontainer'
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
 
 [privileges]
 system_dirs = true
@@ -446,13 +438,6 @@ integrity = 'medium'
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
-[deny]
-read    = []
-write   = []
-execute = []
-append  = []
-delete  = []
-all     = []
 
 [privileges]
 named_pipes = true
@@ -477,7 +462,7 @@ processes = 0
 
 ## Logging
 
-Session logs (`-l`), audit logs (`-a`), and crash dumps (`-d`) write to the path you specify — relative paths resolve against the current working directory (standard POSIX behavior).
+Session logs (`-l`) write to the path you specify — relative paths resolve against the current working directory (standard POSIX behavior).
 
 **Early logger initialization:** The logger starts immediately after CLI argument parsing — before config loading — so config parser warnings (e.g. duplicate paths) are captured in the log file.
 
@@ -489,12 +474,11 @@ Session logs (`-l`), audit logs (`-a`), and crash dumps (`-d`) write to the path
 session.log → session.log.1 → session.log.2 → ...
 ```
 
-**Timestamped logs:** Use `-L` / `--log-stamp` to prepend a unique `YYYYMMDD_HHMMSS_uid_` prefix to all log filenames. The 4-hex UID prevents collisions when multiple runs start in the same second:
+**Timestamped logs:** Use `-L` / `--log-stamp` to prepend a unique `YYYYMMDD_HHMMSS_uid_` prefix to log filenames. The 4-hex UID prevents collisions when multiple runs start in the same second:
 
 ```
-sandy.exe -L -l session.log -a audit.log -x myapp.exe
+sandy.exe -L -l session.log -x myapp.exe
 → 20260305_105426_a3f1_session.log
-→ 20260305_105426_a3f1_audit.log
 ```
 
 All log timestamps use **local time with ISO 8601 UTC offset** (e.g. `2026-03-05T10:54:26.123+01:00`).
@@ -505,61 +489,9 @@ All log timestamps use **local time with ISO 8601 UTC offset** (e.g. `2026-03-05
 
 ---
 
-## Audit
-
-The `-a` flag captures resource denial events via [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon) (headless). Requires Procmon on PATH + admin. Sandy records all file, registry, network, DLL, and process denials during the child's lifetime, then outputs a deduplicated post-mortem log.
-
-> [!NOTE]
-> Sandy will refuse to start audit or trace mode if Procmon is already running, to avoid disrupting unrelated debugging sessions. Close Procmon first, then retry.
-
-```
-sandy.exe -c config.toml -a audit.log -x myapp.exe
-```
-
-```
-[13:07:38.12] T:4520   FILE    ACCESS DENIED       C:\Windows\System32\kernel32.dll
-[13:07:38.34] T:4520   REG     ACCESS DENIED       HKLM\Software\MyApp
-
-=== Summary: 47 unique events, 38 FILE, 3 REG, 4 NET, 2 IMAGE ===
-=== Repeated (x count) ===
-  x23  FILE    ACCESS DENIED       C:\Windows\System32
-```
-
----
-
-## Trace
-
-The `-t` flag runs a process **unsandboxed** under [Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon), analyzes its resource usage (files, registry, network, DLLs, pipes, child processes), and generates a feasibility report with a suggested TOML config. Requires Procmon on PATH + admin.
-
-```
-sandy.exe -t report.txt -x myapp.exe [args...]
-```
-
-Use trace mode **before** sandboxing an unfamiliar application. It tells you whether the process can be sandboxed, which mode works best, and what `[allow]` paths and `[privileges]` are needed.
-
-> [!NOTE]
-> Trace mode temporarily writes a Procmon filter to filter events by process name. The user's existing Procmon `FilterRules` configuration is backed up before the trace and restored afterward on all exit paths.
-
-```
---- Verdict ---
-Sandboxable:     YES
-AppContainer:    YES (recommended)
-
---- Suggested TOML Config ---
-[sandbox]
-token = 'appcontainer'
-[allow]
-read = ['C:\Users', 'C:\repos\myproject']
-write = ['C:\Users\H\AppData\Local\Temp']
-[privileges]
-system_dirs = true
-```
-
----
-
 ## Profiles
 
-Sandy supports **persistent named profiles** — pre-created sandbox identities with SID and ACLs that stay on disk between runs. This eliminates grant setup/teardown overhead for repeated sandboxing of the same application.
+Sandy treats **persistent named profiles** as a first-class execution model. A profile is a durable sandbox identity with its own SID, AppContainer or restricted-token metadata, and persistent grants. Transient `-c` / `-s` runs are the lightweight one-shot variant over the same pipeline.
 
 ### Lifecycle
 
@@ -573,7 +505,7 @@ Sandy supports **persistent named profiles** — pre-created sandbox identities 
    ```
    sandy.exe -p myapp -x python.exe script.py
    ```
-   Sandy reuses the stored SID and config — no ACL setup, no ACL teardown on exit. The `-p` flag is mutually exclusive with `-c`/`-s`.
+   Sandy reuses the stored identity and config — no ACL setup, no ACL teardown on exit. The `-p` flag is mutually exclusive with `-c`/`-s`.
 
 3. **Inspect** a profile:
    ```
@@ -587,7 +519,7 @@ Sandy supports **persistent named profiles** — pre-created sandbox identities 
    Revokes all persistent ACLs and removes the SID.
 
 > [!NOTE]
-> `--cleanup` does **not** delete saved profiles or their ACLs. Only `--delete-profile` removes a profile. `--status` lists all saved profiles.
+> `--cleanup` does **not** delete saved profiles or their ACLs. It only repairs incomplete staging and stale transient state. Only `--delete-profile` removes a profile. `--status` lists all saved profiles.
 
 ---
 
@@ -609,7 +541,7 @@ Sandy supports **persistent named profiles** — pre-created sandbox identities 
 
 ## Cleanup &amp; Crash Resilience
 
-Sandy never leaves system state dirty. Six resources are tracked and cleaned regardless of how the process exits:
+Sandy never leaves system state dirty. Five run-scoped resources are tracked and cleaned regardless of how the process exits:
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
@@ -618,21 +550,20 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 | **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
 | **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup_<UUID>`) — one per instance |
-| **WER keys** | `-a` or `-d` crash dumps | `HKCU\Software\Sandy\WER` (PID as value name) |
 
 ### Exit scenarios
 
-| Scenario | ACLs | Loopback | AppContainer | Sched. Task | WER | Registry | Mechanism |
-|----------|:----:|:--------:|:------------:|:-----------:|:---:|:--------:|-----------|
-| **Clean exit** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `cleanup()` lambda in `RunSandboxed` |
-| **Child crash** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect Sandy |
-| **Ctrl+C / close** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Console signal handler → terminates child first → `CleanupSandbox()` |
-| **Sandy crash (SEH)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `__except` handler → terminates child first → `CleanupSandbox()` |
-| **Power loss / taskkill** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | Scheduled task at logon → `sandy.exe --cleanup` |
+| Scenario | ACLs | Loopback | AppContainer | Sched. Task | Registry | Mechanism |
+|----------|:----:|:--------:|:------------:|:-----------:|:--------:|-----------|
+| **Clean exit** | ✅ | ✅ | ✅ | ✅ | ✅ | `cleanup()` lambda in `RunSandboxed` |
+| **Child crash** | ✅ | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect Sandy |
+| **Ctrl+C / close** | ✅ | ✅ | ✅ | ✅ | ✅ | Console signal handler → terminates child first → `CleanupSandbox()` |
+| **Sandy crash (SEH)** | ✅ | ✅ | ✅ | ✅ | ✅ | `__except` handler → terminates child first → `CleanupSandbox()` |
+| **Power loss / taskkill** | ✅ | ✅ | ✅ | ✅ | ✅ | Scheduled task at logon → `sandy.exe --cleanup` |
 
 ### How it works
 
-1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID[|DENY:1][|TRAPPED:sids]` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). WER exe names are stored in `HKCU\Software\Sandy\WER` with PID as value name. Both are written *before* the system state is modified.
+1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID[|DENY:1]` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). The recovery ledger is written *before* the system state is modified.
 
 2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon — for both normal and profile-mode (`-p`) runs. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
 
@@ -643,12 +574,12 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 4. **Stale entry warning:** On startup, Sandy checks for leftover registry entries and warns:
    ```
    [Sandy] WARNING: Stale registry entries detected from a previous crashed run.
-           Grants: HKCU\Software\Sandy\Grants   WER: HKCU\Software\Sandy\WER
+           Grants: HKCU\Software\Sandy\Grants
            Run 'sandy.exe --cleanup' to restore original state.
            If another sandy instance is running, its entries are expected.
    ```
 
-5. **Liveness-gated cleanup:** `--cleanup` and startup cleanup correlate every AppContainer profile and WER entry with the owning Sandy instance's PID and creation time before taking destructive action. Only resources belonging to dead instances are cleaned — live instances retain their loopback exemptions, AppContainer profiles, and WER crash dump configuration. Stale cleanup is **path+SID-precise**: when two instances share a path but use different SIDs, only the dead instance's ACEs are cleaned while the live instance's are preserved. Saved profiles (created via `--create-profile`) are permanently protected and never cleaned as stale. WER crash dump configuration uses reference counting — the shared HKLM `LocalDumps` key is only deleted when the last Sandy instance tracking that exe exits. System helper processes (`schtasks.exe`, `CheckNetIsolation.exe`) are launched from fully-qualified `System32` paths to prevent search-order hijacking.
+5. **Liveness-gated cleanup:** `--cleanup` and startup cleanup correlate every transient AppContainer profile with the owning Sandy instance's PID and creation time before taking destructive action. Only resources belonging to dead instances are cleaned. Live instances retain their loopback exemptions and AppContainer profiles. Stale cleanup is **path+SID-precise**: when two instances share a path but use different SIDs, only the dead instance's ACEs are cleaned while the live instance's are preserved. Saved profiles (created via `--create-profile`) are permanently protected and never cleaned as stale. System helper processes (`schtasks.exe`, `CheckNetIsolation.exe`) are launched from fully-qualified `System32` paths to prevent search-order hijacking.
 
 ### Cleanup guarantees
 
@@ -659,7 +590,7 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 | **Loopback exemption removed** on clean exit | `CheckNetIsolation.exe LoopbackExempt -d` |
 | **Scheduled task deleted** on clean exit | `schtasks /Delete` |
 | **Stale ACLs restored** after crash | `--cleanup` parses persisted `TYPE|PATH|SID` records, removes SID's ACEs |
-| **Parent registry keys permanent** | `Software\Sandy`, `Grants`, `WER` are never deleted — preserved for visual tracking |
+| **Parent registry keys permanent** | `Software\Sandy`, `Grants`, and `Profiles` are never deleted — preserved for visual tracking |
 
 **Best-effort behaviors** (not guaranteed):
 - **Desktop/window-station ACL cleanup** depends on `GetProcessWindowStation()` and `OpenDesktopW()` succeeding — these may fail in service or headless contexts. Failures are logged with error codes.
@@ -673,8 +604,8 @@ Sandy never leaves system state dirty. Six resources are tracked and cleaned reg
 
 ### Status output notes
 
-- `--status` prints both active and stale state for persisted grants, WER entries, scheduled tasks, and Sandy AppContainer profiles.
-- `--status --json` includes a top-level `summary` object with counts for instances, stale instances, WER entries, stale WER entries, scheduled tasks, and profiles.
+- `--status` prints both active and stale state for persisted grants, scheduled tasks, Sandy AppContainer profiles, and saved profiles.
+- `--status --json` includes a top-level `summary` object with counts for instances, stale instances, scheduled tasks, profiles, and saved profiles.
 
 > [!IMPORTANT]
 > If Sandy is killed via `taskkill /F` or power is lost, run `sandy.exe --cleanup` manually or wait for the next logon (the scheduled task handles it automatically).

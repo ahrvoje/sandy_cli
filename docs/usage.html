@@ -132,21 +132,26 @@
     <p class="section-lead">All Sandy flags must come <strong>before</strong> <code>-x</code>. Everything after <code>-x &lt;exe&gt;</code> is forwarded to the child as-is.</p>
 
     <pre><span class="syn-cmt"># Run from a TOML file</span>
-<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-c</span> <span class="syn-arg">&lt;config.toml&gt;</span> <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-c</span> <span class="syn-arg">&lt;config.toml&gt;</span> <span class="syn-opt">[-l &lt;log&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
 
 <span class="syn-cmt"># Run from an inline TOML string</span>
-<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-s</span> <span class="syn-arg">"&lt;toml&gt;"</span>       <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-s</span> <span class="syn-arg">"&lt;toml&gt;"</span>       <span class="syn-opt">[-l &lt;log&gt;] [-L] [-q]</span> <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
 
 <span class="syn-cmt"># Run from a saved profile</span>
-<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-p</span> <span class="syn-arg">&lt;profile&gt;</span>      <span class="syn-opt">[-l &lt;log&gt;] [-a &lt;audit&gt;] [-d &lt;dump&gt;] [-q]</span>       <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span>
-
-<span class="syn-cmt"># Trace (unsandboxed Procmon — requires admin)</span>
-<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-t</span> <span class="syn-arg">&lt;report.txt&gt;</span>   <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span></pre>
+<span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-p</span> <span class="syn-arg">&lt;profile&gt;</span>      <span class="syn-opt">[-l &lt;log&gt;] [-q]</span>       <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span></pre>
 
     <div class="callout info" style="margin-top:20px;">
       <div class="callout-title">💡 Config sources are mutually exclusive</div>
       <p><code>-c</code>, <code>-s</code>, and <code>-p</code> cannot be combined. If more than one is present, Sandy exits with code 128.</p>
     </div>
+  </div>
+</section>
+
+<section id="workdir">
+  <div class="container fade-in">
+    <div class="divider"></div>
+    <h2>Working <span class="accent">Directory</span></h2>
+    <p class="section-lead"><code>workdir</code> is either set explicitly in config or inherited from Sandy's own current working directory. The target executable path does not change the default working directory.</p>
   </div>
 </section>
 
@@ -164,16 +169,14 @@
           <tr class="group-row"><td colspan="2">Config input</td></tr>
           <tr><td class="td-flag"><code>-c &lt;path&gt;</code>, <code>--config</code></td><td>Path to TOML config file</td></tr>
           <tr><td class="td-flag"><code>-s &lt;toml&gt;</code>, <code>--string</code></td><td>Inline TOML config string — alternative to <code>-c</code></td></tr>
-          <tr><td class="td-flag"><code>-p &lt;name&gt;</code>, <code>--profile</code></td><td>Run with a saved profile — mutually exclusive with <code>-c</code> / <code>-s</code></td></tr>
+          <tr><td class="td-flag"><code>-p &lt;name&gt;</code>, <code>--profile</code></td><td>Run with a persistent saved profile — mutually exclusive with <code>-c</code> / <code>-s</code></td></tr>
 
           <tr class="group-row"><td colspan="2">Execution</td></tr>
           <tr><td class="td-flag"><code>-x &lt;path&gt;</code>, <code>--exec</code></td><td>Executable to run sandboxed — consumes all remaining arguments and forwards them to the child</td></tr>
 
           <tr class="group-row"><td colspan="2">Logging &amp; output</td></tr>
-          <tr><td class="td-flag"><code>-l &lt;path&gt;</code>, <code>--log</code></td><td>Session log — captures config, stdout/stderr, and exit code</td></tr>
-          <tr><td class="td-flag"><code>-a &lt;path&gt;</code>, <code>--audit</code></td><td>Audit log of denied resource access — requires Procmon on PATH and admin elevation</td></tr>
-          <tr><td class="td-flag"><code>-d &lt;path&gt;</code>, <code>--dump</code></td><td>Crash dump output path — independent of <code>-a</code></td></tr>
-          <tr><td class="td-flag"><code>-L</code>, <code>--log-stamp</code></td><td>Prepend <code>YYYYMMDD_HHMMSS_uid_</code> to log / audit / dump filenames to prevent collisions on repeated runs</td></tr>
+          <tr><td class="td-flag"><code>-l &lt;path&gt;</code>, <code>--log</code></td><td>Session log — captures operational events, config, and exit code</td></tr>
+          <tr><td class="td-flag"><code>-L</code>, <code>--log-stamp</code></td><td>Prepend <code>YYYYMMDD_HHMMSS_uid_</code> to log filenames to prevent collisions on repeated runs</td></tr>
           <tr><td class="td-flag"><code>-q</code>, <code>--quiet</code></td><td>Suppress the config banner printed to stderr on launch</td></tr>
 
           <tr class="group-row"><td colspan="2">Profiles</td></tr>
@@ -182,13 +185,12 @@
           <tr><td class="td-flag"><code>--profile-info &lt;name&gt;</code></td><td>Print profile details: type, SID, config, and grants</td></tr>
 
           <tr class="group-row"><td colspan="2">Inspection &amp; tooling</td></tr>
-          <tr><td class="td-flag"><code>-t &lt;path&gt;</code>, <code>--trace</code></td><td>Trace app unsandboxed via Procmon — generates a feasibility report and suggested TOML. Requires Procmon on PATH and admin elevation</td></tr>
           <tr><td class="td-flag"><code>--dry-run</code>, <code>--check</code></td><td>Validate config and show planned ACL changes — no system modifications made</td></tr>
           <tr><td class="td-flag"><code>--print-config</code></td><td>Print resolved config to stdout with all defaults filled in — requires <code>-c</code> or <code>-s</code></td></tr>
           <tr><td class="td-flag"><code>--print-container-toml</code></td><td>Print the default AppContainer TOML template to stdout</td></tr>
           <tr><td class="td-flag"><code>--print-restricted-toml</code></td><td>Print the default Restricted Token TOML template to stdout</td></tr>
-          <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show active instances, stale grants, and scheduled tasks — optionally as JSON</td></tr>
-          <tr><td class="td-flag"><code>--cleanup</code></td><td>Restore stale state left by a crashed run — removes orphaned ACLs, loopback exemptions, scheduled tasks, and WER keys</td></tr>
+          <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show active instances, stale state, saved profiles, and summary counts — optionally as JSON</td></tr>
+          <tr><td class="td-flag"><code>--cleanup</code></td><td>Restore stale state left by a crashed run — removes orphaned ACLs, loopback exemptions, scheduled tasks, and transient AppContainer profiles</td></tr>
           <tr><td class="td-flag"><code>--explain &lt;code&gt;</code></td><td>Decode a numeric exit code — distinguishes Sandy codes (125–131), NTSTATUS, and Win32 error codes</td></tr>
           <tr><td class="td-flag"><code>-y</code>, <code>--dynamic</code></td><td>Live config reload: polls every 2s, applies only grant deltas (added/removed entries). Deny interactions handled correctly. Requires <code>-c</code></td></tr>
 

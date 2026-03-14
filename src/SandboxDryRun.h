@@ -74,7 +74,7 @@ inline int HandleDryRun(const SandboxConfig& config,
     if (!exePath.empty()) printf("Executable: %ls\n", exePath.c_str());
     if (!exeArgs.empty()) printf("Arguments: %ls\n", exeArgs.c_str());
     if (config.workdir.empty())
-        printf("Working dir: (sandy.exe folder)\n\n");
+        printf("Working dir: (inherited from Sandy current working directory)\n\n");
     else
         printf("Working dir: %ls\n\n", config.workdir.c_str());
 

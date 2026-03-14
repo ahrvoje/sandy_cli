@@ -11,6 +11,50 @@
 
 namespace Sandbox {
 
+    enum class HiddenProcessStatus {
+        Completed,
+        LaunchFailed,
+        TimedOut,
+        WaitFailed
+    };
+
+    struct HiddenProcessResult {
+        HiddenProcessStatus status = HiddenProcessStatus::LaunchFailed;
+        DWORD exitCode = static_cast<DWORD>(-1);
+        std::string output;
+    };
+
+    inline void CloseHandleIfValid(HANDLE& h)
+    {
+        if (h) {
+            CloseHandle(h);
+            h = nullptr;
+        }
+    }
+
+    inline void AbortLaunchedChild(PROCESS_INFORMATION& pi, HANDLE& hJob,
+                                   DWORD terminateCode, DWORD waitMs = 5000)
+    {
+        if (hJob)
+            TerminateJobObject(hJob, terminateCode);
+        else if (pi.hProcess)
+            TerminateProcess(pi.hProcess, terminateCode);
+
+        if (pi.hProcess)
+            WaitForSingleObject(pi.hProcess, waitMs);
+
+        CloseHandleIfValid(pi.hThread);
+        CloseHandleIfValid(pi.hProcess);
+        CloseHandleIfValid(hJob);
+    }
+
+    inline void ReleaseLaunchedChildHandles(PROCESS_INFORMATION& pi, HANDLE& hJob)
+    {
+        CloseHandleIfValid(pi.hThread);
+        CloseHandleIfValid(pi.hProcess);
+        CloseHandleIfValid(hJob);
+    }
+
     // -----------------------------------------------------------------------
     // GetSystemDirectoryPath — resolve %SystemRoot%\System32\ safely.
     //
@@ -39,24 +83,149 @@ namespace Sandbox {
     // Returns: process exit code, or (DWORD)-1 on failure
     // Verifiable: exit code reflects the child's actual result
     // -----------------------------------------------------------------------
-    inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000,
-                                  const std::wstring& appPath = L"")
+    inline void DrainHiddenProcessPipe(HANDLE hPipe, std::string& output)
     {
+        if (!hPipe) return;
+
+        for (;;) {
+            DWORD available = 0;
+            if (!PeekNamedPipe(hPipe, nullptr, 0, nullptr, &available, nullptr) || available == 0)
+                break;
+
+            char buf[4096];
+            DWORD toRead = (available < sizeof(buf))
+                ? available
+                : static_cast<DWORD>(sizeof(buf));
+            DWORD bytesRead = 0;
+            if (!ReadFile(hPipe, buf, toRead, &bytesRead, nullptr) || bytesRead == 0)
+                break;
+            output.append(buf, bytesRead);
+        }
+    }
+
+    inline HiddenProcessResult RunHiddenProcessDetailed(const std::wstring& cmdLine,
+                                                        DWORD timeoutMs = 5000,
+                                                        const std::wstring& appPath = L"",
+                                                        bool captureOutput = false)
+    {
+        HiddenProcessResult result{};
+
         STARTUPINFOW si = { sizeof(si) };
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
+        HANDLE hRead = nullptr, hWrite = nullptr;
+        SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
+        if (captureOutput) {
+            if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+                g_logger.LogFmt(L"HIDDEN_PROCESS: CreatePipe failed for %ls (error %lu)",
+                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
+                                GetLastError());
+                return result;
+            }
+            SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdOutput = hWrite;
+            si.hStdError = hWrite;
+        }
+
         PROCESS_INFORMATION pi = {};
         std::wstring cmd = cmdLine;  // CreateProcessW needs mutable buffer
         const wchar_t* app = appPath.empty() ? nullptr : appPath.c_str();
-        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, FALSE,
-                           CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            return (DWORD)-1;
-        DWORD exitCode = (DWORD)-1;
-        if (WaitForSingleObject(pi.hProcess, timeoutMs) == WAIT_OBJECT_0)
-            GetExitCodeProcess(pi.hProcess, &exitCode);
+        BOOL inheritHandles = captureOutput ? TRUE : FALSE;
+        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, inheritHandles,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            g_logger.LogFmt(L"HIDDEN_PROCESS: launch failed for %ls (error %lu)",
+                            appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
+                            GetLastError());
+            if (hRead) CloseHandle(hRead);
+            if (hWrite) CloseHandle(hWrite);
+            return result;
+        }
+
+        if (hWrite) {
+            CloseHandle(hWrite);
+            hWrite = nullptr;
+        }
+
+        HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
+        if (hJob) {
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation,
+                                         &limits, sizeof(limits)) ||
+                !AssignProcessToJobObject(hJob, pi.hProcess)) {
+                g_logger.LogFmt(L"HIDDEN_PROCESS: helper job setup failed for %ls (error %lu)",
+                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
+                                GetLastError());
+                CloseHandle(hJob);
+                hJob = nullptr;
+            }
+        }
+
+        ULONGLONG start = GetTickCount64();
+        DWORD pollMs = 100;
+        if (!captureOutput && timeoutMs != INFINITE && timeoutMs < pollMs)
+            pollMs = timeoutMs;
+        for (;;) {
+            DWORD waitMs = INFINITE;
+            if (timeoutMs != INFINITE) {
+                ULONGLONG elapsed = GetTickCount64() - start;
+                if (elapsed >= timeoutMs) {
+                    result.status = HiddenProcessStatus::TimedOut;
+                    break;
+                }
+                DWORD remaining = static_cast<DWORD>(timeoutMs - elapsed);
+                waitMs = (remaining < pollMs) ? remaining : pollMs;
+            } else {
+                waitMs = pollMs;
+            }
+
+            DWORD waitResult = WaitForSingleObject(pi.hProcess, waitMs);
+            if (captureOutput)
+                DrainHiddenProcessPipe(hRead, result.output);
+
+            if (waitResult == WAIT_OBJECT_0) {
+                result.status = HiddenProcessStatus::Completed;
+                GetExitCodeProcess(pi.hProcess, &result.exitCode);
+                break;
+            }
+            if (waitResult == WAIT_FAILED) {
+                result.status = HiddenProcessStatus::WaitFailed;
+                g_logger.LogFmt(L"HIDDEN_PROCESS: wait failed for %ls (error %lu)",
+                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
+                                GetLastError());
+                break;
+            }
+        }
+
+        if (result.status == HiddenProcessStatus::TimedOut) {
+            g_logger.LogFmt(L"HIDDEN_PROCESS: timeout after %lu ms for %ls",
+                            timeoutMs, appPath.empty() ? cmdLine.c_str() : appPath.c_str());
+            if (hJob)
+                TerminateJobObject(hJob, 1);
+            else
+                TerminateProcess(pi.hProcess, 1);
+            WaitForSingleObject(pi.hProcess, 2000);
+        }
+
+        if (captureOutput)
+            DrainHiddenProcessPipe(hRead, result.output);
+
+        if (hJob)
+            CloseHandle(hJob);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
-        return exitCode;
+        if (hRead) CloseHandle(hRead);
+        return result;
+    }
+
+    inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000,
+                                  const std::wstring& appPath = L"")
+    {
+        HiddenProcessResult result = RunHiddenProcessDetailed(cmdLine, timeoutMs, appPath, false);
+        return (result.status == HiddenProcessStatus::Completed)
+            ? result.exitCode
+            : static_cast<DWORD>(-1);
     }
 
     // -----------------------------------------------------------------------
@@ -72,12 +241,20 @@ namespace Sandbox {
         return RunHiddenProcess(L"\"" + schtasksExe + L"\" " + args, 15000, schtasksExe);
     }
 
+    inline HiddenProcessResult RunSchtasksCapture(const std::wstring& args)
+    {
+        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
+        return RunHiddenProcessDetailed(L"\"" + schtasksExe + L"\" " + args,
+                                        15000, schtasksExe, true);
+    }
+
     // -----------------------------------------------------------------------
     // Timeout watchdog — terminates a child process after N seconds.
     // Used as a thread function with CreateThread.
     // -----------------------------------------------------------------------
     struct TimeoutContext {
         HANDLE hProcess;
+        HANDLE hJob;
         DWORD  seconds;
         bool   timedOut;
     };
@@ -88,7 +265,10 @@ namespace Sandbox {
         ctx->timedOut = false;
         if (WaitForSingleObject(ctx->hProcess, ctx->seconds * 1000) == WAIT_TIMEOUT) {
             ctx->timedOut = true;
-            TerminateProcess(ctx->hProcess, 1);
+            if (ctx->hJob)
+                TerminateJobObject(ctx->hJob, 1);
+            else
+                TerminateProcess(ctx->hProcess, 1);
         }
         return 0;
     }
@@ -210,6 +390,46 @@ namespace Sandbox {
         return true;
     }
 
+    inline bool NeedJobTracking(const SandboxConfig& config)
+    {
+        return config.allowChildProcesses ||
+               config.memoryLimitMB > 0 ||
+               config.maxProcesses > 0 ||
+               !config.allowClipboardRead ||
+               !config.allowClipboardWrite;
+    }
+
+    // -----------------------------------------------------------------------
+    // WaitForJobTreeExit — wait until the job no longer contains any processes.
+    //
+    // For runs that allow child processes, the sandbox lifetime is the whole
+    // process tree rather than just the root process.  We poll the job's active
+    // process count because the job object itself is not an "all descendants
+    // exited" event source in this code path.
+    // -----------------------------------------------------------------------
+    inline bool WaitForJobTreeExit(HANDLE hJob, DWORD timeoutMs)
+    {
+        if (!hJob) return true;
+
+        DWORD waited = 0;
+        const DWORD pollMs = 100;
+        for (;;) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
+            if (!QueryInformationJobObject(hJob, JobObjectBasicAccountingInformation,
+                                           &info, sizeof(info), nullptr))
+                return false;
+            if (info.ActiveProcesses == 0)
+                return true;
+
+            if (timeoutMs != INFINITE && waited >= timeoutMs)
+                return false;
+
+            Sleep(pollMs);
+            if (timeoutMs != INFINITE)
+                waited += pollMs;
+        }
+    }
+
     // -----------------------------------------------------------------------
     // AssignJobObject — create and assign a job object for resource limits.
     //
@@ -220,14 +440,14 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline HANDLE AssignJobObject(const SandboxConfig& config, HANDLE hProcess)
     {
-        bool needJob = (config.memoryLimitMB > 0 || config.maxProcesses > 0 ||
-                        !config.allowClipboardRead || !config.allowClipboardWrite);
+        bool needJob = NeedJobTracking(config);
         if (!needJob) return nullptr;
 
         HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
         if (!hJob) return nullptr;
 
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (config.memoryLimitMB > 0) {
             jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
             jeli.JobMemoryLimit = config.memoryLimitMB * 1024 * 1024;
@@ -285,8 +505,10 @@ namespace Sandbox {
     // Verifiable: exit code matches child's GetExitCodeProcess
     // -----------------------------------------------------------------------
     inline DWORD WaitForChildExit(HANDLE hProcess,
-                                   HANDLE hTimeoutThread, TimeoutContext& timeoutCtx,
-                                   DWORD timeoutSec)
+                                   HANDLE hJob,
+                                    HANDLE hTimeoutThread, TimeoutContext& timeoutCtx,
+                                   DWORD timeoutSec,
+                                   bool waitForProcessTree)
     {
         WaitForSingleObject(hProcess, INFINITE);
         DWORD exitCode = 0;
@@ -297,6 +519,20 @@ namespace Sandbox {
             CloseHandle(hTimeoutThread);
             if (timeoutCtx.timedOut)
                 g_logger.LogFmt(L"TIMEOUT: killed after %lus", timeoutSec);
+        }
+
+        if (hJob && waitForProcessTree) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
+            if (QueryInformationJobObject(hJob, JobObjectBasicAccountingInformation,
+                                          &info, sizeof(info), nullptr) &&
+                info.ActiveProcesses > 0) {
+                g_logger.LogFmt(L"JOB_WAIT: root exited, waiting for %lu descendant process(es)",
+                                info.ActiveProcesses);
+            }
+            if (!WaitForJobTreeExit(hJob, INFINITE))
+                g_logger.Log(L"JOB_WAIT: FAILED to confirm full process-tree exit");
+            else
+                g_logger.Log(L"JOB_WAIT: full process tree exited");
         }
 
         return exitCode;

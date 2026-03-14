@@ -1,14 +1,14 @@
-# Complex ACL grants test: overlapping allow/deny on multi-level folder tree
+# Complex ACL grants test: selective allows per subfolder
 #
 # FOLDER TREE:
 #   test_acl/
-#     workspace/          [allow] all
-#       src/              (inherits all)
-#       build/            [deny] write → read OK, write blocked
-#       secrets/          [deny] all → everything blocked
-#     data/               [allow] read
-#       public/           (inherits read)
-#       private/          [deny] read → fully blocked (deny > allow)
+#     workspace/
+#       src/              [allow] all
+#       build/            [allow] read  (was deny.write → read-only behavior)
+#       secrets/          (no grant — fully blocked in AC)
+#     data/
+#       public/           [allow] read (inherits from data)
+#       private/          (no grant — fully blocked in AC)
 #     logs/               [allow] append
 #     tools/              [allow] execute → read+exec, no write
 
@@ -17,14 +17,10 @@ token = 'appcontainer'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\tools']
-read = ['C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data']
+read = ['C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data\public', 'C:\Users\H\test_acl\workspace\build']
 append = ['C:\Users\H\test_acl\logs']
-all = ['C:\Users\H\test_acl\workspace']
+all = ['C:\Users\H\test_acl\workspace\src']
 
-[deny]
-read    = ['C:\Users\H\test_acl\data\private']
-write   = ['C:\Users\H\test_acl\workspace\build']
-all     = ['C:\Users\H\test_acl\workspace\secrets']
 [environment]
 inherit = true
 

@@ -62,9 +62,9 @@ def p(*parts):
 # ===========================================================================
 print("=== BASELINE ===")
 test("arena: write+read", True, lambda: (
-    open(p('baseline.tmp'), 'w').write('ok'),
-    open(p('baseline.tmp'), 'r').read(),
-    os.remove(p('baseline.tmp'))
+    open(p('playground', 'baseline.tmp'), 'w').write('ok'),
+    open(p('playground', 'baseline.tmp'), 'r').read(),
+    os.remove(p('playground', 'baseline.tmp'))
 ))
 test("killzone: list denied", False, lambda: os.listdir(p('killzone')))
 test("fortress: list denied", False, lambda: os.listdir(p('fortress')))
@@ -351,15 +351,9 @@ test("readonly_zone: write file", False,
      lambda: open(p('readonly_zone', 'hack.tmp'), 'w').write('x'))
 test("readonly_zone: create subdir", False,
      lambda: os.mkdir(p('readonly_zone', 'subdir')))
-# deny.write does NOT block DELETE (documented behavior - DELETE is a separate
-# Windows permission). Use deny.delete or deny.all to block deletion.
-try:
-    os.remove(p('readonly_zone', 'report.txt'))
-    print("  [INFO] readonly_zone: delete succeeded (deny.write != deny.delete, documented)")
-    results.append(('INFO', 'readonly_zone: delete (expected, documented)'))
-except PermissionError:
-    print("  [PASS] readonly_zone: delete blocked")
-    results.append(('PASS', 'readonly_zone: delete blocked'))
+# With read-only grant (no deny), DELETE is blocked (no DELETE permission in read mask)
+test("readonly_zone: delete blocked (read-only grant)", False,
+     lambda: os.remove(p('readonly_zone', 'report.txt')))
 # Try appending (FILE_APPEND_DATA is a write-class bit)
 test("readonly_zone: append to file", False,
      lambda: open(p('readonly_zone', 'report.txt'), 'a').write('appended'))

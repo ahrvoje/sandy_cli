@@ -205,31 +205,31 @@ token = <span class="code-string">'appcontainer'</span></pre>
       </table>
     </div>
     <div class="callout info">
-      <div class="callout-title">💡 Allow-inside-deny pipeline</div>
-      <p>You can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>deny.all = ['C:\repos']</code> + <code>allow.all = ['C:\repos\snipps']</code>.</p>
+      <div class="callout-title">💡 Allow-inside-deny pipeline (restricted token only)</div>
+      <p>In Restricted Token mode, you can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>deny.all = ['C:\repos']</code> + <code>allow.all = ['C:\repos\snipps']</code>.</p>
     </div>
 
     <!-- [deny] -->
     <div class="section-header">
-      <h3><code>[deny]</code> — Block specific permissions</h3><span class="tag both">both modes</span>
+      <h3><code>[deny]</code> — Block specific permissions</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). <code>peek</code> is not in <code>[deny]</code>. Deny is recursive and surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). <code>peek</code> is not in <code>[deny]</code>. Deny is recursive and surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Default</th><th>AC mechanism</th><th>RT mechanism</th></tr></thead>
+        <thead><tr><th>Key</th><th>Default</th><th>Mechanism (Restricted Token only)</th></tr></thead>
         <tbody>
-          <tr><td>read</td><td><code>[]</code></td><td>Mask reduction (ALLOW bits subtracted)</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>write</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE. Does NOT block delete.</td></tr>
-          <tr><td>execute</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>append</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>delete</td><td><code>[]</code></td><td>Mask reduction</td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>all</td><td><code>[]</code></td><td>Mask reduction (all bits)</td><td>Real <code>DENY_ACCESS</code> ACE (all bits)</td></tr>
+          <tr><td>read</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE. Does NOT block delete.</td></tr>
+          <tr><td>execute</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>append</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>delete</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>all</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE (all bits)</td></tr>
         </tbody>
       </table>
     </div>
     <div class="callout warning">
-      <div class="callout-title">⚠️ AppContainer deny is mask reduction, not DENY ACEs</div>
-      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy implements AC deny by subtracting bits from the existing ALLOW mask and setting <code>PROTECTED_DACL</code> to block re-inheritance from parent grants.</p>
+      <div class="callout-title">⚠️ AppContainer does not support deny rules</div>
+      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
     </div>
 
     <!-- [privileges] -->
@@ -328,7 +328,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>&ensp;integrity</td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;workdir</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow] all keys</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
-          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny] all keys</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny] all keys</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
           <tr><td>&ensp;system_dirs</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>

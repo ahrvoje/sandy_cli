@@ -48,15 +48,22 @@ namespace Sandbox {
     // current operation. If this flips false, callers should fail closed:
     // ACLs without durable cleanup inventory are not safe to keep.
     inline std::atomic<bool>     g_grantTrackingHealthy{ true };
+    inline std::atomic<bool>     g_preserveGrantMetadata{ false };
 
     // Per-instance UUID — set once at startup
     inline std::wstring g_instanceId;
 
     // Registry keys for grant persistence
     static const wchar_t* kGrantsParentKey = L"Software\\Sandy\\Grants";
+    static const wchar_t* kTransientContainersParentKey = L"Software\\Sandy\\TransientContainers";
 
     inline std::wstring GetGrantsRegKey() {
         return std::wstring(kGrantsParentKey) + L"\\" + g_instanceId;
+    }
+
+    inline std::wstring GetTransientContainerRegKey(const std::wstring& instanceId)
+    {
+        return std::wstring(kTransientContainersParentKey) + L"\\" + instanceId;
     }
 
     inline void ResetGrantTrackingHealth()
@@ -77,6 +84,23 @@ namespace Sandbox {
     inline bool GrantTrackingHealthy()
     {
         return g_grantTrackingHealthy.load();
+    }
+
+    inline void ResetGrantMetadataPreservation()
+    {
+        g_preserveGrantMetadata.store(false);
+    }
+
+    inline void RequestGrantMetadataPreservation(const wchar_t* reason)
+    {
+        g_preserveGrantMetadata.store(true);
+        if (reason && *reason)
+            g_logger.LogFmt(L"GRANT_METADATA: preservation requested (%ls)", reason);
+    }
+
+    inline bool PreserveGrantMetadataRequested()
+    {
+        return g_preserveGrantMetadata.load();
     }
 
     inline void BeginStagingGrantCapture(HKEY hKey)
@@ -113,7 +137,6 @@ namespace Sandbox {
         std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
         bool         wasDenied = false;
         bool         wasPeek = false;
-        bool         wasDeferred = false;  // F2/R11: cleanup deferred due to live child deny
     };
 
     // -----------------------------------------------------------------------
@@ -173,6 +196,8 @@ namespace Sandbox {
         // Reject paths containing pipe (would indicate corrupt record)
         if (out.path.find(L'|') != std::wstring::npos)
             return reject(L"PATH contains pipe character");
+        if (out.type == L"FILE")
+            out.path = NormalizeFsPath(out.path);
         // Require absolute path (drive letter, UNC, or HKEY for registry)
         bool isAbsolute = (out.path.size() >= 2 && iswalpha(out.path[0]) && out.path[1] == L':') ||
                           (out.path.size() >= 2 && out.path[0] == L'\\' && out.path[1] == L'\\') ||
@@ -207,7 +232,7 @@ namespace Sandbox {
                     out.wasPeek = true;
                     remaining = remaining.substr(6);
                 } else if (remaining.compare(0, 10, L"DEFERRED:1") == 0) {
-                    out.wasDeferred = true;
+                    // Legacy flag from removed deferred-cleanup mechanism; just skip it
                     remaining = remaining.substr(10);
                 } else if (remaining.compare(0, 8, L"TRAPPED:") == 0) {
                     remaining = remaining.substr(8);
@@ -345,6 +370,9 @@ namespace Sandbox {
                             bool isDeny = false,
                             bool isPeek = false)
     {
+        std::wstring normalizedPath = (objType == SE_FILE_OBJECT)
+            ? NormalizeFsPath(path)
+            : path;
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
         // --- Persist to registry (live instance crash recovery) ---
@@ -386,7 +414,7 @@ namespace Sandbox {
 
                 // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|DENY:1|TRAPPED:sid1;sid2
                 std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-                std::wstring data = typeStr + L"|" + path + L"|" + sidString;
+                std::wstring data = typeStr + L"|" + normalizedPath + L"|" + sidString;
                 // Persist deny flag explicitly
                 if (isDeny) {
                     data += L"|DENY:1";
@@ -419,13 +447,13 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { path, objType, sidString, trappedSids, isDeny, isPeek };
+        ACLGrant grant = { normalizedPath, objType, sidString, trappedSids, isDeny, isPeek };
         g_aclGrants.push_back(std::move(grant));
 
         // --- Incremental staging profile write (crash-safe profile creation) ---
         if (g_stagingProfileKey) {
             std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-            std::wstring data = typeStr + L"|" + path + L"|" + sidString;
+            std::wstring data = typeStr + L"|" + normalizedPath + L"|" + sidString;
             if (isDeny) data += L"|DENY:1";
             if (!trappedSids.empty()) data += L"|TRAPPED:" + trappedSids;
             if (isPeek) data += L"|PEEK:1";
@@ -450,8 +478,121 @@ namespace Sandbox {
     inline void ClearPersistedGrants()
     {
         std::wstring regKey = GetGrantsRegKey();
-        LSTATUS r = RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
+        LSTATUS r = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
+    }
+
+    inline bool PersistTransientContainerCleanup(const std::wstring& instanceId,
+                                                 const std::wstring& containerName)
+    {
+        if (instanceId.empty() || containerName.empty()) return false;
+
+        std::wstring regKey = GetTransientContainerRegKey(instanceId);
+        HKEY hKey = nullptr;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr, 0,
+                            KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
+                            nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+            return false;
+
+        bool ok = true;
+        DWORD pid = GetCurrentProcessId();
+        ok &= TryWriteRegDword(hKey, L"_pid", pid);
+        ok &= TryWriteRegQword(hKey, L"_ctime", GetCurrentProcessCreationTime());
+        ok &= TryWriteRegSz(hKey, L"_container", containerName);
+        HardenRegistryKeyAgainstRestricted(hKey);
+        RegCloseKey(hKey);
+
+        if (ok)
+            g_logger.LogFmt(L"TRANSIENT_CONTAINER: preserved %ls for retry under instance %ls",
+                            containerName.c_str(), instanceId.c_str());
+        else
+            g_logger.LogFmt(L"TRANSIENT_CONTAINER: FAILED to preserve %ls for retry under instance %ls",
+                            containerName.c_str(), instanceId.c_str());
+        return ok;
+    }
+
+    inline bool ClearTransientContainerCleanup(const std::wstring& instanceId)
+    {
+        if (instanceId.empty()) return true;
+
+        std::wstring regKey = GetTransientContainerRegKey(instanceId);
+        LSTATUS st = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
+        bool ok = (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND);
+        if (ok)
+            g_logger.LogFmt(L"TRANSIENT_CONTAINER: cleared retry metadata for instance %ls", instanceId.c_str());
+        else
+            g_logger.LogFmt(L"TRANSIENT_CONTAINER: failed to clear retry metadata for instance %ls (error %lu)",
+                            instanceId.c_str(), st);
+        return ok;
+    }
+
+    inline bool DeleteTransientContainerNow(const std::wstring& containerName,
+                                            const wchar_t* contextTag)
+    {
+        if (containerName.empty()) return true;
+
+        HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
+        bool ok = SUCCEEDED(hr) || AppContainerMissing(hr);
+        g_logger.LogFmt(L"%ls: transient container %ls -> %s",
+                        contextTag, containerName.c_str(),
+                        ok ? L"deleted-or-absent" : L"FAILED");
+        return ok;
+    }
+
+    inline bool TeardownTransientContainerForCurrentRun(const std::wstring& containerName,
+                                                        const wchar_t* contextTag)
+    {
+        if (containerName.empty()) return true;
+
+        if (DeleteTransientContainerNow(containerName, contextTag)) {
+            ClearTransientContainerCleanup(g_instanceId);
+            return true;
+        }
+
+        if (!PersistTransientContainerCleanup(g_instanceId, containerName)) {
+            RequestGrantMetadataPreservation(L"transient container delete failed and retry metadata could not be persisted");
+            return false;
+        }
+        return false;
+    }
+
+    inline void RestoreTransientContainers()
+    {
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return;
+
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        std::vector<std::wstring> subKeys;
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
+
+        for (const auto& instanceId : subKeys) {
+            std::wstring fullKey = GetTransientContainerRegKey(instanceId);
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+                continue;
+
+            std::wstring containerName = ReadRegSz(hKey, L"_container");
+            RegCloseKey(hKey);
+            if (containerName.empty()) {
+                ClearTransientContainerCleanup(instanceId);
+                continue;
+            }
+
+            if (DeleteTransientContainerNow(containerName, L"TRANSIENT_RETRY"))
+                ClearTransientContainerCleanup(instanceId);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -524,115 +665,9 @@ namespace Sandbox {
         ClearPersistedGrants();
     }
 
-    // -----------------------------------------------------------------------
-    // Collect path+SID pairs granted by OTHER live sandy instances.
-    // Returns set of "path|sid" strings for precise skip logic.
-    // -----------------------------------------------------------------------
-    inline std::set<std::wstring> GetOtherInstancePathSids(const std::wstring& excludeId)
-    {
-        std::set<std::wstring> pathSids;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return pathSids;
-
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
-            if (excludeId == name) continue;
-
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (!IsProcessAlive(pid, ctime)) {
-                RegCloseKey(hKey);
-                continue;
-            }
-
-            DWORD valueCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             &valueCount, nullptr, nullptr, nullptr, nullptr);
-            for (DWORD vi = 0; vi < valueCount; vi++) {
-                std::wstring vname, data;
-                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                GrantRecord rec;
-                if (!ParseGrantRecord(data, rec)) continue;
-                pathSids.insert(rec.path + L"|" + rec.sidString);
-            }
-            RegCloseKey(hKey);
-        }
-        RegCloseKey(hParent);
-        return pathSids;
-    }
-
-    // -----------------------------------------------------------------------
-    // Collect deny paths from OTHER live sandy instances.
-    // Returns set of paths where another instance has a deny entry
-    // (identified by TRAPPED: suffix in the registry value).
-    // Used to prevent TreeSet from propagating into children with
-    // PROTECTED_DACL set by another instance's deny rules.
-    // -----------------------------------------------------------------------
-    inline std::set<std::wstring> GetOtherInstanceDenyPaths(const std::wstring& excludeId)
-    {
-        std::set<std::wstring> denyPaths;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return denyPaths;
-
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
-            if (excludeId == name) continue;
-
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (!IsProcessAlive(pid, ctime)) {
-                RegCloseKey(hKey);
-                continue;
-            }
-
-            DWORD valueCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             &valueCount, nullptr, nullptr, nullptr, nullptr);
-            for (DWORD vi = 0; vi < valueCount; vi++) {
-                std::wstring vname, data;
-                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                GrantRecord rec;
-                if (!ParseGrantRecord(data, rec)) continue;
-                if (!rec.wasDenied) continue;
-                denyPaths.insert(rec.path);
-            }
-            RegCloseKey(hKey);
-        }
-        RegCloseKey(hParent);
-        return denyPaths;
-    }
+    // GetOtherInstanceDenyPaths / GetOtherInstancePathSids removed:
+    // Both AC and RT SIDs are unique per instance and cleanup removes ACEs
+    // by owning SID only, so cross-instance coordination is unnecessary.
 
     // -----------------------------------------------------------------------
     // GetLiveContainerNames — enumerate container monikers from live instances.
@@ -672,7 +707,7 @@ namespace Sandbox {
             if (IsProcessAlive(pid, ctime)) {
                 std::wstring container = ReadRegSz(hKey, L"_container");
                 if (!container.empty())
-                    live.insert(container);
+                    live.insert(NormalizeLookupKey(container));
             }
             RegCloseKey(hKey);
         }
@@ -717,7 +752,7 @@ namespace Sandbox {
             if (IsProcessAlive(pid, ctime)) {
                 std::wstring profName = ReadRegSz(hKey, L"_profile_name");
                 if (!profName.empty())
-                    live.insert(profName);
+                    live.insert(NormalizeLookupKey(profName));
             }
             RegCloseKey(hKey);
         }
@@ -761,7 +796,7 @@ namespace Sandbox {
 
             std::wstring container = ReadRegSz(hKey, L"_container");
             if (!container.empty())
-                names.insert(container);
+                names.insert(NormalizeLookupKey(container));
             RegCloseKey(hKey);
         }
         RegCloseKey(hParent);
@@ -770,10 +805,8 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // RevokeAllGrants — remove all ACEs we added, using SID-based removal.
-    // Multi-instance safe: only removes ACEs for our SID.
-    // For shared SIDs (RT mode), skips paths used by other live instances.
-    // Skips TreeSet when another instance has a deny on a child path
-    // (to avoid propagating into children with PROTECTED_DACL).
+    // Multi-instance safe: both AC and RT SIDs are unique per instance,
+    // so removing ACEs by SID cannot interfere with other instances.
     // Thread-safe, double-cleanup guarded.
     // -----------------------------------------------------------------------
     inline void RevokeAllGrants()
@@ -782,118 +815,42 @@ namespace Sandbox {
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
-        // Collect path+SID pairs from other live instances.
-        // Only skip removal when another instance uses the SAME SID on the SAME path
-        // (RT shared SID case). AppContainer instances have unique SIDs, so their
-        // ACE removal never interferes even on overlapping paths.
-        std::set<std::wstring> otherPathSids = GetOtherInstancePathSids(g_instanceId);
-
-        // Collect deny paths from other live instances.
-        // If our cleanup path is a parent of a deny path, we must skip TreeSet
-        // to avoid propagating into children with PROTECTED_DACL.
-        std::set<std::wstring> otherDenyPaths = GetOtherInstanceDenyPaths(g_instanceId);
-
-        // Helper: check if any deny path is a child of the given path
-        auto hasChildDeny = [&](const std::wstring& parentPath) -> bool {
-            std::wstring prefix = parentPath;
-            // Ensure prefix ends with backslash for correct prefix matching
-            if (!prefix.empty() && prefix.back() != L'\\') prefix += L'\\';
-            for (const auto& dp : otherDenyPaths) {
-                if (dp.length() > prefix.length() &&
-                    _wcsnicmp(dp.c_str(), prefix.c_str(), prefix.length()) == 0)
-                    return true;
-            }
-            return false;
-        };
-
         // Deduplicate: same path may appear for allow + deny — use composite key
         std::set<std::wstring> processed;
-        int removed = 0, skipped = 0, deferred = 0;
+        int removed = 0;
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
             // Composite key: path + deny/allow type — allows both records to be processed
             std::wstring dedupKey = it->path + L"|" + (it->wasDenied ? L"D" : L"A");
             if (processed.count(dedupKey)) continue;
             processed.insert(dedupKey);
 
-            // Skip only when another instance uses the same SID on the same path
-            std::wstring pathSidKey = it->path + L"|" + it->sidString;
-            if (otherPathSids.count(pathSidKey)) {
-                g_logger.Log((L"ACL_SKIP: " + it->path + L" (same SID active in other instance)").c_str());
-                skipped++;
-                continue;
-            }
-
-            // For non-deny directory grants: skip TreeSet if another instance
-            // has a deny on a child path (to preserve PROTECTED_DACL)
-            // Peek grants are non-recursive (no inheritance) — always skip tree-set
-            bool needSkipTree = it->wasPeek;
-            if (!it->wasDenied && !needSkipTree && it->objType == SE_FILE_OBJECT) {
-                DWORD attrs = GetFileAttributesW(it->path.c_str());
-                if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-                    if (hasChildDeny(it->path)) {
-                        needSkipTree = true;
-                        deferred++;
-                        g_logger.Log((L"ACL_NOTREE: " + it->path + L" (child has active deny in other instance, deferring to stale recovery)").c_str());
-                    }
-                }
-            }
-
+            // Peek grants are non-recursive (no inheritance) — skip tree-set
             int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
-                                  it->wasDenied, it->trappedSids, needSkipTree);
+                                  it->wasDenied, it->wasPeek);
             removed += n;
         }
-        g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed, %d paths skipped, %d deferred", removed, skipped, deferred);
+        g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed", removed);
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
 
-        // If any grants were deferred (tree-skip), keep registry state so
-        // RestoreStaleGrants can finish the job when conflicting denies are gone.
-        if (deferred == 0) {
-            ClearPersistedGrants();
+        if (PreserveGrantMetadataRequested()) {
+            g_logger.Log(L"REVOKE_PRESERVE: registry metadata kept for additional teardown retry");
         } else {
-            // F2/R11: Persist DEFERRED:1 marker on records that were deferred
-            // so the retry path knows to re-check the overlap condition.
-            std::wstring regKey = GetGrantsRegKey();
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
-                              KEY_READ | KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
-                DWORD valueCount = 0;
-                RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                 &valueCount, nullptr, nullptr, nullptr, nullptr);
-                for (DWORD vi = 0; vi < valueCount; vi++) {
-                    std::wstring vname, data;
-                    if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                    // Skip metadata values
-                    if (!vname.empty() && vname[0] == L'_') continue;
-                    // If the record doesn't already have DEFERRED:1, append it
-                    if (data.find(L"|DEFERRED:1") == std::wstring::npos) {
-                        data += L"|DEFERRED:1";
-                        RegSetValueExW(hKey, vname.c_str(), 0, REG_SZ,
-                                       reinterpret_cast<const BYTE*>(data.c_str()),
-                                       static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t)));
-                    }
-                }
-                RegCloseKey(hKey);
-            }
-            g_logger.LogFmt(L"REVOKE_DEFER: %d path(s) kept in registry with DEFERRED marker for stale recovery", deferred);
+            ClearPersistedGrants();
         }
     }
 
     // -----------------------------------------------------------------------
     // RestoreGrantsFromKey — remove ACEs from a single registry subkey.
     // Parses TYPE|PATH|SID format and removes the SID's ACEs.
-    //
-    // F3/R8: Returns false if any recorded ACL removal failed on a path
-    // that still exists, indicating metadata should be preserved for retry.
+    // Since SIDs are unique per instance, no cross-instance checks needed.
     // -----------------------------------------------------------------------
-    inline bool RestoreGrantsFromKey(HKEY hKey,
-                                      const std::set<std::wstring>& protectedPathSids = {})
+    inline void RestoreGrantsFromKey(HKEY hKey)
     {
         DWORD valueCount = 0;
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
-        bool allOk = true;
         std::set<std::wstring> processed;
         for (DWORD vi = 0; vi < valueCount; vi++) {
             std::wstring vname, data;
@@ -912,71 +869,13 @@ namespace Sandbox {
             if (processed.count(dedupKey)) continue;
             processed.insert(dedupKey);
 
-            // Skip when a live instance still uses the same SID on the same path
-            std::wstring pathSidKey = rec.path + L"|" + rec.sidString;
-            if (protectedPathSids.count(pathSidKey)) {
-                g_logger.Log((L"ACL_SKIP_STALE: " + rec.path + L" (live instance with same SID active)").c_str());
-                continue;
-            }
-
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
 
-            // F2/R11: For deferred records, re-check the child-deny overlap
-            // condition before allowing recursive tree cleanup.  If the
-            // condition that caused deferral is still present, skip tree-set
-            // and preserve metadata for next retry.
-            bool skipTreeSet = rec.wasPeek;
-            if (rec.wasDeferred && !skipTreeSet && objType == SE_FILE_OBJECT) {
-                auto otherDenies = GetOtherInstanceDenyPaths(g_instanceId);
-                std::wstring prefix = rec.path;
-                if (!prefix.empty() && prefix.back() != L'\\') prefix += L'\\';
-                for (const auto& dp : otherDenies) {
-                    if (dp.length() > prefix.length() &&
-                        _wcsnicmp(dp.c_str(), prefix.c_str(), prefix.length()) == 0) {
-                        skipTreeSet = true;
-                        g_logger.LogFmt(L"DEFERRED_RECHECK: %ls still has live child deny, keeping deferred",
-                                        rec.path.c_str());
-                        allOk = false;  // preserve metadata for next retry
-                        break;
-                    }
-                }
-            }
-
             int n = RemoveSidFromDacl(rec.path, rec.sidString, objType,
-                              rec.wasDenied, rec.trappedSids, skipTreeSet);
-
-            // F4/R10: If the target still exists but no ACEs were removed,
-            // the revert may have failed — mark for metadata preservation.
-            // Symmetric for both FILE and REG records.
-            if (n == 0) {
-                bool targetExists = false;
-                if (rec.type == L"FILE") {
-                    DWORD attrs = GetFileAttributesW(rec.path.c_str());
-                    targetExists = (attrs != INVALID_FILE_ATTRIBUTES);
-                } else if (rec.type == L"REG") {
-                    HKEY hTest = nullptr;
-                    HKEY root = HKEY_CURRENT_USER;
-                    std::wstring subPath = rec.path;
-                    if (subPath.compare(0, 13, L"CURRENT_USER\\") == 0) {
-                        subPath = subPath.substr(13);
-                    } else if (subPath.compare(0, 8, L"MACHINE\\") == 0) {
-                        root = HKEY_LOCAL_MACHINE;
-                        subPath = subPath.substr(8);
-                    }
-                    if (RegOpenKeyExW(root, subPath.c_str(), 0, KEY_READ, &hTest) == ERROR_SUCCESS) {
-                        targetExists = true;
-                        RegCloseKey(hTest);
-                    }
-                }
-                if (targetExists) {
-                    g_logger.LogFmt(L"ACL_RESTORE_FAIL: %ls (target exists but no ACEs removed)",
-                                    rec.path.c_str());
-                    allOk = false;
-                }
-            }
-            printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
+                              rec.wasDenied, rec.wasPeek);
+            if (n > 0)
+                printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
         }
-        return allOk;
     }
 
     // -----------------------------------------------------------------------
@@ -985,6 +884,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void RestoreStaleGrants()
     {
+        RestoreTransientContainers();
+
         HKEY hParent = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
@@ -1004,22 +905,9 @@ namespace Sandbox {
         }
         RegCloseKey(hParent);
 
-        // Collect path+SID pairs from a subkey (compound key for precise skip logic)
-        auto collectPathSids = [](HKEY hKey, std::set<std::wstring>& outPathSids) {
-            DWORD valueCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             &valueCount, nullptr, nullptr, nullptr, nullptr);
-            for (DWORD vi = 0; vi < valueCount; vi++) {
-                std::wstring vname, data;
-                if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
-                GrantRecord rec;
-                if (!ParseGrantRecord(data, rec)) continue;
-                outPathSids.insert(rec.path + L"|" + rec.sidString);
-            }
-        };
+
 
         // Separate live vs stale
-        std::set<std::wstring> livePathSids;
         std::vector<std::pair<std::wstring, DWORD>> staleKeys; // {subKey, pid}
 
         for (const auto& subKey : subKeys) {
@@ -1034,7 +922,6 @@ namespace Sandbox {
             DWORD pid = 0; ULONGLONG ctime = 0;
             ReadPidAndCtime(hKey, pid, ctime);
             if (IsProcessAlive(pid, ctime)) {
-                collectPathSids(hKey, livePathSids);
                 g_logger.Log((L"STALE_CHECK: " + subKey + L" -> ALIVE (PID=" + std::to_wstring(pid) + L")").c_str());
             } else {
                 staleKeys.push_back({ subKey, pid });
@@ -1056,13 +943,14 @@ namespace Sandbox {
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
                 std::wstring containerName = ReadRegSz(hKey, L"_container");
+                bool containerRetryReady = true;
                 if (!containerName.empty()) {
                     // Check if this is a profile-mode entry or a saved-profile container
                     DWORD profileMode = 0;
                     DWORD pmSize = sizeof(profileMode);
                     RegQueryValueExW(hKey, L"_profile_mode", nullptr, nullptr,
                                      reinterpret_cast<BYTE*>(&profileMode), &pmSize);
-                    bool isSavedContainer = savedProfileContainers.count(containerName) > 0;
+                    bool isSavedContainer = savedProfileContainers.count(NormalizeLookupKey(containerName)) > 0;
 
                     if (profileMode == 1 || isSavedContainer) {
                         g_logger.LogFmt(L"PROFILE_SKIP: %ls (saved profile container, not deleting)",
@@ -1070,32 +958,33 @@ namespace Sandbox {
                         printf("  [PROFILE] %ls -> skipped (saved profile)\n",
                                containerName.c_str());
                     } else {
-                        HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
-                        g_logger.Log((L"PROFILE_DELETE: " + containerName +
-                            (SUCCEEDED(hr) ? L" -> OK" : L" -> FAILED")).c_str());
+                        bool containerDeleted = DeleteTransientContainerNow(containerName, L"STALE_RECOVERY");
+                        if (!containerDeleted) {
+                            containerRetryReady = PersistTransientContainerCleanup(subKey, containerName);
+                            if (!containerRetryReady)
+                                g_logger.LogFmt(L"STALE_PRESERVE: %ls container retry persistence failed, keeping grant metadata",
+                                                subKey.c_str());
+                        }
                         printf("  [PROFILE] %ls -> %s\n", containerName.c_str(),
-                               SUCCEEDED(hr) ? "deleted" : "FAILED");
+                               containerDeleted ? "deleted" : (containerRetryReady ? "deferred for retry" : "FAILED"));
                     }
                 }
-                bool cleanOk = RestoreGrantsFromKey(hKey, livePathSids);
+                RestoreGrantsFromKey(hKey);
                 RegCloseKey(hKey);
 
-                // F2/R9: Preserve metadata for retry if ACL revert was incomplete
-                if (!cleanOk) {
-                    g_logger.LogFmt(L"STALE_PRESERVE: %ls ACL revert incomplete, keeping metadata for retry",
+                if (!containerRetryReady) {
+                    g_logger.LogFmt(L"STALE_PRESERVE: %ls transient container retry metadata incomplete, keeping grant metadata",
                                     subKey.c_str());
-                    printf("  [GRANTS] instance %ls (PID %lu) -> ACL revert incomplete, metadata preserved\n",
+                    printf("  [GRANTS] instance %ls (PID %lu) -> metadata preserved for retry\n",
                            subKey.c_str(), (unsigned long)stalePid);
                     continue;
                 }
             }
-            LSTATUS delResult = RegDeleteTreeW(HKEY_CURRENT_USER, fullKey.c_str());
-            if (delResult != ERROR_SUCCESS) {
+            LSTATUS delResult = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, fullKey);
+            if (delResult != ERROR_SUCCESS &&
+                delResult != ERROR_FILE_NOT_FOUND &&
+                delResult != ERROR_PATH_NOT_FOUND)
                 g_logger.LogFmt(L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
-                delResult = RegDeleteKeyW(HKEY_CURRENT_USER, fullKey.c_str());
-                if (delResult != ERROR_SUCCESS)
-                    g_logger.LogFmt(L"REG_DELETE_FALLBACK_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
-            }
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
             printf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
                    subKey.c_str(), (unsigned long)stalePid);

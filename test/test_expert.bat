@@ -104,6 +104,9 @@ if exist "%ARENA%\runtime_storm" (
     set /a CLEANUP_PASS+=1
 )
 
+REM --- Clean stale state before checking ---
+"%SANDY%" --cleanup >nul 2>&1
+
 REM --- Check registry ---
 reg query "HKCU\Software\Sandy\Grants" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -111,7 +114,7 @@ if %ERRORLEVEL% NEQ 0 (
     set /a CLEANUP_PASS+=1
 ) else (
     set "HAS_SUBKEYS=0"
-    for /f "delims=" %%K in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul') do set "HAS_SUBKEYS=1"
+    for /f "delims=" %%K in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\"') do set "HAS_SUBKEYS=1"
     if "!HAS_SUBKEYS!"=="0" (
         echo   [PASS] Grants registry key empty
         set /a CLEANUP_PASS+=1

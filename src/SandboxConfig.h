@@ -2,7 +2,7 @@
 // SandboxConfig.h — Configuration loading and validation
 //
 // Maps TOML documents to SandboxConfig, loads config from files/strings.
-// Also provides utility function: GetExeFolder.
+// Also provides utility function: GetInheritedWorkdir.
 // =========================================================================
 #pragma once
 
@@ -13,21 +13,26 @@
 namespace Sandbox {
 
     // -----------------------------------------------------------------------
-    // Get the folder that contains the running exe
+    // Get the inherited working directory for the child process.
+    //
+    // Sandy's contract is simple: workdir is either set explicitly in config
+    // or inherited from Sandy's own current working directory.
     // -----------------------------------------------------------------------
-    inline std::wstring GetExeFolder()
+    inline std::wstring GetInheritedWorkdir()
     {
-        wchar_t buf[MAX_PATH]{};
-        DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        if (len == 0 || len >= MAX_PATH) {
-            fprintf(stderr, "[Error] Could not determine exe path.\n");
+        DWORD len = GetCurrentDirectoryW(0, nullptr);
+        if (len == 0) {
+            fprintf(stderr, "[Error] Could not determine current working directory.\n");
             return {};
         }
-        std::wstring folder(buf, len);
-        auto pos = folder.find_last_of(L"\\/");
-        if (pos != std::wstring::npos)
-            folder.resize(pos);
-        return folder;
+        std::wstring workdir(len, L'\0');
+        DWORD copied = GetCurrentDirectoryW(len, &workdir[0]);
+        if (copied == 0 || copied >= len) {
+            fprintf(stderr, "[Error] Could not determine current working directory.\n");
+            return {};
+        }
+        workdir.resize(copied);
+        return workdir;
     }
 
     // -----------------------------------------------------------------------
@@ -88,7 +93,7 @@ namespace Sandbox {
                 } else if (key == L"workdir") {
                     workdirSeen = true;
                     if (val.str == L"inherit")
-                        config.workdir.clear();  // inherit = use exe folder
+                        config.workdir.clear();  // inherit = use Sandy's current working directory
                     else
                         config.workdir = val.str;
                 } else {
@@ -318,8 +323,24 @@ namespace Sandbox {
                 if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
                 if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
                 if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
+                if (!config.denyFolders.empty()) {
+                    fprintf(stderr, "Error: [deny] is not available in appcontainer mode.\n");
+                    fprintf(stderr, "  The Windows kernel ignores DENY ACEs for AppContainer SIDs.\n");
+                    fprintf(stderr, "  Use token = 'restricted' for deny rules, or remove the [deny] section.\n");
+                    config.parseError = true;
+                }
             }
         }
+
+        // Normalize filesystem paths once at config-ingest time so the rest of
+        // the sandbox can reason about one canonical separator style.
+        config.workdir = NormalizeFsPath(config.workdir);
+        if (!config.stdinMode.empty() && _wcsicmp(config.stdinMode.c_str(), L"NUL") != 0)
+            config.stdinMode = NormalizeFsPath(config.stdinMode);
+        for (auto& e : config.folders)
+            e.path = NormalizeFsPath(e.path);
+        for (auto& e : config.denyFolders)
+            e.path = NormalizeFsPath(e.path);
 
         // --- Path validation (absolute paths, existence, deduplication) ---
         if (!config.parseError) {
@@ -328,7 +349,7 @@ namespace Sandbox {
                 for (const auto& e : entries) {
                     if (e.path.empty()) continue;
                     // Check absolute path (drive letter or UNC)
-                    bool isAbsolute = (e.path.size() >= 3 && e.path[1] == L':' && (e.path[2] == L'\\' || e.path[2] == L'/'));
+                    bool isAbsolute = (e.path.size() >= 3 && e.path[1] == L':' && e.path[2] == L'\\');
                     bool isUNC = (e.path.size() >= 2 && e.path[0] == L'\\' && e.path[1] == L'\\');
                     if (!isAbsolute && !isUNC) {
                         fprintf(stderr, "Error: '%ls' in [%ls] is not an absolute path. Use 'C:\\...' format.\n",

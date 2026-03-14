@@ -74,9 +74,7 @@ reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _c
 reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _container /t REG_SZ /d "Sandy_dead-0002" /f >nul 2>nul
 reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path2|D:(A;;FA;;;WD)" /f >nul 2>nul
 
-reg add "HKCU\Software\Sandy\Test\WER" /v 99901 /t REG_SZ /d "fake_stale.exe" /f >nul 2>nul
-
-echo   Injected 2 stale Grants entries + 1 stale WER entry
+echo   Injected 2 stale Grants entries
 
 reg query "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
@@ -144,7 +142,7 @@ echo.
 
 REM Count ACTIVE entries
 set ACTIVE_COUNT=0
-for /f %%C in ('findstr /c:"ACTIVE" "%TEMP%\sandy_stress_status.txt" 2^>nul ^|findstr /c:"Grants\\" ^| find /c /v ""') do set ACTIVE_COUNT=%%C
+for /f %%C in ('findstr /c:"ACTIVE" "%TEMP%\sandy_stress_status.txt" 2^>nul ^| find /c /v ""') do set ACTIVE_COUNT=%%C
 if !ACTIVE_COUNT! GEQ 2 (
     echo   [PASS] Multiple active instances detected: !ACTIVE_COUNT!
     set /a PASS+=1
@@ -193,17 +191,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-REM 5.2: No WER entries should remain
-reg query "HKCU\Software\Sandy\Test\WER" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] All WER entries cleaned
-    set /a PASS+=1
-) else (
-    echo   [FAIL] WER entries still exist
-    set /a FAIL+=1
-)
-
-REM 5.3: No Sandy AppContainer profiles should remain
+REM 5.2: No Sandy AppContainer profiles should remain
 "!SANDY!" --status >"%TEMP%\sandy_stress_final.txt"
 
 findstr /c:"ACTIVE" "%TEMP%\sandy_stress_final.txt" >nul 2>nul
@@ -226,7 +214,7 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-REM 5.4: No SandyCleanup_* scheduled tasks should remain
+REM 5.3: No SandyCleanup_* scheduled tasks should remain
 set "TASK_FOUND=0"
 for /f "delims=" %%L in ('schtasks /Query /FO CSV /NH 2^>nul ^| findstr /c:"SandyCleanup_"') do set "TASK_FOUND=1"
 if "!TASK_FOUND!"=="0" (
@@ -303,7 +291,7 @@ set RESIDUE=0
 for %%L in ("!DIR_A!" "!DIR_B!" "!DIR_C!") do (
     icacls %%L 2>nul | findstr /c:"S-1-15-2-" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
-        for /f %%N in ('icacls %%L 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do (
+        for /f %%N in ('icacls %%L 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do (
             echo   [INFO] %%~nxL: %%N residual AppContainer SIDs (inert, profiles deleted^)
             set /a RESIDUE+=%%N
         )

@@ -148,7 +148,7 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Architecture <span class="accent">Overview</span></h2>
-    <p class="section-lead">Sandy supports two fundamentally different Windows sandbox mechanisms. Each creates a per-instance unique SID for complete ACE isolation — no two instances share security identifiers.</p>
+    <p class="section-lead">Sandy supports two fundamentally different Windows sandbox mechanisms. Transient runs use per-instance identities, while saved profiles preserve one durable identity across repeated runs.</p>
 
     <div class="card-grid cols-2">
       <div class="card">
@@ -305,7 +305,7 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Choosing a <span class="accent">Mode</span></h2>
-    <p class="section-lead">Both modes are fully self-cleaning — ACLs and registry entries are tracked per-instance and always restored on exit, even after crash or power loss.</p>
+    <p class="section-lead">Both modes share one run pipeline, but ownership differs: transient runs clean up their grants on exit, while saved profiles keep profile-owned grants and container state until <code>--delete-profile</code>.</p>
 
     <div class="card-grid cols-3">
       <div class="card">
@@ -344,8 +344,8 @@
     </div>
 
     <div class="callout info" style="margin-top:28px;">
-      <div class="callout-title">💡 Not sure? Use <code>--trace</code> first</div>
-      <p>Run <code>sandy -t report.txt -x yourapp.exe</code> to analyze the application unsandboxed via Procmon, then review the generated feasibility report and suggested TOML. Requires Procmon on PATH and admin elevation.</p>
+      <div class="callout-title">💡 Not sure? Start transient, then promote to a profile</div>
+      <p>Use <code>-c</code> or <code>-s</code> while you are discovering the minimum grant set. Once the policy is stable, create a saved profile with <code>--create-profile</code> so repeated runs reuse one durable sandbox identity.</p>
     </div>
   </div>
 </section>
@@ -355,7 +355,7 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Cleanup &amp; <span class="accent">Resilience</span></h2>
-    <p class="section-lead">Both modes track the same six resources and fully restore system state on any exit — including crash, taskkill, and power loss.</p>
+    <p class="section-lead">Run-scoped state is recovered on clean exit and after crashes, but durable profile state intentionally survives normal runs. Cleanup must therefore distinguish run-owned resources from profile-owned resources.</p>
 
     <div class="table-wrap">
       <table>
@@ -370,7 +370,6 @@
           <tr><td class="td-aspect">Registry grants</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID</td></tr>
           <tr><td class="td-aspect">Instance subkey</td><td class="col-ac" colspan="2">Deleted from <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code></td></tr>
           <tr><td class="td-aspect">Scheduled task</td><td class="col-ac" colspan="2">Deleted: <code>SandyCleanup_&lt;UUID&gt;</code></td></tr>
-          <tr><td class="td-aspect">WER crash keys</td><td class="col-ac" colspan="2">Removed from <code>HKCU\Software\Sandy\WER</code></td></tr>
         </tbody>
       </table>
     </div>

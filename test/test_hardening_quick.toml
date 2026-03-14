@@ -1,15 +1,15 @@
 # Sandy hardening test — minimal config for quick log marker tests.
-# Uses cmd.exe (instant startup) instead of Python.
+# Uses Python (user-owned path) for fast startup/exit.
 
 [sandbox]
 token = 'restricted'
-integrity = 'low'
-workdir = 'C:\Windows\System32'
+integrity = 'medium'
 
 [allow]
-execute = ['C:\Windows\System32']
+read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\repos\sandy_cli\test\test_hardening_exit.py']
+
 [environment]
 inherit = true
 
 [limit]
-timeout   = 10
+timeout = 10

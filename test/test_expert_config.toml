@@ -1,13 +1,14 @@
-# Expert adversarial test config — targets Sandy's IMPLEMENTATION assumptions
+# Expert adversarial test config (AC, no deny)
 #
-# TREE (created by batch runner):
+# TREE:
 #   test_expert/
-#     arena/                        [allow all]
-#       denied_zone/                [deny all]
-#       readonly_zone/              [deny write]
-#       double_deny/                [deny write + deny read]
-#       deep/a/b/c/d/               [deny all]
-#       playground/                 inherits all
+#     arena/
+#       denied_zone/                (no grant — fully blocked)
+#       readonly_zone/              [allow read] (was deny.write)
+#       double_deny/                (no grant — was deny write+read)
+#       deep/a/b/c/                 [allow all]
+#         d/                        (no grant — was deny.all)
+#       playground/                 [allow all]
 #     scripts/                      [allow read]
 
 [sandbox]
@@ -15,21 +16,9 @@ token = 'appcontainer'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_expert\scripts']
-all = ['C:\Users\H\test_expert\arena']
-
-[deny]
-all = [
-    'C:\Users\H\test_expert\arena\denied_zone',
-    'C:\Users\H\test_expert\arena\deep\a\b\c\d',
-]
-write = [
-    'C:\Users\H\test_expert\arena\readonly_zone',
-    'C:\Users\H\test_expert\arena\double_deny',
-]
-read = [
-    'C:\Users\H\test_expert\arena\double_deny',
-]
+read = ['C:\Users\H\test_expert\scripts', 'C:\Users\H\test_expert\arena\readonly_zone']
+all = ['C:\Users\H\test_expert\arena\playground', 'C:\Users\H\test_expert\arena\deep\a\b\c']
+peek = ['C:\Users\H\test_expert\arena', 'C:\Users\H\test_expert\arena\deep', 'C:\Users\H\test_expert\arena\deep\a', 'C:\Users\H\test_expert\arena\deep\a\b']
 
 [privileges]
 child_processes = false

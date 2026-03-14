@@ -71,6 +71,39 @@ namespace Sandbox {
         AccessLevel  access;
     };
 
+    // Normalize filesystem paths to Sandy's canonical separator style.
+    // This keeps config/profile input, grant persistence, overlap checks,
+    // and stale cleanup operating on one consistent path representation.
+    inline std::wstring NormalizeFsPath(std::wstring path)
+    {
+        for (auto& ch : path) {
+            if (ch == L'/') ch = L'\\';
+        }
+        return path;
+    }
+
+    inline std::wstring NormalizeLookupKey(std::wstring value)
+    {
+        for (auto& ch : value)
+            ch = static_cast<wchar_t>(towlower(ch));
+        return value;
+    }
+
+    // Check if an exit code looks like a native process crash.
+    // Used to classify child termination without owning host-global dump state.
+    inline bool IsCrashExitCode(DWORD exitCode)
+    {
+        if ((exitCode & 0xF0000000) == 0xC0000000) return true;
+        if (exitCode == 3) return true;
+        return false;
+    }
+
+    inline bool AppContainerMissing(HRESULT hr)
+    {
+        DWORD code = HRESULT_CODE(hr);
+        return code == ERROR_NOT_FOUND || code == ERROR_FILE_NOT_FOUND;
+    }
+
     // Human-readable tag for an access level
     inline const wchar_t* AccessTag(AccessLevel level) {
         switch (level) {
@@ -277,7 +310,7 @@ namespace Sandbox {
             // Open once with retry, set unbuffered for crash resilience
             FILE* f = nullptr;
             for (int attempt = 0; attempt < 3; attempt++) {
-                f = _wfsopen(finalPath.c_str(), L"w", _SH_DENYWR);
+                f = _wfsopen(finalPath.c_str(), L"w, ccs=UTF-8", _SH_DENYWR);
                 if (f) break;
                 if (attempt < 2) Sleep(50);
             }

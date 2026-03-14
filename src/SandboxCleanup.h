@@ -8,7 +8,9 @@
 #pragma once
 
 #include "SandboxTypes.h"
+#include "SandboxGrants.h"
 #include "SandboxProcess.h"
+#include <sstream>
 
 namespace Sandbox {
 
@@ -17,6 +19,59 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline bool g_loopbackGranted = false;
     inline std::wstring g_loopbackContainerName;  // the container name used for loopback
+
+    // -----------------------------------------------------------------------
+    // HasOtherLiveContainerUsers — true when another live Sandy instance is
+    // still using the same AppContainer name.
+    //
+    // This is important for persistent saved profiles: loopback exemption is
+    // host-global per container name, so one profile run must not remove it
+    // while another run of the same profile is still alive.
+    // -----------------------------------------------------------------------
+    inline bool HasOtherLiveContainerUsers(const std::wstring& containerName,
+                                           const std::wstring& excludeInstanceId)
+    {
+        if (containerName.empty()) return false;
+
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return false;
+
+        bool foundOther = false;
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        for (DWORD idx = 0; idx < subKeyCount && !foundOther; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                              nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                continue;
+
+            if (!excludeInstanceId.empty() && excludeInstanceId == name)
+                continue;
+
+            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey) != ERROR_SUCCESS)
+                continue;
+
+            DWORD pid = 0; ULONGLONG ctime = 0;
+            ReadPidAndCtime(hKey, pid, ctime);
+            if (IsProcessAlive(pid, ctime)) {
+                std::wstring liveContainer = ReadRegSz(hKey, L"_container");
+                if (_wcsicmp(liveContainer.c_str(), containerName.c_str()) == 0)
+                    foundOther = true;
+            }
+            RegCloseKey(hKey);
+        }
+
+        RegCloseKey(hParent);
+        return foundOther;
+    }
 
     // -----------------------------------------------------------------------
     // Per-instance scheduled task naming.
@@ -70,6 +125,29 @@ namespace Sandbox {
         }
     }
 
+    inline std::vector<std::wstring> ListCleanupTasks()
+    {
+        std::vector<std::wstring> tasks;
+        HiddenProcessResult query = RunSchtasksCapture(L"/Query /FO CSV /NH");
+        if (query.status != HiddenProcessStatus::Completed)
+            return tasks;
+
+        std::istringstream stream(query.output);
+        std::string line;
+        while (std::getline(stream, line)) {
+            std::wstring wline(line.begin(), line.end());
+            if (wline.find(kCleanupTaskPrefix) == std::wstring::npos) continue;
+            auto q1 = wline.find(L'"');
+            auto q2 = (q1 == std::wstring::npos) ? std::wstring::npos : wline.find(L'"', q1 + 1);
+            if (q1 == std::wstring::npos || q2 == std::wstring::npos) continue;
+
+            auto taskPath = wline.substr(q1 + 1, q2 - q1 - 1);
+            auto bs = taskPath.find_last_of(L'\\');
+            tasks.push_back(bs != std::wstring::npos ? taskPath.substr(bs + 1) : taskPath);
+        }
+        return tasks;
+    }
+
     // -----------------------------------------------------------------------
     // DeleteStaleCleanupTasks — remove tasks from dead instances.
     //
@@ -79,55 +157,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void DeleteStaleCleanupTasks()
     {
-        // Query all tasks matching our prefix
-        // schtasks /Query /FO CSV /NH gives: "TaskName","Next Run Time","Status"
-        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
-        std::wstring cmd = L"\"" + schtasksExe + L"\" /Query /FO CSV /NH";
-        HANDLE hRead = nullptr, hWrite = nullptr;
-        SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
-        if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return;
-
-        STARTUPINFOW si = { sizeof(si) };
-        si.hStdOutput = hWrite;
-        si.hStdError = hWrite;
-        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        PROCESS_INFORMATION pi{};
-        if (!CreateProcessW(schtasksExe.c_str(), const_cast<LPWSTR>(cmd.c_str()),
-                nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-            CloseHandle(hRead);
-            CloseHandle(hWrite);
-            return;
-        }
-        CloseHandle(hWrite);
-
-        // Read output
-        std::string output;
-        char buf[4096];
-        DWORD bytesRead;
-        while (ReadFile(hRead, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0)
-            output.append(buf, bytesRead);
-        CloseHandle(hRead);
-        WaitForSingleObject(pi.hProcess, 5000);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-
-        // Parse CSV lines for SandyCleanup_ prefix
-        std::wstring prefix = kCleanupTaskPrefix;
-        std::istringstream stream(output);
-        std::string line;
-        while (std::getline(stream, line)) {
-            // Find SandyCleanup_ in the line
-            // CSV format: "\TaskFolder\SandyCleanup_uuid",...
-            std::wstring wline(line.begin(), line.end());
-            auto pos = wline.find(prefix);
-            if (pos == std::wstring::npos) continue;
-
-            // Extract instance ID: from after prefix to next quote
-            auto idStart = pos + prefix.size();
-            auto idEnd = wline.find(L'"', idStart);
-            if (idEnd == std::wstring::npos) idEnd = wline.size();
-            std::wstring instanceId = wline.substr(idStart, idEnd - idStart);
+        for (const auto& taskName : ListCleanupTasks()) {
+            std::wstring instanceId = taskName.substr(wcslen(kCleanupTaskPrefix));
             if (instanceId.empty()) continue;
 
             // Check if this instance has live grants
@@ -143,7 +174,6 @@ namespace Sandbox {
             }
 
             if (!isLive) {
-                std::wstring taskName = prefix + instanceId;
                 std::wstring delArgs = L"/Delete /TN \"" + taskName + L"\" /F";
                 if (RunSchtasks(delArgs) == 0) {
                     g_logger.Log((L"SCHTASK_STALE: deleted " + taskName).c_str());
@@ -154,20 +184,55 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // EnableLoopback — add localhost exemption for AppContainer.
+    // AddLoopbackExemption — add localhost exemption for an AppContainer.
     //
-    // Inputs:  containerName — the per-instance AppContainer name (Sandy_<uuid>)
+    // Inputs:  containerName — AppContainer moniker
+    //          trackRunState — true when this exemption is owned by the current
+    //                          transient run and should be removed on run exit
     // Returns: true if exemption was added
-    // Verifiable: "CheckNetIsolation LoopbackExempt -s" lists the container
     // -----------------------------------------------------------------------
-    inline bool EnableLoopback(const std::wstring& containerName)
+    inline bool AddLoopbackExemption(const std::wstring& containerName,
+                                     bool trackRunState)
     {
         std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
         std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -a -n=" + containerName;
         DWORD exitCode = RunHiddenProcess(cmd, 5000, cniExe);
-        g_loopbackGranted = (exitCode == 0);
-        if (g_loopbackGranted) g_loopbackContainerName = containerName;
-        return g_loopbackGranted;
+        bool ok = (exitCode == 0);
+        if (ok && trackRunState) {
+            g_loopbackGranted = true;
+            g_loopbackContainerName = containerName;
+        }
+        return ok;
+    }
+
+    // -----------------------------------------------------------------------
+    // EnableRunLoopback — add localhost exemption owned by the current run.
+    // -----------------------------------------------------------------------
+    inline bool EnableRunLoopback(const std::wstring& containerName)
+    {
+        return AddLoopbackExemption(containerName, true);
+    }
+
+    // -----------------------------------------------------------------------
+    // EnsureProfileLoopback — ensure localhost exemption exists for a durable
+    // saved-profile AppContainer.  This is profile-owned state, not run-owned
+    // state, so the caller does not register transient cleanup.
+    // -----------------------------------------------------------------------
+    inline bool EnsureProfileLoopback(const std::wstring& containerName)
+    {
+        return AddLoopbackExemption(containerName, false);
+    }
+
+    // -----------------------------------------------------------------------
+    // RemoveLoopbackExemption — unconditionally remove a localhost exemption.
+    // Returns true when CheckNetIsolation reports success.
+    // -----------------------------------------------------------------------
+    inline bool RemoveLoopbackExemption(const std::wstring& containerName)
+    {
+        if (containerName.empty()) return true;
+        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
+        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + containerName;
+        return RunHiddenProcess(cmd, 5000, cniExe) == 0;
     }
 
     // -----------------------------------------------------------------------
@@ -179,10 +244,15 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void DisableLoopback() {
         if (!g_loopbackGranted || g_loopbackContainerName.empty()) return;
+        if (HasOtherLiveContainerUsers(g_loopbackContainerName, g_instanceId)) {
+            g_logger.Log((L"LOOPBACK: preserving (" + g_loopbackContainerName +
+                         L", other live users remain)").c_str());
+            g_loopbackGranted = false;
+            g_loopbackContainerName.clear();
+            return;
+        }
         g_logger.Log((L"LOOPBACK: disabling (" + g_loopbackContainerName + L")").c_str());
-        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + g_loopbackContainerName;
-        RunHiddenProcess(cmd, 5000, cniExe);
+        RemoveLoopbackExemption(g_loopbackContainerName);
         g_loopbackGranted = false;
         g_loopbackContainerName.clear();
     }
@@ -273,16 +343,13 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // CleanupStaleStartupState — clear stale state from previous crashed runs.
     //
-    // Cleans loopback exemptions and stale WER keys for the target exe.
-    // Multi-instance safe: only removes loopback for containers whose owning
-    // instance is proven dead. Only disables WER for PIDs proven dead.
-    //
-    // Inputs:  exePath — target executable path (for WER key matching)
-    // Effect:  stale loopback exemptions removed, stale WER key cleaned
-    // Verifiable: live instances retain loopback and WER configuration
+    // Startup cleanup owns transient host-side artifacts only. It removes
+    // stale loopback exemptions for dead transient containers while preserving
+    // live runs and durable saved-profile containers.
     // -----------------------------------------------------------------------
     inline void CleanupStaleStartupState(const std::wstring& exePath)
     {
+        (void)exePath;
         // Filter profiles through liveness check — only clean stale ones
         // Also exclude saved-profile containers (permanent, never cleaned)
         auto allProfiles = EnumSandyProfiles();
@@ -290,74 +357,26 @@ namespace Sandbox {
         auto savedContainers = GetSavedProfileContainerNames();
         std::vector<std::wstring> staleProfiles;
         for (const auto& p : allProfiles) {
-            if (!liveContainers.count(p) && !savedContainers.count(p))
+            std::wstring lookup = NormalizeLookupKey(p);
+            if (!liveContainers.count(lookup) && !savedContainers.count(lookup))
                 staleProfiles.push_back(p);
         }
         ForceDisableLoopback(staleProfiles);
 
-        // Clean stale WER key for the current target exe if Sandy left it
-        // Only disable if the owning PID is dead (multi-instance safe)
-        auto slash = exePath.find_last_of(L"\\/");
-        std::wstring exeBaseName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
-        {
-            HKEY hWER = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
-                              KEY_READ, &hWER) == ERROR_SUCCESS) {
-                DWORD valueCount = 0;
-                RegQueryInfoKeyW(hWER, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                 &valueCount, nullptr, nullptr, nullptr, nullptr);
-                bool foundStale = false;
-                for (DWORD i = 0; i < valueCount && !foundStale; i++) {
-                    wchar_t vname[64]; DWORD vnameLen = 64;
-                    DWORD dataSize = 0;
-                    if (RegEnumValueW(hWER, i, vname, &vnameLen, nullptr, nullptr,
-                                      nullptr, &dataSize) == ERROR_SUCCESS) {
-                        std::wstring data(dataSize / sizeof(wchar_t), L'\0');
-                        vnameLen = 64;
-                        if (RegEnumValueW(hWER, i, vname, &vnameLen, nullptr, nullptr,
-                                          reinterpret_cast<BYTE*>(&data[0]), &dataSize) == ERROR_SUCCESS) {
-                            while (!data.empty() && data.back() == L'\0') data.pop_back();
-                            // F5/R8: Parse exeName|ctime from WER value data
-                            std::wstring werExe; ULONGLONG werCtime = 0;
-                            ParseWEREntry(data, werExe, werCtime);
-                            if (_wcsicmp(werExe.c_str(), exeBaseName.c_str()) == 0) {
-                                // Check if the owning PID is still alive (with ctime)
-                                DWORD werPid = (DWORD)_wtoi(vname);
-                                if (!IsProcessAlive(werPid, werCtime))
-                                    foundStale = true;
-                            }
-                        }
-                    }
-                }
-                RegCloseKey(hWER);
-                if (foundStale) {
-                    // Reference-counted: only delete the shared HKLM LocalDumps key
-                    // if no other live Sandy instance is tracking this exe name
-                    int liveRefs = CountLiveWERReferences(exeBaseName);
-                    if (liveRefs == 0) {
-                        DisableCrashDumps(exeBaseName);
-                        g_logger.LogFmt(L"STARTUP_WER: cleaned %ls (no live owners)",
-                                        exeBaseName.c_str());
-                    } else {
-                        g_logger.LogFmt(L"STARTUP_WER: %ls SKIPPED (%d live owner(s) remain)",
-                                        exeBaseName.c_str(), liveRefs);
-                    }
-                }
-            }
-        }
-        g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback/WER state");
+        g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback state");
     }
 
     // -----------------------------------------------------------------------
     // WarnStaleRegistryEntries — detect and warn about stale registry state.
     //
-    // Inputs:  (none — reads HKCU\Software\Sandy\Grants and \WER)
+    // Inputs:  (none — reads HKCU\Software\Sandy\Grants)
     // Effect:  prints warning to stderr and logs if stale entries found
     // Verifiable: warning printed iff stale keys exist in registry
     // -----------------------------------------------------------------------
     inline void WarnStaleRegistryEntries()
     {
-        bool staleGrants = false, staleWER = false;
+        bool staleGrants = false;
+        bool staleTransientContainers = false;
         HKEY hKey = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
                           KEY_READ, &hKey) == ERROR_SUCCESS) {
@@ -367,23 +386,24 @@ namespace Sandbox {
             RegCloseKey(hKey);
             if (subKeyCount > 0) staleGrants = true;
         }
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kWERParentKey, 0,
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
                           KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD valueCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-                             &valueCount, nullptr, nullptr, nullptr, nullptr);
+            DWORD subKeyCount = 0;
+            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subKeyCount,
+                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
             RegCloseKey(hKey);
-            if (valueCount > 0) staleWER = true;
+            if (subKeyCount > 0) staleTransientContainers = true;
         }
-        if (staleGrants || staleWER) {
+        if (staleGrants || staleTransientContainers) {
             if (!g_logger.IsActive())
                 fprintf(stderr,
-                    "[Sandy] WARNING: Stale registry entries detected from a previous crashed run.\n"
-                    "        Grants: HKCU\\%ls   WER: HKCU\\%ls\n"
+                    "[Sandy] WARNING: Stale recovery metadata detected from a previous crashed run.\n"
+                    "        Grants: HKCU\\%ls\n"
+                    "        Containers: HKCU\\%ls\n"
                     "        Run 'sandy.exe --cleanup' to restore original state.\n"
                     "        If another sandy instance is running, its entries are expected.\n",
-                    kGrantsParentKey, kWERParentKey);
-            g_logger.Log(L"STARTUP_WARNING: stale registry entries found (use --cleanup)");
+                    kGrantsParentKey, kTransientContainersParentKey);
+            g_logger.Log(L"STARTUP_WARNING: stale recovery metadata found (use --cleanup)");
         }
     }
 

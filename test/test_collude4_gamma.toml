@@ -1,0 +1,19 @@
+# Collusion4 — Gamma (AC, no deny)
+# ALL on hub/ (deny on hub/drop/ removed — AC doesn't support deny)
+
+[sandbox]
+token = 'appcontainer'
+
+[allow]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read = ['C:\Users\H\test_collude4\scripts']
+all = ['C:\Users\H\test_collude4\hub']
+
+[privileges]
+child_processes = false
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 120

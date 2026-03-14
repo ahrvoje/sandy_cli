@@ -1,6 +1,6 @@
-"""Test deny enforcement: ALL access granted to folder, WRITE denied to folder.
-With DENY_ACCESS approach, reads should succeed but writes should be blocked.
-DENY ACEs override ALLOW ACEs in Windows ACL evaluation."""
+"""Test AC allow-only: READ-ONLY grant on folder.
+Reads should succeed, writes and deletes should be blocked.
+For actual deny testing, use the RT variant."""
 import os, sys
 
 folder = r'C:\Users\H\test_RW'
@@ -39,15 +39,14 @@ except PermissionError:
     print(f"[PASS] Write file: blocked (DENY ACE working)")
     results.append(True)
 
-# Test 4: delete should SUCCEED (DELETE is separate from WRITE permission)
-# If you want to deny delete, use deny.delete or deny.all
+# Test 4: delete should FAIL (read-only grant has no DELETE permission)
 try:
     os.remove(seed)
-    print(f"[PASS] Delete file: succeeded (DELETE is not part of WRITE mask)")
-    results.append(True)
-except PermissionError:
-    print(f"[FAIL] Delete file: blocked (DELETE should not be blocked by deny.write)")
+    print(f"[FAIL] Delete file: succeeded (should be blocked with read-only grant)")
     results.append(False)
+except PermissionError:
+    print(f"[PASS] Delete file: blocked (read-only grant, no DELETE)")
+    results.append(True)
 
 passed = sum(results)
 failed = len(results) - passed

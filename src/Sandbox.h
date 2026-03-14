@@ -12,9 +12,6 @@
 #include "SandboxGrants.h"
 #include "SandboxGuard.h"
 #include "SandboxToken.h"
-#include "SandboxAudit.h"
-#include "SandboxCrashDump.h"
-#include "SandboxProfile.h"
 #include "SandboxCleanup.h"
 #include "SandboxCapabilities.h"
 #include "SandboxEnvironment.h"
@@ -23,9 +20,11 @@
 
 namespace Sandbox {
 
-    // Global child process handle for emergency cleanup coordination.
-    // Set after LaunchChildProcess succeeds, cleared after CloseHandle in Phase 5.
+    // Global launch ownership handles for emergency cleanup coordination.
+    // The process handle tracks the root process; the job handle tracks the
+    // whole sandbox-owned process tree when descendants are allowed.
     inline HANDLE g_childProcess = nullptr;
+    inline HANDLE g_childJob = nullptr;
 
     // -----------------------------------------------------------------------
     // RecordGrant callback — bridges SandboxACL.h → SandboxGrants.h
@@ -59,17 +58,21 @@ namespace Sandbox {
     };
 
     static int PathDepth(const std::wstring& p) {
+        std::wstring normalized = NormalizeFsPath(p);
         int d = 0;
-        for (auto c : p) if (c == L'\\') d++;
+        for (auto c : normalized) if (c == L'\\') d++;
         return d;
     }
 
     // Check if `child` is at or under `parent` (case-insensitive, backslash boundary)
     static bool IsPathUnder(const std::wstring& child, const std::wstring& parent) {
-        if (child.size() < parent.size()) return false;
-        if (_wcsnicmp(child.c_str(), parent.c_str(), parent.size()) != 0) return false;
+        std::wstring normalizedChild = NormalizeFsPath(child);
+        std::wstring normalizedParent = NormalizeFsPath(parent);
+        if (normalizedChild.size() < normalizedParent.size()) return false;
+        if (_wcsnicmp(normalizedChild.c_str(), normalizedParent.c_str(), normalizedParent.size()) != 0) return false;
         // Exact match or child continues with backslash
-        return child.size() == parent.size() || child[parent.size()] == L'\\';
+        return normalizedChild.size() == normalizedParent.size() ||
+               normalizedChild[normalizedParent.size()] == L'\\';
     }
 
     inline bool ApplyAccessPipeline(PSID pSid, const SandboxConfig& config, bool isAppContainer)
@@ -141,7 +144,7 @@ namespace Sandbox {
         for (const auto& e : pipeline) {
             if (e.isDeny) {
                 // Apply deny
-                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, isAppContainer, RecordGrantCallback);
+                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, RecordGrantCallback);
                 bool ok = (rc == ERROR_SUCCESS);
                 if (!ok) allOk = false;
                 if (ok) {
@@ -166,7 +169,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
                         e.path.c_str(), isPeek ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
-                                     true, L"", isPeek);
+                                     true, isPeek);
                 }
 
                 // Apply allow
@@ -214,11 +217,18 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // AutoGrantExeFolderAccess — grant read access to exe and target folders.
     // -----------------------------------------------------------------------
-    inline void AutoGrantExeFolderAccess(PSID pSid, const std::wstring& exeFolder,
-                                          const std::wstring& exePath)
+    inline bool AutoGrantExeFolderAccess(PSID pSid, const std::wstring& exeFolder,
+                                         const std::wstring& exePath)
     {
-        GrantObjectAccess(pSid, exeFolder, AccessLevel::Read, RecordGrantCallback);
-        g_logger.Log((L"GRANT_AUTO: [R] " + exeFolder).c_str());
+        bool ok = true;
+        DWORD rc = GrantObjectAccess(pSid, exeFolder, AccessLevel::Read, RecordGrantCallback);
+        if (rc == ERROR_SUCCESS) {
+            g_logger.Log((L"GRANT_AUTO: [R] " + exeFolder).c_str());
+        } else {
+            g_logger.LogFmt(L"GRANT_AUTO: [R] %s -> FAILED (0x%08X: %s)",
+                            exeFolder.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+            ok = false;
+        }
 
         wchar_t resolvedExe[MAX_PATH]{};
         DWORD found = SearchPathW(nullptr, exePath.c_str(), L".exe",
@@ -229,144 +239,17 @@ namespace Sandbox {
             if (slash != std::wstring::npos)
                 targetFolder.resize(slash);
             if (_wcsicmp(targetFolder.c_str(), exeFolder.c_str()) != 0) {
-                GrantObjectAccess(pSid, targetFolder, AccessLevel::Read, RecordGrantCallback);
-                g_logger.Log((L"GRANT_AUTO: [R] " + targetFolder).c_str());
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // SetupAudit — start Procmon audit capture if requested.
-    //
-    // F3/R10: Returns false when audit was explicitly requested but could
-    // not be started (Procmon missing or capture startup failed).
-    // Callers should abort the run on false — audit is fail-closed.
-    // -----------------------------------------------------------------------
-    inline bool SetupAudit(const std::wstring& auditLogPath,
-                           std::wstring& procmonExe, bool& auditActive,
-                           std::wstring& auditPmlPath)
-    {
-        procmonExe.clear();
-        auditActive = false;
-        auditPmlPath.clear();
-        if (auditLogPath.empty()) return true;  // not requested — OK
-
-        procmonExe = FindProcmon();
-        if (procmonExe.empty()) {
-            g_logger.Log(L"AUDIT: Procmon not found — cannot start requested audit");
-            return false;
-        }
-        auditActive = StartProcmonAudit(procmonExe, auditPmlPath);
-        if (auditActive) {
-            g_logger.Log(L"AUDIT: active (Procmon)");
-            return true;
-        }
-        g_logger.Log(L"AUDIT: Procmon capture startup failed");
-        return false;
-    }
-
-    // -----------------------------------------------------------------------
-    // SetupCrashDumps — enable WER crash dumps for the target process.
-    // -----------------------------------------------------------------------
-    inline void SetupCrashDumps(const std::wstring& auditLogPath,
-                                 const std::wstring& dumpPath,
-                                 const std::wstring& exePath,
-                                 std::wstring& crashExeName,
-                                 bool& crashDumpsEnabled)
-    {
-        crashExeName.clear();
-        crashDumpsEnabled = false;
-        if (auditLogPath.empty() && dumpPath.empty()) return;
-
-        auto slash = exePath.find_last_of(L"\\/");
-        crashExeName = (slash != std::wstring::npos) ? exePath.substr(slash + 1) : exePath;
-        // Persist HKCU ownership BEFORE enabling HKLM — crash-safe ordering.
-        // If power is lost after HKCU but before HKLM, cleanup sees a dangling
-        // ownership entry and harmlessly removes it.
-        PersistWERExeName(crashExeName);
-        crashDumpsEnabled = EnableCrashDumps(crashExeName);
-        g_logger.Log(crashDumpsEnabled ? L"WER_DUMP: enabled" : L"WER_DUMP: failed to enable");
-        if (!crashDumpsEnabled)
-            ClearWERExeName();  // undo ownership if HKLM setup failed
-    }
-
-    // -----------------------------------------------------------------------
-    // FinalizeAuditAndDumps — stop Procmon, report crash dumps, clean WER.
-    // -----------------------------------------------------------------------
-    inline void FinalizeAuditAndDumps(bool auditActive,
-                                       const std::wstring& procmonExe,
-                                       const std::wstring& auditLogPath,
-                                       const std::wstring& auditPmlPath,
-                                       const std::wstring& dumpPath,
-                                       bool crashDumpsEnabled,
-                                       const std::wstring& crashExeName,
-                                       DWORD childPid, DWORD exitCode)
-    {
-        if (auditActive) {
-            std::string processTree = StopProcmonAudit(procmonExe, auditLogPath, auditPmlPath, childPid);
-            if (!processTree.empty()) {
-                g_logger.Log(L"--- Process Tree ---");
-                int len = MultiByteToWideChar(CP_ACP, 0, processTree.c_str(), -1, nullptr, 0);
-                std::wstring wTree(len, L'\0');
-                MultiByteToWideChar(CP_ACP, 0, processTree.c_str(), -1, &wTree[0], len);
-                while (!wTree.empty() && (wTree.back() == L'\0' || wTree.back() == L'\n'))
-                    wTree.pop_back();
-                g_logger.Log(wTree.c_str());
-            }
-        }
-
-        if (crashDumpsEnabled) {
-            if (IsCrashExitCode(exitCode)) {
-                Sleep(2000);
-                std::wstring reportTarget = !dumpPath.empty() ? dumpPath : auditLogPath;
-                std::wstring foundDump = ReportCrashDump(crashExeName, reportTarget, childPid);
-                if (!foundDump.empty()) {
-                    g_logger.Log((L"DUMP: captured -> " + foundDump).c_str());
+                rc = GrantObjectAccess(pSid, targetFolder, AccessLevel::Read, RecordGrantCallback);
+                if (rc == ERROR_SUCCESS) {
+                    g_logger.Log((L"GRANT_AUTO: [R] " + targetFolder).c_str());
                 } else {
-                    g_logger.Log(L"DUMP: process crashed but no dump generated");
+                    g_logger.LogFmt(L"GRANT_AUTO: [R] %s -> FAILED (0x%08X: %s)",
+                                    targetFolder.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+                    ok = false;
                 }
             }
-            // Reference-counted cleanup: clear our tracking entry first,
-            // then only delete the shared HKLM LocalDumps key if we're the
-            // last Sandy instance tracking this exe name.
-            ClearWERExeName();
-            int liveRefs = CountLiveWERReferences(crashExeName);
-            if (liveRefs == 0) {
-                DisableCrashDumps(crashExeName);
-                g_logger.Log((L"WER_CLEANUP: " + crashExeName + L" (last owner, HKLM key deleted)").c_str());
-            } else {
-                g_logger.LogFmt(L"WER_CLEANUP: %ls SKIPPED (%d live owner(s) remain)",
-                                crashExeName.c_str(), liveRefs);
-            }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // TeardownAuditAndDumps — symmetric abort-path cleanup for Procmon/WER.
-    //
-    // F3/R11: After SetupAudit and SetupCrashDumps succeed, any later abort
-    // (stdin, launch, job, watchdog, dynamic) must tear down both features.
-    // Previously each abort path hand-coded partial WER cleanup but none
-    // stopped Procmon.  This single helper replaces all of them.
-    // -----------------------------------------------------------------------
-    inline void TeardownAuditAndDumps(bool auditActive,
-                                      const std::wstring& procmonExe,
-                                      const std::wstring& auditPmlPath,
-                                      bool crashDumpsEnabled,
-                                      const std::wstring& crashExeName)
-    {
-        if (auditActive && !procmonExe.empty()) {
-            RunProcAndWait(L"\"" + procmonExe + L"\" /Terminate", 10000, procmonExe);
-            WaitForProcmonExit(10000);
-            if (!auditPmlPath.empty())
-                DeleteFileW(auditPmlPath.c_str());
-            g_logger.Log(L"TEARDOWN: Procmon stopped (abort path)");
-        }
-        if (crashDumpsEnabled) {
-            ClearWERExeName();
-            if (CountLiveWERReferences(crashExeName) == 0)
-                DisableCrashDumps(crashExeName);
-        }
+        return ok;
     }
 
     // -----------------------------------------------------------------------
@@ -453,19 +336,28 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // PipelineContext — carries pre-created state for profile mode.
+    // ExecutionIdentity — ownership model for one sandbox run.
     //
-    // Normal mode:  pSid=nullptr, hToken=nullptr, profileMode=false
-    //               → RunPipeline creates SID/token in Phase 1.
-    // Profile mode: pSid=<profile SID>, hToken=<restricted token or nullptr>,
-    //               profileMode=true
-    //               → RunPipeline skips SID creation, skips grants, skips
-    //                 grant revocation on cleanup.
+    // This is more explicit than the old "profile mode" switch:
+    // it tells the pipeline who owns the SID/container/grants and therefore
+    // which parts of cleanup are legal for this run to perform.
+    //
+    // Transient run:
+    //   pSid/hToken may be empty on entry and will be created by RunPipeline.
+    //   grantsPreexisting = false, deleteContainerOnExit = true for AC.
+    //
+    // Persistent profile run:
+    //   pSid/hToken/containerName are pre-resolved by the caller.
+    //   grantsPreexisting = true, deleteContainerOnExit = false.
     // -----------------------------------------------------------------------
-    struct PipelineContext {
-        PSID   pSid = nullptr;           // pre-created SID (profile mode)
-        HANDLE hToken = nullptr;         // pre-created restricted token (profile RT mode)
-        bool   profileMode = false;      // skip grants + revocation
+    struct ExecutionIdentity {
+        PSID         pSid = nullptr;
+        HANDLE       hToken = nullptr;
+        std::wstring containerName;
+        std::wstring profileName;
+        bool         persistentProfile = false;
+        bool         grantsPreexisting = false;
+        bool         deleteContainerOnExit = false;
     };
 
     // -----------------------------------------------------------------------
@@ -610,7 +502,7 @@ namespace Sandbox {
             // Apply new deny entries
             for (const auto& d : addedDenies) {
                 DWORD rc = DenyObjectAccess(ctx->pSid, d.path, d.access,
-                                            ctx->isAppContainer, RecordGrantCallback);
+                                            RecordGrantCallback);
                 if (rc == ERROR_SUCCESS) {
                     g_logger.LogFmt(L"DYNAMIC_GRANT: [deny] %s -> OK", d.path.c_str());
                     grantCount++;
@@ -639,7 +531,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_FIXUP: strip deny + re-grant [%s] %s",
                                     AccessTag(existing.access), existing.path.c_str());
                     RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, L"", isPeek);
+                                     true, isPeek);
                     DWORD rc = GrantObjectAccess(ctx->pSid, existing.path, existing.access,
                                                  RecordGrantCallback);
                     if (rc == ERROR_SUCCESS) {
@@ -666,7 +558,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_STRIP: %s (%s)",
                                     a.path.c_str(), isPeek ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(a.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, L"", isPeek);
+                                     true, isPeek);
                 }
 
                 DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback);
@@ -740,21 +632,19 @@ namespace Sandbox {
     // Phases:
     //   1. SETUP    — create token/SID, log mode
     //   2. GRANT    — apply ALLOW ACEs, DENY ACEs, registry, desktop
-    //   3. PREPARE  — capabilities, env, audit, pipes
+    //   3. PREPARE  — capabilities, environment, stdin, launch attributes
     //   4. LAUNCH   — create process, job, resume, relay output
     //   5. CLEANUP  — revoke grants, delete profile, free resources
     //
     // Mode-specific steps are marked with [AC] or [RT] comments.
-    // Profile mode skips grant application (Phase 2) and revocation (Phase 5).
+    // Ownership-specific behavior comes from ExecutionIdentity rather than
+    // from a bolted-on "profile mode" switch.
     // =====================================================================
     inline int RunPipeline(const SandboxConfig& config,
                             const std::wstring& exePath,
                             const std::wstring& exeArgs,
-                            const std::wstring& containerName,
                             const std::wstring& exeFolder,
-                            const std::wstring& auditLogPath,
-                            const std::wstring& dumpPath,
-                            const PipelineContext& ctx = {},
+                            const ExecutionIdentity& identity,
                             bool dynamic = false,
                             const std::wstring& configPath = L"")
     {
@@ -769,13 +659,12 @@ namespace Sandbox {
 
         PSID pSid = nullptr;
         HANDLE hRestrictedToken = nullptr;
+        std::wstring containerName = identity.containerName;
 
-        if (ctx.pSid) {
-            // Profile mode: SID and token are pre-created by caller
-            pSid = ctx.pSid;
-            hRestrictedToken = ctx.hToken;
+        if (identity.pSid) {
+            pSid = identity.pSid;
+            hRestrictedToken = identity.hToken;
         } else {
-            // Normal mode: create fresh SID/token
             auto setup = isAppContainer
                 ? SetupAppContainer(containerName, guard)
                 : SetupRestrictedToken(config, guard);
@@ -786,22 +675,34 @@ namespace Sandbox {
 
         g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
 
+        auto AbortBeforeLaunch = [&](int exitCode, const wchar_t* reason) -> int {
+            if (isAppContainer && identity.deleteContainerOnExit && !containerName.empty()) {
+                TeardownTransientContainerForCurrentRun(containerName, L"ABORT_BEFORE_LAUNCH");
+            }
+            guard.RunAll();
+            DeleteCleanupTask(g_instanceId);
+            g_logger.Log(reason);
+            g_logger.Stop();
+            return exitCode;
+        };
+
         // =================================================================
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
         // =================================================================
 
-        if (ctx.profileMode) {
-            // Profile mode: ACLs are persistent from --create-profile
-            g_logger.Log(L"GRANTS: skipped (persistent profile)");
+        if (identity.grantsPreexisting) {
+            g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
         } else {
             ULONGLONG tGrantStart = GetTickCount64();
             ResetGrantTrackingHealth();
+            guard.Add([]() { RevokeAllGrants(); });
 
             // Step 2a: Auto-grant read access to exe folders
-            AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
+            bool grantFailed = !AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
 
             // Step 2b: Apply depth-sorted access pipeline (allow + deny, most specific wins)
-            bool grantFailed = !ApplyAccessPipeline(pSid, config, isAppContainer);
+            if (!ApplyAccessPipeline(pSid, config, isAppContainer))
+                grantFailed = true;
 
             // Step 2c: [RT] Grant registry access
             if (isRestricted) {
@@ -814,11 +715,9 @@ namespace Sandbox {
             }
 
             if (grantFailed) {
-                g_logger.Log(L"WARNING: some grants failed (need Administrator)");
+                g_logger.Log(L"ERROR: grant setup incomplete — aborting before launch");
+                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (grant setup failure)");
             }
-
-            // Register grant revocation in guard (runs on any exit)
-            guard.Add([]() { RevokeAllGrants(); });
 
             g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
         }
@@ -827,16 +726,25 @@ namespace Sandbox {
 
         // [RT] Grant desktop access for the restricted token
         if (isRestricted) {
-            GrantDesktopAccess(pSid);
+            if (!GrantDesktopAccess(pSid))
+                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (desktop grant failure)");
             g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
             guard.Add([]() { RevokeDesktopAccess(); });
         }
 
         // [AC] Enable loopback if requested
         if (isAppContainer && config.allowLocalhost) {
-            bool ok = EnableLoopback(containerName);
-            g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
-            guard.Add([]() { DisableLoopback(); });
+            bool ok = identity.persistentProfile
+                ? EnsureProfileLoopback(containerName)
+                : EnableRunLoopback(containerName);
+            g_logger.Log(ok ? (identity.persistentProfile
+                               ? L"LOOPBACK: ensured (profile-owned)"
+                               : L"LOOPBACK: enabled")
+                            : L"LOOPBACK: FAILED (need Administrator)");
+            if (!ok)
+                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (loopback setup failure)");
+            if (!identity.persistentProfile)
+                guard.Add([]() { DisableLoopback(); });
         }
 
         // =================================================================
@@ -857,7 +765,8 @@ namespace Sandbox {
         // Step 3b: Build attribute list
         AttributeListState attrs = BuildAttributeList(config,
             isAppContainer ? &sc : nullptr, isRestricted);
-        if (!attrs.valid) return SandyExit::SetupError;
+        if (!attrs.valid)
+            return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (attribute list failure)");
         guard.Add([&attrs]() { FreeAttributeList(attrs); });
 
         // Step 3c: Log stdin, build environment, print config summary
@@ -867,36 +776,10 @@ namespace Sandbox {
         if (!g_logger.IsActive())
             PrintConfigSummary(config, exePath, exeArgs, isRestricted);
 
-        // Step 3d: Setup audit and crash dumps
-        std::wstring procmonExe;
-        bool auditActive = false;
-        std::wstring auditPmlPath;
-        // F3/R10: Fail-closed — abort if requested audit cannot start
-        if (!SetupAudit(auditLogPath, procmonExe, auditActive, auditPmlPath)) {
-            fprintf(stderr, "Error: audit capture requested but could not be started.\n");
-            guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
-            g_logger.Log(L"CLEANUP: complete (audit startup failure)");
-            g_logger.Stop();
-            return SandyExit::SetupError;
-        }
-
-        std::wstring crashExeName;
-        bool crashDumpsEnabled = false;
-        SetupCrashDumps(auditLogPath, dumpPath, exePath, crashExeName, crashDumpsEnabled);
-
-        // Step 3e: Setup stdin handle
+        // Step 3d: Setup stdin handle
         HANDLE hStdin = nullptr, hStdinFile = nullptr;
-        if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile)) {
-            // F3/R11: Symmetric teardown for Procmon and WER on stdin failure
-            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                  crashDumpsEnabled, crashExeName);
-            guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
-            g_logger.Log(L"CLEANUP: complete (stdin setup failure)");
-            g_logger.Stop();
-            return SandyExit::SetupError;
-        }
+        if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile))
+            return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (stdin setup failure)");
 
         // =================================================================
         // PHASE 4: LAUNCH & RUN
@@ -925,13 +808,7 @@ namespace Sandbox {
                         g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
                                         expectedIL, actualIL);
                         if (hStdinFile) CloseHandle(hStdinFile);
-                        // F3/R11: Symmetric teardown on token validation failure
-                        TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                              crashDumpsEnabled, crashExeName);
-                        guard.RunAll();
-                        DeleteCleanupTask(g_instanceId);
-                        g_logger.Stop();
-                        return SandyExit::SetupError;
+                        return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (token validation failure)");
                     }
                     g_logger.LogFmt(L"TOKEN_VALIDATE: OK (IL=0x%04X)", actualIL);
                 }
@@ -939,6 +816,7 @@ namespace Sandbox {
         }
 
         // Step 4a: Launch the child process (suspended, console passthrough)
+        HANDLE hJob = nullptr;
         PROCESS_INFORMATION pi{};
         bool launched = LaunchChildProcess(
             isRestricted,
@@ -953,12 +831,8 @@ namespace Sandbox {
             DWORD launchErr = GetLastError();
             g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
             g_logger.LogSummary(launchErr, false, 0);
-            // [AC] Delete profile on launch failure (normal mode only)
-            if (isAppContainer && !ctx.profileMode)
-                DeleteAppContainerProfile(containerName.c_str());
-            // F3/R11: Symmetric teardown on launch failure
-            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                  crashDumpsEnabled, crashExeName);
+            if (isAppContainer && identity.deleteContainerOnExit)
+                TeardownTransientContainerForCurrentRun(containerName, L"LAUNCH_FAILURE");
             guard.RunAll();
             DeleteCleanupTask(g_instanceId);
             g_logger.Log(L"CLEANUP: complete (launch failure)");
@@ -969,36 +843,42 @@ namespace Sandbox {
             return notFound ? SandyExit::NotFound : SandyExit::CannotExec;
         }
 
-        // Step 4b: Assign job object for resource limits
-        HANDLE hJob = AssignJobObject(config, pi.hProcess);
-        bool jobNeeded = (config.memoryLimitMB > 0 || config.maxProcesses > 0 ||
-                          !config.allowClipboardRead || !config.allowClipboardWrite);
-        if (jobNeeded && !hJob) {
-            g_logger.Log(L"ERROR: job object assignment failed — aborting (limits NOT enforced)");
-            TerminateProcess(pi.hProcess, SandyExit::SetupError);
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-            if (isAppContainer && !ctx.profileMode)
-                DeleteAppContainerProfile(containerName.c_str());
-            // F3/R11: Symmetric teardown on job assignment failure
-            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                  crashDumpsEnabled, crashExeName);
+        auto AbortAfterChildLaunch = [&](DWORD terminateCode,
+                                         const wchar_t* cleanupReason,
+                                         const wchar_t* containerContext,
+                                         int sandyExit = SandyExit::SetupError) -> int {
+            g_childProcess = nullptr;
+            g_childJob = nullptr;
+            AbortLaunchedChild(pi, hJob, terminateCode);
+            if (isAppContainer && identity.deleteContainerOnExit)
+                TeardownTransientContainerForCurrentRun(containerName, containerContext);
             guard.RunAll();
             DeleteCleanupTask(g_instanceId);
-            g_logger.Log(L"CLEANUP: complete (job assignment failure)");
+            g_logger.Log(cleanupReason);
             g_logger.Stop();
-            return SandyExit::SetupError;
+            return sandyExit;
+        };
+
+        // Step 4b: Assign job object for resource limits
+        hJob = AssignJobObject(config, pi.hProcess);
+        bool jobNeeded = NeedJobTracking(config);
+        if (jobNeeded && !hJob) {
+            g_logger.Log(L"ERROR: job object assignment failed — aborting (limits NOT enforced)");
+            return AbortAfterChildLaunch(SandyExit::SetupError,
+                                         L"CLEANUP: complete (job assignment failure)",
+                                         L"JOB_ASSIGN_FAILURE");
         }
 
         // Expose child handle for emergency cleanup (Ctrl+C / SEH)
         g_childProcess = pi.hProcess;
+        g_childJob = hJob;
 
         // Step 4c: Resume child and start timeout watchdog
         ResumeThread(pi.hThread);
         g_logger.Log(L"CHILD: resumed");
-        CloseHandle(pi.hThread);
+        CloseHandleIfValid(pi.hThread);
 
-        TimeoutContext timeoutCtx = { pi.hProcess, config.timeoutSeconds, false };
+        TimeoutContext timeoutCtx = { pi.hProcess, hJob, config.timeoutSeconds, false };
         HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
 
         // F4/R8: Fail closed — if timeout is configured but watchdog couldn't
@@ -1006,43 +886,24 @@ namespace Sandbox {
         // it immediately to prevent running without time limits.
         if (config.timeoutSeconds > 0 && !hTimeoutThread) {
             g_logger.Log(L"ERROR: timeout configured but watchdog thread failed — aborting");
-            TerminateProcess(pi.hProcess, SandyExit::SetupError);
-            WaitForSingleObject(pi.hProcess, 5000);
-            CloseHandle(pi.hProcess);
-            if (hJob) CloseHandle(hJob);
-            // F3/R11: Symmetric teardown on watchdog failure
-            TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                  crashDumpsEnabled, crashExeName);
-            guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
-            g_logger.Log(L"CLEANUP: complete (watchdog failure)");
-            g_logger.Stop();
-            return SandyExit::SetupError;
+            return AbortAfterChildLaunch(SandyExit::SetupError,
+                                         L"CLEANUP: complete (watchdog failure)",
+                                         L"WATCHDOG_FAILURE");
         }
 
         // Step 4d: [DYNAMIC] Start config watcher if enabled
         HANDLE hDynamicThread = nullptr;
         HANDLE hStopEvent = nullptr;
         DynamicContext dynCtx{};
-        if (dynamic && !configPath.empty() && !ctx.profileMode) {
+        if (dynamic && !configPath.empty() && !identity.grantsPreexisting) {
             hStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             // F5/R10: Fail-closed — abort if event creation fails
             if (!hStopEvent) {
                 fprintf(stderr, "Error: dynamic config reload requested but event creation failed.\n");
                 g_logger.LogFmt(L"DYNAMIC: CreateEventW failed (error %lu)", GetLastError());
-                TerminateProcess(pi.hProcess, 1);
-                WaitForSingleObject(pi.hProcess, 5000);
-                g_childProcess = nullptr;
-                CloseHandle(pi.hProcess);
-                if (hJob) CloseHandle(hJob);
-                // F3/R11: Symmetric teardown on dynamic event failure
-                TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                      crashDumpsEnabled, crashExeName);
-                guard.RunAll();
-                DeleteCleanupTask(g_instanceId);
-                g_logger.Log(L"CLEANUP: complete (dynamic event failure)");
-                g_logger.Stop();
-                return SandyExit::SetupError;
+                return AbortAfterChildLaunch(1,
+                                             L"CLEANUP: complete (dynamic event failure)",
+                                             L"DYNAMIC_EVENT_FAILURE");
             }
             dynCtx.pSid = pSid;
             // Convert SID to string for RevokeGrant calls
@@ -1065,26 +926,18 @@ namespace Sandbox {
                 fprintf(stderr, "Error: dynamic config reload requested but watcher thread failed to start.\n");
                 g_logger.LogFmt(L"DYNAMIC: CreateThread failed (error %lu)", GetLastError());
                 CloseHandle(hStopEvent);
-                TerminateProcess(pi.hProcess, 1);
-                WaitForSingleObject(pi.hProcess, 5000);
-                g_childProcess = nullptr;
-                CloseHandle(pi.hProcess);
-                if (hJob) CloseHandle(hJob);
-                // F3/R11: Symmetric teardown on dynamic watcher failure
-                TeardownAuditAndDumps(auditActive, procmonExe, auditPmlPath,
-                                      crashDumpsEnabled, crashExeName);
-                guard.RunAll();
-                DeleteCleanupTask(g_instanceId);
-                g_logger.Log(L"CLEANUP: complete (dynamic watcher failure)");
-                g_logger.Stop();
-                return SandyExit::SetupError;
+                return AbortAfterChildLaunch(1,
+                                             L"CLEANUP: complete (dynamic watcher failure)",
+                                             L"DYNAMIC_WATCHER_FAILURE");
             }
         }
 
         // Step 4e: Wait for child exit (console passthrough — no pipe relay)
         DWORD exitCode = WaitForChildExit(pi.hProcess,
+                                           hJob,
                                            hTimeoutThread, timeoutCtx,
-                                           config.timeoutSeconds);
+                                           config.timeoutSeconds,
+                                           config.allowChildProcesses);
 
         // Stop dynamic watcher
         if (hDynamicThread) {
@@ -1099,7 +952,7 @@ namespace Sandbox {
         // PHASE 5: CLEANUP (guard handles grants, SID, token, caps, attrs)
         // =================================================================
 
-        // Step 5a: Log summary and finalize audit/dumps
+        // Step 5a: Log summary and classify the exit
         g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
         if (timeoutCtx.timedOut)
             g_logger.Log(L"EXIT_CLASS: TIMEOUT");
@@ -1109,26 +962,21 @@ namespace Sandbox {
             g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
         else
             g_logger.Log(L"EXIT_CLASS: CLEAN");
-        FinalizeAuditAndDumps(auditActive, procmonExe, auditLogPath, auditPmlPath, dumpPath,
-                              crashDumpsEnabled, crashExeName, pi.dwProcessId, exitCode);
 
         // Step 5b: Close process and job handles
         g_childProcess = nullptr;  // clear before close — emergency path must not use stale handle
-        CloseHandle(pi.hProcess);
-        if (hJob) CloseHandle(hJob);
+        g_childJob = nullptr;
+        ReleaseLaunchedChildHandles(pi, hJob);
 
         // Step 5c: Mode-specific cleanup
-        if (ctx.profileMode)
-            g_logger.Log(L"CLEANUP: starting (profile — grants preserved)");
+        if (identity.persistentProfile)
+            g_logger.Log(L"CLEANUP: starting (persistent profile ownership)");
         else
             g_logger.Log(L"CLEANUP: starting");
         DWORD cleanupStart = GetTickCount();
 
-        // [AC] Delete AppContainer profile (normal mode only)
-        if (isAppContainer && !ctx.profileMode) {
-            HRESULT hrDel = DeleteAppContainerProfile(containerName.c_str());
-            g_logger.Log((L"PROFILE_DELETE: " + containerName +
-                (SUCCEEDED(hrDel) ? L" -> OK" : L" -> FAILED")).c_str());
+        if (isAppContainer && identity.deleteContainerOnExit) {
+            TeardownTransientContainerForCurrentRun(containerName, L"NORMAL_CLEANUP");
         }
 
         // Run all guard cleanups explicitly (RevokeAllGrants, RevokeDesktopAccess,
@@ -1158,47 +1006,55 @@ namespace Sandbox {
     // Forward declaration — defined in SandboxSavedProfile.h
     inline void CleanStagingProfiles();
 
-    // =====================================================================
-    // RunSandboxed — common entry point.
-    //
-    // Instance-wide setup (ID, logger, stale state) then RunPipeline().
-    // =====================================================================
-    inline int RunSandboxed(const SandboxConfig& config,
-                            const std::wstring& exePath,
-                            const std::wstring& exeArgs,
-                            const std::wstring& auditLogPath = L"",
-                            const std::wstring& dumpPath = L"",
-                            bool dynamic = false,
-                            const std::wstring& configPath = L"")
+    inline void BeginRunSession(const std::wstring& exePath,
+                                const std::wstring& configSource,
+                                const std::wstring& profileName = L"",
+                                bool dynamic = false)
     {
-        // --- Generate instance ID (UUID) for this run ---
-        g_instanceId = GenerateInstanceId();
-        std::wstring containerName = ContainerNameFromId(g_instanceId);
-
-        // --- Determine working directory ---
-        std::wstring exeFolder = config.workdir.empty() ? GetExeFolder() : config.workdir;
-        if (exeFolder.empty())
-            return SandyExit::SetupError;
-
-        // --- Logger is already started by sandy.cpp (early init) ---
-
-        // --- Common startup: clean stale state, warn, create safety net ---
+        ResetGrantMetadataPreservation();
         CleanupStaleStartupState(exePath);
         CleanStagingProfiles();
-        RestoreStaleGrants();  // F3/R9: retry deferred stale cleanup on every normal startup
+        RestoreStaleGrants();
         WarnStaleRegistryEntries();
         CreateCleanupTask(g_instanceId);
         LogSandyIdentity();
         g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
-        if (!config.configSource.empty())
-            g_logger.Log((L"CONFIG_SOURCE: " + config.configSource).c_str());
+        if (!profileName.empty())
+            g_logger.Log((L"PROFILE: " + profileName).c_str());
+        if (!configSource.empty())
+            g_logger.Log((L"CONFIG_SOURCE: " + configSource).c_str());
         if (dynamic)
             g_logger.Log(L"DYNAMIC: enabled (live config reload)");
+    }
 
-        // --- Run the unified pipeline ---
-        return RunPipeline(config, exePath, exeArgs, containerName,
-                            exeFolder, auditLogPath, dumpPath, {},
-                            dynamic, configPath);
+    // =====================================================================
+    // RunSandboxed — common entry point.
+    //
+    // Ephemeral compatibility path. Creates a transient execution identity,
+    // then runs through the same ownership-driven pipeline as saved profiles.
+    // =====================================================================
+    inline int RunSandboxed(const SandboxConfig& config,
+                            const std::wstring& exePath,
+                            const std::wstring& exeArgs,
+                            bool dynamic = false,
+                            const std::wstring& configPath = L"")
+    {
+        g_instanceId = GenerateInstanceId();
+
+        std::wstring exeFolder = config.workdir.empty() ? GetInheritedWorkdir() : config.workdir;
+        if (exeFolder.empty())
+            return SandyExit::SetupError;
+
+        BeginRunSession(exePath, config.configSource, L"", dynamic);
+
+        ExecutionIdentity identity;
+        identity.containerName = ContainerNameFromId(g_instanceId);
+        identity.persistentProfile = false;
+        identity.grantsPreexisting = false;
+        identity.deleteContainerOnExit = (config.tokenMode == TokenMode::AppContainer);
+
+        return RunPipeline(config, exePath, exeArgs, exeFolder,
+                           identity, dynamic, configPath);
     }
 
     // -----------------------------------------------------------------------
@@ -1212,11 +1068,22 @@ namespace Sandbox {
     {
         g_logger.Log(L"EMERGENCY_CLEANUP: starting");
 
-        // Step 0: Terminate child before revoking any sandbox state.
-        // Without this, a child that survives Ctrl+C would lose access
-        // mid-execution, causing erratic failures.
+        // Step 0: terminate the owned process tree before revoking sandbox state.
+        // The job object is the authoritative run lifetime when child processes
+        // are allowed. Falling back to the root process alone is only for paths
+        // that never created a job.
         HANDLE hChild = g_childProcess;
-        if (hChild) {
+        HANDLE hJob = g_childJob;
+        if (hJob) {
+            g_logger.Log(L"EMERGENCY_CLEANUP: terminating sandbox job");
+            TerminateJobObject(hJob, 1);
+            if (!WaitForJobTreeExit(hJob, 5000)) {
+                g_logger.Log(L"EMERGENCY_CLEANUP: job did not quiesce within 5s, deferring cleanup to next run");
+                g_logger.Stop();
+                return;
+            }
+            g_logger.Log(L"EMERGENCY_CLEANUP: sandbox job terminated");
+        } else if (hChild) {
             g_logger.Log(L"EMERGENCY_CLEANUP: terminating child process");
             TerminateProcess(hChild, 1);
             DWORD waitResult = WaitForSingleObject(hChild, 5000);
@@ -1235,12 +1102,11 @@ namespace Sandbox {
         DisableLoopback();
         std::wstring containerName = ContainerNameFromId(g_instanceId);
         if (!containerName.empty()) {
-            HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
-            g_logger.Log((L"PROFILE_DELETE: " + containerName +
-                (SUCCEEDED(hr) ? L" -> OK" : L" -> FAILED")).c_str());
+            if (!DeleteTransientContainerNow(containerName, L"EMERGENCY_CLEANUP")) {
+                PersistTransientContainerCleanup(g_instanceId, containerName);
+            }
         }
         RestoreStaleGrants();
-        RestoreStaleWER();
         DeleteStaleCleanupTasks();
         g_logger.Log(L"EMERGENCY_CLEANUP: complete");
         g_logger.Stop();

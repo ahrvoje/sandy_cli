@@ -36,9 +36,6 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring configPath;
     std::wstring configString;
     std::wstring logPath;
-    std::wstring auditLogPath;
-    std::wstring tracePath;
-    std::wstring dumpPath;
     std::wstring exePath;
     std::wstring exeArgs;
     std::wstring profileName;
@@ -163,20 +160,11 @@ static int RunMain(int argc, wchar_t* argv[])
         else if ((arg == L"-l" || arg == L"--log") && i + 1 < argc) {
             logPath = argv[++i];
         }
-        else if ((arg == L"-a" || arg == L"--audit") && i + 1 < argc) {
-            auditLogPath = argv[++i];
-        }
-        else if ((arg == L"-t" || arg == L"--trace") && i + 1 < argc) {
-            tracePath = argv[++i];
-        }
         else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
             profileName = argv[++i];
         }
         else if (arg == L"--create-profile" && i + 1 < argc) {
             createProfileName = argv[++i];
-        }
-        else if ((arg == L"-d" || arg == L"--dump") && i + 1 < argc) {
-            dumpPath = argv[++i];
         }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             exePath = argv[++i];
@@ -196,16 +184,6 @@ static int RunMain(int argc, wchar_t* argv[])
             PrintUsage(kVersion);
             return SandyExit::InternalError;
         }
-    }
-
-    // --- Trace mode (no config needed) ---
-    if (!tracePath.empty()) {
-        if (exePath.empty()) {
-            fprintf(stderr, "Error: -t requires -x <executable>.\n\n");
-            PrintUsage(kVersion);
-            return SandyExit::InternalError;
-        }
-        return RunTrace(exePath, exeArgs, tracePath);
     }
 
     // --- Create profile mode (needs -c, no -x) ---
@@ -247,7 +225,7 @@ static int RunMain(int argc, wchar_t* argv[])
         prof.config.configSource = L"profile:" + profileName;
         if (!logPath.empty())
             g_logger.Start(logPath);
-        int result = RunWithProfile(prof, exePath, exeArgs, auditLogPath, dumpPath);
+        int result = RunWithProfile(prof, exePath, exeArgs);
         g_logger.Stop();
         return result;
     }
@@ -300,8 +278,6 @@ static int RunMain(int argc, wchar_t* argv[])
             return std::wstring(prefix) + path;
         };
         logPath = stampPath(logPath);
-        auditLogPath = stampPath(auditLogPath);
-        dumpPath = stampPath(dumpPath);
     }
 
     // --- Start logger early so config parser warnings go to log ---
@@ -338,8 +314,7 @@ static int RunMain(int argc, wchar_t* argv[])
     // --- Run sandboxed ---
     // cleanup() inside RunSandboxed handles ACL restore, loopback, AppContainer.
     // CleanupSandbox() remains as safety net for CTRL+C / SEH crash paths only.
-    return RunSandboxed(config, exePath, exeArgs, auditLogPath, dumpPath,
-                        dynamic, configPath);
+    return RunSandboxed(config, exePath, exeArgs, dynamic, configPath);
 }
 
 // -----------------------------------------------------------------------

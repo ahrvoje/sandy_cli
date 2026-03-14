@@ -262,7 +262,7 @@ echo --- S6: LogFmt Session Markers ---
 REM Use lightweight cmd.exe config for speed
 set LOGFMT_LOG=%TEMP%\sandy_logfmt_test.txt
 set QUICK_CONFIG=%~dp0test_hardening_quick.toml
-"!SANDY!" -c "!QUICK_CONFIG!" -l "!LOGFMT_LOG!" -x "C:\Windows\System32\cmd.exe" -- /c exit >nul 2>nul
+"!SANDY!" -c "!QUICK_CONFIG!" -l "!LOGFMT_LOG!" -x "!PYTHON!" "%~dp0test_hardening_exit.py" >nul 2>nul
 
 REM Find log file — may have timestamp suffix
 set LOG_FOUND=

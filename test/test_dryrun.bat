@@ -195,8 +195,9 @@ REM ===================================================================
 echo.
 echo --- DR5: --dry-run --create-profile (existing profile = error) ---
 
-REM Create the real profile first
-"!SANDY!" --create-profile dr_test -c "!AC_CONFIG!" >nul 2>nul
+REM Create the profile registry key directly (--create-profile may fail on
+REM System32 ACLs without admin; the dry-run check only needs the registry entry)
+reg add "HKCU\Software\Sandy\Profiles\dr_test" /v _token /t REG_SZ /d "appcontainer" /f >nul 2>nul
 
 "!SANDY!" --dry-run --create-profile dr_test -c "!AC_CONFIG!" >nul 2>"%TEMP%\sandy_dr5.txt"
 if !ERRORLEVEL! NEQ 0 (

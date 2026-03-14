@@ -24,7 +24,7 @@ token = 'appcontainer'
 # delete  = []              # delete only (recursive)
 # all     = []              # full access (recursive)
 
-# [deny]                    # optional, default: no denies
+# [deny] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown

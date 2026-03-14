@@ -1,4 +1,4 @@
-"""Test nuanced ACL grants with complex overlapping allow/deny.
+"""Test nuanced ACL grants with selective per-subfolder allows (AC mode).
 
 Folder tree (created by test_acl_grants.bat):
   test_acl/
@@ -66,18 +66,18 @@ test("src: create file", True, lambda: open(p('workspace','src','new.tmp'),'w').
 test("src: delete file", True, lambda: os.remove(p('workspace','src','new.tmp')))
 
 # ================================================================
-# GROUP 2: workspace/build — [deny] write overrides inherited all
-#   Read/list OK, write/create BLOCKED, delete OK (DELETE != WRITE)
+# GROUP 2: workspace/build — [allow] read only
+#   Read/list OK, write/create/delete BLOCKED (no write or delete grant)
 # ================================================================
-print("--- workspace/build (allow.all + deny.write) ---")
+print("--- workspace/build (allow.read) ---")
 test("build: list dir",      True,  lambda: os.listdir(p('workspace','build')))
 test("build: read file",     True,  lambda: open(p('workspace','build','artifact.bin'),'r').read())
 test("build: overwrite file", False, lambda: open(p('workspace','build','artifact.bin'),'w').write('hack'))
 test("build: create file",   False, lambda: open(p('workspace','build','deny_test.tmp'),'w').write('x'))
-test("build: delete file",   True,  lambda: os.remove(p('workspace','build','artifact.bin')))
+test("build: delete file",   False, lambda: os.remove(p('workspace','build','artifact.bin')))
 
 # ================================================================
-# GROUP 3: workspace/secrets — [deny] all overrides inherited all
+# GROUP 3: workspace/secrets — no grant (fully blocked in AC)
 #   EVERYTHING blocked
 # ================================================================
 print("--- workspace/secrets (allow.all + deny.all) ---")
@@ -98,8 +98,8 @@ test("public: create file",  False, lambda: open(p('data','public','new.tmp'),'w
 test("public: delete file",  False, lambda: os.remove(p('data','public','info.txt')))
 
 # ================================================================
-# GROUP 5: data/private — [deny] read overrides inherited read
-#   Deny > Allow: even though parent grants read, this path is denied
+# GROUP 5: data/private — no grant (fully blocked in AC)
+#   No access at all
 # ================================================================
 print("--- data/private (allow.read + deny.read = DENIED) ---")
 test("private: list dir",   False, lambda: os.listdir(p('data','private')))

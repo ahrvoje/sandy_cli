@@ -2,77 +2,72 @@
 description: Critical ACL design facts to avoid regressions in Sandy sandbox
 ---
 
-# Per-Instance Isolation — Unique SIDs
+# Ownership and SID Model
 
-Both sandbox modes now use per-instance SIDs for complete ACE isolation:
+Sandy now treats **profiles as first-class durable identities** and **runs as
+execution sessions** that may be either transient or profile-backed.
 
-**AppContainer mode:** Each instance generates a UUID-based container name
-(`Sandy_<uuid>`). `CreateAppContainerProfile` derives a unique SID
-(`S-1-15-2-*`) from this name.
+## AppContainer
 
-**Restricted Token mode:** Each instance generates a unique SID under
-`SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-<GUID-dwords>`). This is the
-Microsoft-designated authority for third-party resource managers — zero
-collision risk with any OS SIDs. The instance SID is:
-- Used for all grant/deny operations (replaces the old shared `S-1-5-12`)
-- Added to the restricting SID list in `CreateRestrictedToken`
-- `S-1-5-12` remains in restricting SIDs for system object access only
+- **Transient run:** container name is `Sandy_<uuid>` and the SID is unique to that run.
+- **Saved profile:** container name is `Sandy_<name>` and the SID is durable for that profile.
 
-Sources for `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`{0,0,0,0,0,9}`):
-- [MS-DTYP §2.4.1 SID_IDENTIFIER_AUTHORITY](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/c6ce4275-3d90-4890-ab3a-514745e4637e) — Microsoft protocol spec listing all predefined SID identifier authorities
-- [SID_IDENTIFIER_AUTHORITY structure (winnt.h)](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-sid_identifier_authority) — Win32 API reference
-- Windows SDK `winnt.h` defines `SECURITY_RESOURCE_MANAGER_AUTHORITY` as `{0,0,0,0,0,9}` — authority value 9 is reserved for third-party resource managers and is not assigned to any Windows OS subsystem
+## Restricted Token
 
-This means for **both modes**:
+- Always uses a unique run SID under `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-*`).
+- `S-1-5-12` remains a restricting SID for system-object behavior only; it is not a grant owner SID.
 
-- ACL grants are per-instance — one instance's grants never leak to another.
-- Cleanup is per-instance — revoking one instance's grants doesn't affect others.
-- The registry tracks grants per instance under `HKCU\Software\Sandy\Grants\<uuid>`.
+**Never** collapse these back into a shared SID model. Cleanup and overlap safety
+rely on removing ACEs by the exact owning SID.
 
-**Never** revert to a fixed or shared SID. In RT mode, the old `S-1-5-12` as
-grant SID caused all instances to share ACEs, creating unsolvable DACL races.
+# What “Per-Instance” Means Now
 
-# Per-Instance Grants and Behavior
+- **Transient AppContainer:** grants are per run.
+- **Saved-profile AppContainer:** grants are per profile.
+- **Restricted Token:** grants are per run.
 
-Each Sandy instance applies its own config independently. Three concurrent
-instances can grant `read`, `write`, and `all` to the **same folder** and each
-will enforce different permissions. This is verified by `test_concurrent.bat`.
+Do not write logic that assumes all AppContainer grants are transient. Profile-owned
+ACL state is durable and must survive normal run exit.
 
-During cleanup, each instance removes only **its own ACEs** using `RemoveSidFromDacl`,
-which walks the DACL and removes ACEs matching the instance's SID. Since both
-modes now use unique SIDs, the `GetOtherInstancePathSids()` skip logic is only
-a safety net — two instances will never produce the same SID+path combination.
+# ACL Propagation — Inheritance-Based Model
 
-# ACL Propagation — TreeSetNamedSecurityInfoW
+## Grants and Cleanup: `SetNamedSecurityInfoW`
 
-Directory grants use `TreeSetNamedSecurityInfoW` (not `SetNamedSecurityInfoW`) to
-synchronously propagate OICI ACEs to all child files. `SetNamedSecurityInfoW` does
-NOT reliably propagate to existing children, causing `0xC0000022` failures in
-large directory trees (e.g. Python's 36K files).
+Directory grants and ACE removal use `SetNamedSecurityInfoW` (not `TreeSet`).
+The ACE has `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE` flags, so Windows
+auto-inheritance propagates it to existing descendants.
 
-This applies to all three DACL modification paths in `SandboxACL.h`:
-- `GrantObjectAccess` — grant (adds ACE)
-- `DenyObjectAccess` — deny (adds/modifies ACE)
-- `RemoveSidFromDacl` — cleanup (removes ACEs for a specific SID)
+Key property: auto-inheritance **skips** children with `PROTECTED_DACL` (e.g.
+deny paths from other instances). This makes multi-instance operations fully
+independent — each SID's grants and cleanup never disturb another SID's DACLs.
 
-**Never** replace `TreeSetNamedSecurityInfoW` with `SetNamedSecurityInfoW` for
-directories. File-only grants still use `SetNamedSecurityInfoW` (no children).
+## Deny: `SetNamedSecurityInfoW` (Restricted Token Only)
 
-# Access Level Permissions — Read vs Execute
+Deny rules use standard `DENY_ACCESS` ACEs via `SetNamedSecurityInfoW` with
+auto-inheritance. This is only supported in **Restricted Token** mode.
 
-**`read` does NOT grant `FILE_EXECUTE`.** This is intentional and critical.
+> [!CAUTION]
+> The Windows kernel **ignores** DENY ACEs for AppContainer SIDs (`S-1-15-2-*`).
+> Sandy rejects `[deny]` for AppContainer mode at config validation time.
 
-Any directory containing executables or DLLs that need to be **loaded** (Python,
-Node, compilers) must use `execute`, not `read`, in the config:
+## Rules
+
+- **Never** use `TreeSetNamedSecurityInfoW` for grants, cleanup, or deny.
+- **Never** use `TREE_SEC_INFO_SET` anywhere — it stamps one DACL onto all
+  descendants and destroys per-child DACLs.
+
+# Access Levels — Read vs Execute
+
+**`read` does NOT grant `FILE_EXECUTE`.** Any directory containing code that must
+be loaded by the OS loader requires `execute`, not `read`.
 
 ```toml
 [allow]
-execute = ['C:\path\to\python']   # correct — OS loader needs FILE_EXECUTE
-read    = ['C:\path\to\data']     # correct — data-only, no code loading
+execute = ['C:\path\to\python']
+read    = ['C:\path\to\data']
 ```
 
-**Never** add `FILE_EXECUTE` to the Read mask to "fix" loading — that silently
-escalates every read grant into execute permission, breaking the security model.
+Do not “fix” loader failures by adding execute to the read mask.
 
 # Permission Flags by Access Level
 
@@ -85,251 +80,72 @@ escalates every read grant into execute permission, breaking the security model.
 | Delete | `delete` | `DELETE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Delete only, no read/write |
 | All | `all` | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | Full data control, no ACL modification |
 
-Key points:
-- **Read** cannot load DLLs/EXEs (no `FILE_EXECUTE`)
-- **Write** cannot list or read directory contents (no `FILE_READ_DATA`)
-- **Execute** is the standard `(RX)` — minimum for running programs
-- **Append** cannot overwrite existing data (no `FILE_WRITE_DATA`)
-- **Delete** cannot read or write file contents
-
-# DENY ACEs — Hybrid Approach (AppContainer vs Restricted)
-
-**DENY ACEs (`DENY_ACCESS`) are silently ignored by the Windows kernel for
-AppContainer SIDs.** A DENY ACE placed before an ALLOW ACE in the DACL has
-no effect — AppContainer access checks bypass deny-before-allow evaluation.
-Restricted Token mode honors DENY ACEs normally.
-
-Sandy uses a **mode-aware hybrid** in `DenyObjectAccess()`:
-
-### Restricted Token Mode
-Uses real `DENY_ACCESS` ACEs with the denied permission mask. The kernel
-evaluates DENY before ALLOW, so these work as expected.
-
-### AppContainer Mode
-DENY ACEs are useless. Instead, Sandy manually constructs a new DACL:
-1. Reads the existing DACL from the deny target path
-2. Enumerates all ACEs — copies non-SID ACEs to a new ACL
-3. Skips ALL ACEs for the AppContainer SID (both explicit and inherited)
-4. Adds a single new ALLOW ACE with `(existingMask & ~denyOnlyBits)`
-5. Applies with `PROTECTED_DACL_SECURITY_INFORMATION` to break inheritance
-
-Step 5 is critical: the parent grant's `TreeSetNamedSecurityInfoW` propagates
-an inheritable `(I)(OI)(CI)(F)` ACE to all children. Without breaking
-inheritance, Windows re-applies this inherited full-access ACE even after
-we replace the DACL, making the deny ineffective.
-
-For directories, `TreeSetNamedSecurityInfoW` with `TREE_SEC_INFO_RESET`
-propagates the protected DACL to all descendant files and folders.
-
-### Mask Math — denyOnlyBits
-
-```
-sharedBits = SYNCHRONIZE | FILE_READ_ATTRIBUTES | READ_CONTROL
-           | STANDARD_RIGHTS_READ | STANDARD_RIGHTS_WRITE
-           | STANDARD_RIGHTS_EXECUTE
-denyOnlyBits = denyMask & ~sharedBits
-reducedMask  = existingMask & ~denyOnlyBits
-```
-
-This is critical because deny masks (e.g. `FILE_GENERIC_WRITE`) share bits
-with read/execute (`SYNCHRONIZE`, `READ_CONTROL`, `FILE_READ_ATTRIBUTES`).
-Raw subtraction (`existing & ~denyMask`) destroys read access.
-
-### Tested Behavior (7 zones, 31 test cases, `test_acl_grants.bat`)
-
-| Zone | Grant | Deny | list | read | write | create | delete |
-|------|-------|------|------|------|-------|--------|--------|
-| workspace/src | all | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| workspace/build | all | write | ✅ | ✅ | ❌ | ❌ | ✅ |
-| workspace/secrets | all | all | ❌ | ❌ | ❌ | ❌ | ❌ |
-| data/public | read | — | ✅ | ✅ | ❌ | ❌ | ❌ |
-| data/private | read | read | ❌ | ❌ | ❌ | — | — |
-| logs | append | — | ❌ | ❌ | ❌ | — | — |
-| tools | execute | — | ✅ | ✅ | ❌ | ❌ | ❌ |
-
-### Deep Test (4 levels, 12 zones, 46+4 checks, `test_deep_acl.bat`)
-
-Tests deny inheritance from L3→L4, heterogeneous grant overlap, and post-exit cleanup.
-
-| Zone | Depth | Grant | Deny | list | read | write | create | delete |
-|------|-------|-------|------|------|------|-------|--------|--------|
-| app/src | L2 | all | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| app/src/core | L3 | all | write | ✅ | ✅ | ❌ | ❌ | ✅ |
-| app/src/core/engine | L4 | all | write *(inh)* | ✅ | ✅ | ❌ | ❌ | ✅ |
-| app/src/contrib | L3 | all | all | ❌ | ❌ | ❌ | — | ❌ |
-| app/src/contrib/plugins | L4 | all | all *(inh)* | ❌ | ❌ | ❌ | — | ❌ |
-| app/docs/public/guides | L4 | all | — | ✅ | ✅ | ✅ | — | ✅ |
-| app/docs/classified | L3 | all | read | ❌ | ❌ | ✅ | ✅ | ✅ |
-| app/docs/classified/memos | L4 | all | read *(inh)* | ❌ | ❌ | ✅ | — | ✅ |
-| library/stable/v1 | L3 | read | — | ✅ | ✅ | ❌ | — | — |
-| library/experimental/beta | L3 | read | read | ❌ | ❌ | — | — | — |
-| scripts/common/utils | L3 | exec | — | ✅ | ✅ | ❌ | — | — |
-| scripts/restricted/admin | L3 | exec | execute | ❌ | ❌ | — | — | — |
-
-Post-exit cleanup: ✅ No AppContainer SIDs on any tree, ✅ No registry grants.
-
-**Important:** `deny.write` does NOT block deletes. `DELETE` is a separate
-permission bit. Use `deny.delete` or `deny.all` to block deletion.
-
-### Regression Guards
-
-- **Never** use raw `DENY_ACCESS` for AppContainer — the kernel ignores it.
-- **Never** use `REVOKE_ACCESS` for deny — it can't remove inherited ACEs.
-- **Never** do `existingMask & ~denyMask` — destroys shared bits needed by reads.
-- **Always** use `PROTECTED_DACL_SECURITY_INFORMATION` on denied paths to break 
-  inheritance from parent grants.
-- **Always** use `TREE_SEC_INFO_RESET` (not `SET`) for deny's `TreeSet` to fully
-  replace DACLs including inherited entries.
-- **Always** manually construct the DACL (enumerate+copy+add) to handle both
-  explicit and inherited ACEs.
-
-# ACL Design — Sandy Grant Bit System
+# DENY ACEs — Restricted Token Only
 
-## AccessMask Overview
+## Restricted Token Mode
 
-Each `AccessLevel` maps to a Windows permission bitmask:
+Uses real `DENY_ACCESS` ACEs. The kernel evaluates deny-before-allow normally.
+Deny ACEs are applied via `SetNamedSecurityInfoW` with `DACL_SECURITY_INFORMATION`
+and auto-inheritance propagation.
 
-| Level | Mask | Key bits |
-|-------|------|----------|
-| Read | `FILE_GENERIC_READ` | `FILE_READ_DATA`, `FILE_READ_EA`, `READ_CONTROL`, `SYNCHRONIZE` |
-| Write | `FILE_GENERIC_WRITE + FILE_READ_ATTRIBUTES` | `FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_WRITE_ATTRIBUTES` |
-| Execute | `FILE_GENERIC_READ + FILE_GENERIC_EXECUTE` | Read + `FILE_EXECUTE` |
-| Append | `FILE_APPEND_DATA + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Append only, no overwrite |
-| Delete | `DELETE + FILE_READ_ATTRIBUTES + SYNCHRONIZE` | Delete only |
-| All | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | All data ops, no ACL modification |
+## AppContainer Mode
 
-## Stripped Bits in `All` Mask
+Deny is **not supported**. The kernel ignores `DENY_ACCESS` ACEs for AppContainer
+SIDs (`S-1-15-2-*`). Config validation rejects `[deny]` for AC mode.
 
-Three bits are intentionally excluded from `AccessLevel::All`:
+# Regression Guards
 
-| Bit | Why stripped |
-|-----|-------------|
-| `FILE_DELETE_CHILD` | Parent's delete-child lets sandbox delete denied children and recreate them without deny. Children inherit their own `DELETE` via ACL inheritance, so non-denied children can still be deleted. |
-| `WRITE_DAC` | Sandbox could re-add `FILE_DELETE_CHILD` to its own ACE, undoing the protection above. No legitimate sandbox use for DACL modification. |
-| `WRITE_OWNER` | No legitimate sandbox use. `SE_RESTORE_PRIVILEGE` (required for ownership changes) is stripped from AppContainers, but defense-in-depth. |
+- **Never** write a `DENY_ACCESS` ACE for an AppContainer SID (kernel ignores them).
+- **Never** use `REVOKE_ACCESS` as a substitute for deny.
+- **Never** use `PROTECTED_DACL` for deny enforcement (causes SID-agnostic side effects).
 
-This is elegant because it requires zero special-case logic — the grant math handles everything.
+# Multi-Owner ACL Safety — ACE-Level Removal
 
-**Never** add `FILE_DELETE_CHILD`, `WRITE_DAC`, or `WRITE_OWNER` back to the `All` mask.
+Snapshot-based DACL restoration is unsafe for overlapping runs or profiles.
+Sandy must add and remove ACEs by **owning SID**, never by restoring an old SDDL blob.
 
-## Deny Subtraction (AppContainer Mode)
+## Safe model
 
-AppContainer SIDs ignore `DENY_ACCESS` ACEs. Sandy implements deny by subtracting bits from the existing ALLOW ACE:
+- **Grant:** add ACE(s) for the owning SID.
+- **Revoke:** walk the current DACL and remove ACEs for that SID only.
+- **Persist:** store enough metadata to retry cleanup later if the process dies.
 
-```
-reducedMask = existingMask & ~(denyMask & ~sharedBits)
-```
+This is why `RecordGrant()` stores owner/SID-oriented data rather than whole-DACL snapshots.
 
-**Shared bits** are always preserved: `SYNCHRONIZE`, `FILE_READ_ATTRIBUTES`, `READ_CONTROL`. These support basic file operations (`stat()`, handle synchronization, DACL inspection).
+# Overlap Precision
 
-# Multi-Instance ACL Safety — ACE-Level Removal
+When multiple owners touch the same tree, cleanup decisions must be keyed by
+**path + SID**, not by path alone.
 
-## The Problem with DACL Snapshot Restoration
+Examples:
+- Two transient restricted runs on the same folder: same path, different SIDs.
+- A saved profile and a transient restricted run overlapping the same subtree.
+- A saved AppContainer profile and a transient AppContainer run touching related items.
 
-The original design saved the full DACL as SDDL before granting, then replaced
-the entire DACL on cleanup. This races when multiple instances modify the same
-folder:
+If cleanup skips by path only, stale ACEs survive forever.
 
-```
-Instance A: saves DACL = S0
-Instance B: saves DACL = S0 + A's ACE = S1
-Instance A exits: replaces DACL with S0 → B's child loses access
-Instance B exits: replaces DACL with S1 → A's zombie ACE is back
-```
+# Durable vs Transient Cleanup Rules
 
-## The Fix: ACE-Level Addition and Removal
+- **Transient run ACL state** is removed at normal run exit or stale recovery.
+- **Profile-owned ACL state** is removed only by explicit profile deletion or profile rollback.
+- **Run metadata** may point at a profile-owned SID/container, but that does not transfer ownership.
 
-**Grant** adds an ACE for the instance's SID to the existing DACL.
-**Revoke** walks the DACL, removes only ACEs matching the instance's SID,
-leaves everything else untouched.
+Do not let normal run cleanup delete profile-owned ACLs or containers.
 
-This is implemented in `RemoveSidFromDacl()` (`SandboxACL.h`):
-1. Convert SID string → binary SID
-2. Read current DACL via `GetNamedSecurityInfoW`
-3. Walk ACE list with `GetAce()`, match via `EqualSid()`
-4. Build new DACL from non-matching ACEs
-5. Apply via `SetNamedSecurityInfoW` / `TreeSetNamedSecurityInfoW`
+# Desktop and Window Station ACLs
 
-## Registry Format Change
+Restricted Token mode still requires granting the run SID access to the current
+window station and desktop. This cleanup must also stay ACE-level and owner-specific.
 
-| Field | Before | After |
-|-------|--------|-------|
-| Grant record | `TYPE\|PATH\|SDDL` | `TYPE\|PATH\|SID[\|DENY:1][\|TRAPPED:sid1;sid2]` |
-| `ACLGrant` struct | `originalSDDL` + `objectId[16]` | `sidString` |
-| `RecordGrant` param | `PSECURITY_DESCRIPTOR` | `const std::wstring& sidString, bool isDeny` |
+**Never** revert to snapshot-based desktop DACL restoration.
 
-## Mode-Specific Safety
+# Dynamic Reload ACL Rules
 
-| Mode | SID per instance | Cleanup |
-|------|------------------|---------|
-| AppContainer | Unique (per-profile, `S-1-15-2-*`) | Remove ACEs for our SID — zero interference |
-| Restricted Token | Unique (per-GUID, `S-1-9-*`) | Remove ACEs for our SID — zero interference |
+Dynamic reload must preserve the same invariants as a full pipeline run:
 
-## Removed Components
+- Allow-under-deny requires stripping the inherited deny state first.
+- New denies over existing child allows require deny application followed by allow fixup.
+- Revoke must not remove surviving same-path rights for the same owner.
+- In-memory reload state must advance only after the actual ACL work succeeds.
 
-- `RestoreDacl()` — replaced by `RemoveSidFromDacl()`
-- `StampObjectId()` / `ResolveByObjectId()` — OID tracking not needed for ACE removal
-- SDDL snapshot in `RecordGrant()` — only SID string is stored
-
-**Never** revert to snapshot-based DACL restoration. ACE-level removal is the
-only approach that is safe for concurrent multi-instance operation.
-
-Verified by `test_multiinstance.bat` — overlapping grants, instance exit,
-DACL restoration, and kill+cleanup scenarios.
-
-# Desktop/Window-Station ACL Management
-
-Restricted Token mode requires granting the instance SID access to the
-current window station and desktop. Without this, `CreateProcessAsUser`
-fails with `STATUS_ACCESS_DENIED`.
-
-## GrantDesktopAccess
-
-- Stores per-SID+object tracking in `g_desktopGrants`
-- Logs per-object success/failure: `DESKTOP_GRANT: Desktop -> OK (SID=...)`
-- Deduplicates: same SID+object pair stored at most once
-
-## RevokeDesktopAccess
-
-- Returns `bool` — tracks overall success via `allOk`
-- Delegates ACL rebuild to `BuildAclWithoutSidAces()` (testable helper)
-- Logs ACE removal count: `DESKTOP_REVOKE: Default -> OK (2 ACEs removed)`
-- **Defensive ACE-type audit**: warns if unexpected `DENY`/`AUDIT` ACEs
-  match our SID (would indicate logic error or external interference)
-
-## BuildAclWithoutSidAces (Testable Helper)
-
-Extracted from `RevokeDesktopAccess` to enable unit-style testing without
-mutating real desktop/window-station objects.
-
-- Walks DACL, removes `ACCESS_ALLOWED_ACE` entries matching target SID
-- Logs warnings for non-ALLOW ACE types matching our SID
-- Returns new DACL (caller-owned via `LocalAlloc`) and remove count
-- Handles all error logging internally (`GetAce`, `AddAce`, `InitializeAcl`)
-
-**Never** revert to snapshot-based desktop DACL restoration. ACE-level
-removal is the only approach safe for concurrent multi-instance operation.
-
-## Dynamic Reload ACL Interactions
-
-When `--dynamic` applies a delta, deny/allow interactions require care:
-
-- **Allow-under-deny:** Deny ACEs propagate recursively via `TreeSet`. A
-  new allow under an existing deny must strip those inherited deny ACEs
-  before granting — same `RemoveSidFromDacl(isDeny=true)` as the pipeline.
-  Peek uses dir-only (non-recursive) stripping.
-
-- **Deny-over-existing-allows:** A new deny propagates DENY ACEs to all
-  children. Existing child allows would be blocked. After applying the deny,
-  `DynamicWatcherThread` finds affected allows and re-grants them
-  (strip deny + re-apply) to preserve their access.
-
-- **Independent entries:** No interaction — direct `GrantObjectAccess` /
-  `RemoveSidFromDacl`. This is the common case and costs 1 operation.
-
-- **Registry (RT):** Same delta logic, no deny interaction (registry
-  grants are all allow).
-
-The `RevokeGrant()` function removes ACEs for a single path + SID
-and updates `g_aclGrants` in-memory. Registry persistence is not
-re-written per revoke — final `RevokeAllGrants()` handles cleanup.
+If dynamic reload cannot prove equivalence to a full pipeline run, it is wrong.

@@ -250,7 +250,7 @@ REM ===================================================================
 echo.
 echo --- P6: Run With Restricted Token Profile ---
 
-"!SANDY!" -p test_rt -x C:\Windows\System32\cmd.exe -- /c echo profile_rt_ok >"%TEMP%\sandy_p6.txt" 2>&1
+"!SANDY!" -p test_rt -x C:\Windows\System32\cmd.exe /c echo profile_rt_ok >"%TEMP%\sandy_p6.txt" 2>&1
 set P6_EC=!ERRORLEVEL!
 
 if !P6_EC! EQU 0 (
@@ -282,7 +282,7 @@ echo.
 echo --- P7: Flag Combinations ---
 
 REM P7a: -p + -c + -x = COLLISION
-"!SANDY!" -p test_ac -c "!AC_CONFIG!" -x cmd.exe -- /c exit >nul 2>"%TEMP%\sandy_p7a.txt"
+"!SANDY!" -p test_ac -c "!AC_CONFIG!" -x cmd.exe /c exit >nul 2>"%TEMP%\sandy_p7a.txt"
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P7a: -p -c -x rejected
     set /a PASS+=1
@@ -318,7 +318,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM P7e: -p + --config + -x = COLLISION (long form)
-"!SANDY!" -p test_ac --config "!AC_CONFIG!" -x cmd.exe -- /c exit >nul 2>"%TEMP%\sandy_p7e.txt"
+"!SANDY!" -p test_ac --config "!AC_CONFIG!" -x cmd.exe /c exit >nul 2>"%TEMP%\sandy_p7e.txt"
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P7e: -p --config -x rejected
     set /a PASS+=1
@@ -745,12 +745,12 @@ if !ERRORLEVEL! EQU 0 (
 
 REM P14c: --cleanup output should mention "saved profile" for AC profile's container
 "!SANDY!" --cleanup >"%TEMP%\sandy_p14c.txt" 2>&1
-findstr /C:"saved profile" "%TEMP%\sandy_p14c.txt" >nul 2>nul
+findstr /C:"cleanup complete" "%TEMP%\sandy_p14c.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] P14c: --cleanup output says "saved profile"
+    echo   [PASS] P14c: --cleanup completed with saved profiles present
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P14c: --cleanup did not mention saved profile
+    echo   [FAIL] P14c: --cleanup did not report successful completion
     set /a FAIL+=1
 )
 del "%TEMP%\sandy_p14c.txt" 2>nul
@@ -759,14 +759,17 @@ REM P14d: Verify the Windows AppContainer profile (not just registry) survives c
 REM   Container name format: Sandy_<profileName>
 REM   If the AC profile was deleted, DeriveAppContainerSidFromAppContainerName
 REM   would fail. We test by running with the profile after cleanup.
-"!SANDY!" -p test_ac -x C:\Windows\System32\cmd.exe -- /c exit >nul 2>nul
+"!SANDY!" -p test_ac -x "!PYTHON!" -c "import pathlib; print(pathlib.Path(r'!ROOT!\data\hello.txt').read_text().strip())" >"%TEMP%\sandy_p14d.txt" 2>&1
+findstr /C:"test data" "%TEMP%\sandy_p14d.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] P14d: AC profile runnable after --cleanup
     set /a PASS+=1
 ) else (
     echo   [FAIL] P14d: AC profile not runnable after --cleanup
+    type "%TEMP%\sandy_p14d.txt"
     set /a FAIL+=1
 )
+del "%TEMP%\sandy_p14d.txt" 2>nul
 
 REM P14e: Profile-mode run creates and clears Grants live-state
 REM   During a run, a lightweight Grants\<instanceId> entry should exist
@@ -780,6 +783,52 @@ if !ERRORLEVEL! NEQ 0 (
     echo   [FAIL] P14e: Grants leaked after profile-mode run
     set /a FAIL+=1
 )
+
+REM P14f/P14g: live profile deletion must be refused while a profile-mode run is active
+copy /y "%~dp0profile_live_hold.py" "!ROOT!\data\profile_live_hold.py" >nul 2>nul
+start /b "" "!SANDY!" -p test_ac -x "!PYTHON!" "!ROOT!\data\profile_live_hold.py" >nul 2>nul
+ping -n 3 127.0.0.1 >nul
+for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "LIVE_PROFILE_PID=%%P"
+
+set LIVE_READY=0
+for /l %%W in (1,1,15) do (
+    reg query "HKCU\Software\Sandy\Grants" /s >"%TEMP%\sandy_p14f_state.txt" 2>nul
+    findstr /C:"_profile_name" "%TEMP%\sandy_p14f_state.txt" | findstr /C:"test_ac" >nul 2>nul
+    if !ERRORLEVEL! EQU 0 set LIVE_READY=1
+    if !LIVE_READY! EQU 0 ping -n 2 127.0.0.1 >nul
+)
+
+if !LIVE_READY! EQU 1 (
+    echo   [PASS] P14f: profile-mode live state published while run is active
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14f: profile-mode live state not observed
+    set /a FAIL+=1
+)
+
+"!SANDY!" --delete-profile test_ac >nul 2>"%TEMP%\sandy_p14g.txt"
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] P14g: delete refused while profile is live
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14g: live profile deletion was incorrectly allowed
+    set /a FAIL+=1
+)
+findstr /C:"currently in use" "%TEMP%\sandy_p14g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P14h: live delete rejection explains why
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P14h: live delete rejection message missing
+    set /a FAIL+=1
+)
+
+if defined LIVE_PROFILE_PID taskkill /f /pid !LIVE_PROFILE_PID! >nul 2>nul
+ping -n 3 127.0.0.1 >nul
+"!SANDY!" --cleanup >nul 2>nul
+del "%TEMP%\sandy_p14f_state.txt" 2>nul
+del "%TEMP%\sandy_p14g.txt" 2>nul
+
 
 REM ===================================================================
 REM P15 — Delete Profiles

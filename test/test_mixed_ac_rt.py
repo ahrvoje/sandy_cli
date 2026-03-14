@@ -85,12 +85,12 @@ test("workspace: create file", True, lambda: open(p('workspace', f'created_by_{m
 test("workspace: delete file", True, lambda: os.remove(p('workspace', f'created_by_{mode}.txt')))
 
 # ================================================================
-# GROUP 2: shared/protected — [deny] write
-#   AC: read OK, write blocked (subtract-mask deny preserves read ACE)
-#   RT: read/list ALSO blocked (PROTECTED_DACL strips inherited user ACEs)
+# GROUP 2: shared/protected
+#   AC: read OK, write blocked (explicit read grant, no write grant)
+#   RT: read/list ALSO blocked (PROTECT_DACL strips inherited user ACEs)
 # ================================================================
-print("--- shared/protected (allow.all + deny.write) ---")
-# AC: True (read preserved), RT: False (PROTECTED_DACL strips inherited user ACEs)
+print("--- shared/protected (AC: allow.read, RT: deny.write) ---")
+# AC: True (read grant), RT: False (PROTECTED_DACL strips inherited user ACEs)
 test("protected: list dir",      not is_rt, lambda: os.listdir(p('protected')))
 test("protected: read file",     not is_rt, lambda: open(p('protected', 'data.txt'), 'r').read())
 test("protected: overwrite file", False,     lambda: open(p('protected', 'data.txt'), 'w').write('hack'))

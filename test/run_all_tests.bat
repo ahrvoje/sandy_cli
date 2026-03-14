@@ -9,6 +9,7 @@ set PASS=0
 set FAIL=0
 set FAILED_TESTS=
 
+REM test collusion is the last as tends to leave stale grant polluting following tests
 for %%F in (
     test_sandy.bat
     test_acl_grants.bat
@@ -17,7 +18,6 @@ for %%F in (
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
-    test_collusion.bat
     test_concurrent.bat
     test_diabolical.bat
     test_diabolical_rt.bat
@@ -34,8 +34,10 @@ for %%F in (
     test_resilience.bat
     test_stress.bat
     test_profile.bat
+    test_removed_features.bat
     test_clean.bat
     test_dryrun.bat
+    test_collusion.bat
 ) do (
     echo ----------------------------------------------------------------
     echo  RUNNING: %%F
@@ -53,7 +55,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 26
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 27
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

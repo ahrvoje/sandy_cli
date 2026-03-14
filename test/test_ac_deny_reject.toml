@@ -1,0 +1,11 @@
+# AC deny rejection test — verify that [deny] in appcontainer mode is a config error
+# Expected: Sandy exits with code 128 (config error)
+
+[sandbox]
+token = 'appcontainer'
+
+[allow]
+all = ['C:\Users\H\test_RW']
+
+[deny]
+write = ['C:\Users\H\test_RW']

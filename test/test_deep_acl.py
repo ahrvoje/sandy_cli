@@ -1,20 +1,24 @@
-"""Deep ACL test: 4-level nesting, heterogeneous allow/deny, 46 test cases.
+"""Deep ACL test (AppContainer): 4-level nesting, granular allows, 46 test cases.
 
-Tests deny-over-allow priority, deny inheritance to L4, and all access levels.
+AC mode has NO deny support.  Zones that were deny-restricted in the RT variant
+are implemented by simply withholding grants (no grant = no access for AC).
+Zones that relied on deny.write or deny.read to get partial access (e.g. write-
+only, read-only within an allow.all parent) are restructured: the parent loses
+its broad allow.all, and only the children that need access get explicit grants.
 
-Zone map (12 zones):
-  app/src              L2  all            → full control
-  app/src/core         L3  all+deny.write → read OK, write blocked
-  app/src/core/engine  L4  inherited deny → read OK, write blocked
-  app/src/contrib      L3  all+deny.all   → everything blocked
-  app/src/contrib/plug L4  inherited deny → everything blocked
-  app/docs/public/gui  L4  all            → full control
-  app/docs/classified  L3  all+deny.read  → write OK, read blocked
-  app/docs/class/memos L4  inherited deny → write OK, read blocked
-  lib/stable/v1        L3  read           → read only
-  lib/experimental/bet L3  read+deny.read → fully blocked
-  scripts/common/utils L3  execute        → read+exec, no write
-  scripts/restricted/* L3  exec+deny.exec → fully blocked
+Zone map (12 zones — AC mode):
+  app/src              L2  peek           → list only
+  app/src/core         L3  read           → list+read, no write
+  app/src/core/engine  L4  inherits read  → list+read, no write
+  app/src/contrib      L3  (no grant)     → blocked
+  app/src/contrib/plug L4  (no grant)     → blocked
+  app/docs/public/gui  L4  all (inherit)  → full control
+  app/docs/classified  L3  (no grant)     → blocked
+  app/docs/class/memos L4  (no grant)     → blocked
+  lib/stable/v1        L3  read (inherit) → read only
+  lib/experimental/bet L3  (no grant)     → blocked
+  scripts/common/utils L3  execute+read   → read+exec, no write
+  scripts/restricted/* L3  (no grant)     → blocked
 """
 import os, sys
 
@@ -56,83 +60,83 @@ def p(*parts):
     return os.path.join(ROOT, *parts)
 
 # ================================================================
-# ZONE 1: app/src (L2) — inherits [allow] all → full control
+# ZONE 1: app/src (L2) — peek only → list works, read/write blocked
 # ================================================================
-print("--- Z1: app/src (L2, allow.all inherited) ---")
+print("--- Z1: app/src (L2, peek only) ---")
 test("src: list",   True,  lambda: os.listdir(p('app','src')))
-test("src: read",   True,  lambda: open(p('app','src','core','core.py'),'r').read())
-test("src: write",  True,  lambda: open(p('app','src','marker.tmp'),'w').write('ok'))
-test("src: create", True,  lambda: open(p('app','src','new.tmp'),'w').write('new'))
-test("src: delete", True,  lambda: os.remove(p('app','src','new.tmp')))
+test("src: read (core/core.py — inside read zone)",
+                    True,  lambda: open(p('app','src','core','core.py'),'r').read())
+test("src: write",  False, lambda: open(p('app','src','marker.tmp'),'w').write('ok'))
+test("src: create", False, lambda: open(p('app','src','new.tmp'),'w').write('new'))
 
 # ================================================================
-# ZONE 2: app/src/core (L3) — [deny] write → read OK, write blocked
+# ZONE 2: app/src/core (L3) — read grant → list+read, write blocked
 # ================================================================
-print("--- Z2: app/src/core (L3, deny.write) ---")
+print("--- Z2: app/src/core (L3, allow.read) ---")
 test("core: list",   True,  lambda: os.listdir(p('app','src','core')))
 test("core: read",   True,  lambda: open(p('app','src','core','core.py'),'r').read())
 test("core: write",  False, lambda: open(p('app','src','core','core.py'),'w').write('x'))
 test("core: create", False, lambda: open(p('app','src','core','hack.tmp'),'w').write('x'))
-test("core: delete", True,  lambda: os.remove(p('app','src','core','core.py')))
+test("core: delete", False, lambda: os.remove(p('app','src','core','core.py')))
 
 # ================================================================
-# ZONE 3: app/src/core/engine (L4) — inherited deny.write from L3
+# ZONE 3: app/src/core/engine (L4) — inherits read from core
 # ================================================================
-print("--- Z3: app/src/core/engine (L4, deny.write inherited) ---")
+print("--- Z3: app/src/core/engine (L4, read inherited) ---")
 test("engine: list",   True,  lambda: os.listdir(p('app','src','core','engine')))
 test("engine: read",   True,  lambda: open(p('app','src','core','engine','module.py'),'r').read())
 test("engine: write",  False, lambda: open(p('app','src','core','engine','module.py'),'w').write('x'))
 test("engine: create", False, lambda: open(p('app','src','core','engine','new.tmp'),'w').write('x'))
-test("engine: delete", True,  lambda: os.remove(p('app','src','core','engine','module.py')))
+test("engine: delete", False, lambda: os.remove(p('app','src','core','engine','module.py')))
 
 # ================================================================
-# ZONE 4: app/src/contrib (L3) — [deny] all → everything blocked
+# ZONE 4: app/src/contrib (L3) — no grant → blocked
 # ================================================================
-print("--- Z4: app/src/contrib (L3, deny.all) ---")
+print("--- Z4: app/src/contrib (L3, no grant — blocked) ---")
 test("contrib: list",   False, lambda: os.listdir(p('app','src','contrib')))
 test("contrib: read",   False, lambda: open(p('app','src','contrib','init.py'),'r').read())
 test("contrib: write",  False, lambda: open(p('app','src','contrib','init.py'),'w').write('x'))
 test("contrib: delete", False, lambda: os.remove(p('app','src','contrib','init.py')))
 
 # ================================================================
-# ZONE 5: app/src/contrib/plugins (L4) — inherited deny.all
+# ZONE 5: app/src/contrib/plugins (L4) — no grant → blocked
 # ================================================================
-print("--- Z5: app/src/contrib/plugins (L4, deny.all inherited) ---")
+print("--- Z5: app/src/contrib/plugins (L4, no grant — blocked) ---")
 test("plugins: list",   False, lambda: os.listdir(p('app','src','contrib','plugins')))
 test("plugins: read",   False, lambda: open(p('app','src','contrib','plugins','addon.py'),'r').read())
 test("plugins: write",  False, lambda: open(p('app','src','contrib','plugins','addon.py'),'w').write('x'))
 test("plugins: delete", False, lambda: os.remove(p('app','src','contrib','plugins','addon.py')))
 
 # ================================================================
-# ZONE 6: app/docs/public/guides (L4) — full access from all
+# ZONE 6: app/docs/public/guides (L4) — all (inherited from docs/public)
 # ================================================================
-print("--- Z6: app/docs/public/guides (L4, full access) ---")
+print("--- Z6: app/docs/public/guides (L4, all access) ---")
 test("guides: list",   True, lambda: os.listdir(p('app','docs','public','guides')))
 test("guides: read",   True, lambda: open(p('app','docs','public','guides','tutorial.md'),'r').read())
 test("guides: write",  True, lambda: open(p('app','docs','public','guides','tutorial.md'),'w').write('x'))
 test("guides: delete", True, lambda: os.remove(p('app','docs','public','guides','tutorial.md')))
 
 # ================================================================
-# ZONE 7: app/docs/classified (L3) — [deny] read → write OK, read blocked
+# ZONE 7: app/docs/classified (L3) — no grant → fully blocked
+#   (AC can't do write-only; no deny available)
 # ================================================================
-print("--- Z7: app/docs/classified (L3, deny.read) ---")
+print("--- Z7: app/docs/classified (L3, no grant — blocked) ---")
 test("classified: list",   False, lambda: os.listdir(p('app','docs','classified')))
 test("classified: read",   False, lambda: open(p('app','docs','classified','draft.md'),'r').read())
-test("classified: write",  True,  lambda: open(p('app','docs','classified','draft.md'),'w').write('ok'))
-test("classified: create", True,  lambda: open(p('app','docs','classified','new.tmp'),'w').write('x'))
-test("classified: delete", True,  lambda: os.remove(p('app','docs','classified','new.tmp')))
+test("classified: write",  False, lambda: open(p('app','docs','classified','draft.md'),'w').write('ok'))
+test("classified: create", False, lambda: open(p('app','docs','classified','new.tmp'),'w').write('x'))
 
 # ================================================================
-# ZONE 8: app/docs/classified/memos (L4) — inherited deny.read
+# ZONE 8: app/docs/classified/memos (L4) — no grant → blocked
 # ================================================================
-print("--- Z8: app/docs/classified/memos (L4, deny.read inherited) ---")
+print("--- Z8: app/docs/classified/memos (L4, no grant — blocked) ---")
 test("memos: list",   False, lambda: os.listdir(p('app','docs','classified','memos')))
 test("memos: read",   False, lambda: open(p('app','docs','classified','memos','note.md'),'r').read())
-test("memos: write",  True,  lambda: open(p('app','docs','classified','memos','note.md'),'w').write('ok'))
-test("memos: delete", True,  lambda: os.remove(p('app','docs','classified','memos','note.md')))
+test("memos: write",  False, lambda: open(p('app','docs','classified','memos','note.md'),'w').write('ok'))
+test("memos: delete", False, lambda: os.remove(p('app','docs','classified','memos','note.md')))
 
 # ================================================================
-# ZONE 9: library/stable/v1 (L3) — [allow] read → read only
+# ZONE 9: library/stable/v1 (L3) — read (inherited) → read only
 # ================================================================
 print("--- Z9: library/stable/v1 (L3, allow.read) ---")
 test("v1: list",  True,  lambda: os.listdir(p('library','stable','v1')))
@@ -140,24 +144,24 @@ test("v1: read",  True,  lambda: open(p('library','stable','v1','mod.py'),'r').r
 test("v1: write", False, lambda: open(p('library','stable','v1','mod.py'),'w').write('x'))
 
 # ================================================================
-# ZONE 10: library/experimental/beta (L3) — deny.read on read → blocked
+# ZONE 10: library/experimental/beta (L3) — no grant → blocked
 # ================================================================
-print("--- Z10: library/experimental/beta (L3, deny.read on allow.read) ---")
+print("--- Z10: library/experimental/beta (L3, no grant — blocked) ---")
 test("beta: list", False, lambda: os.listdir(p('library','experimental','beta')))
 test("beta: read", False, lambda: open(p('library','experimental','beta','beta.py'),'r').read())
 
 # ================================================================
-# ZONE 11: scripts/common/utils (L3) — [allow] execute → read+exec
+# ZONE 11: scripts/common/utils (L3) — execute+read → read+exec
 # ================================================================
-print("--- Z11: scripts/common/utils (L3, allow.execute) ---")
+print("--- Z11: scripts/common/utils (L3, allow.execute + read) ---")
 test("utils: list",  True,  lambda: os.listdir(p('scripts','common','utils')))
 test("utils: read",  True,  lambda: open(p('scripts','common','utils','helper.bat'),'r').read())
 test("utils: write", False, lambda: open(p('scripts','common','utils','helper.bat'),'w').write('x'))
 
 # ================================================================
-# ZONE 12: scripts/restricted/admin (L3) — deny.execute → blocked
+# ZONE 12: scripts/restricted/admin (L3) — no grant → blocked
 # ================================================================
-print("--- Z12: scripts/restricted/admin (L3, deny.exec on allow.exec) ---")
+print("--- Z12: scripts/restricted/admin (L3, no grant — blocked) ---")
 test("admin: list", False, lambda: os.listdir(p('scripts','restricted','admin')))
 test("admin: read", False, lambda: open(p('scripts','restricted','admin','root.bat'),'r').read())
 

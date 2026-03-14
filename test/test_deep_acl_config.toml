@@ -1,52 +1,36 @@
-# Deep ACL test: 4 levels, heterogeneous overlapping allow/deny grants
+# Deep ACL test: 4 levels, selective allows per subfolder (AC, no deny)
+#
+# In AC mode there is no deny, so "restricted" zones are implemented by
+# withholding grants rather than layering deny over allow.
 #
 # TREE (4 levels deep):
 #   test_deep/
-#     app/                        [allow] all  (L1)
-#       src/                      inherits all (L2)
-#         core/                   [deny] write (L3)
-#           engine/               inherits deny (L4)
-#             module.py
-#           core.py
-#         contrib/                [deny] all (L3)
-#           plugins/              inherits deny (L4)
-#             addon.py
-#           init.py
-#       docs/                     inherits all (L2)
-#         public/                 inherits all (L3)
-#           guides/               inherits all (L4)
-#             tutorial.md
-#         classified/             [deny] read (L3)
-#           memos/                inherits deny (L4)
-#             note.md
-#     library/                    [allow] read (L1)
-#       stable/                   inherits read (L2)
-#         v1/                     inherits read (L3)
-#           mod.py
-#       experimental/             [deny] read (L2)
-#         beta/                   inherits deny (L3)
-#           beta.py
-#     scripts/                    [allow] execute (L1)
-#       common/                   inherits execute (L2)
-#         utils/                  inherits execute (L3)
-#           helper.bat
-#       restricted/               [deny] execute (L2)
-#         admin/                  inherits deny (L3)
-#           root.bat
+#     app/
+#       src/                      [allow] peek  (list only — children get specific grants)
+#         core/                   [allow] read  (read-only, no write)
+#           engine/               inherits read from core
+#         contrib/                (no grant → blocked)
+#           plugins/              (no grant → blocked)
+#       docs/
+#         public/                 [allow] all (inherits to guides/)
+#         classified/             (no grant → blocked, AC can't do write-only)
+#           memos/                (no grant → blocked)
+#     library/
+#       stable/                   [allow] read (inherits to v1/)
+#       experimental/             (no grant → blocked)
+#     scripts/
+#       common/                   [allow] execute + read
+#       restricted/               (no grant → blocked)
 
 [sandbox]
 token = 'appcontainer'
 
 [allow]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts']
-read = ['C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
-all = ['C:\Users\H\test_deep\app']
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts\common']
+read = ['C:\Users\H\test_deep\scripts\test_deep_acl.py', 'C:\Users\H\test_deep\scripts\common', 'C:\Users\H\test_deep\app\src\core', 'C:\Users\H\test_deep\library\stable']
+all = ['C:\Users\H\test_deep\app\docs\public']
+peek = ['C:\Users\H\test_deep\app', 'C:\Users\H\test_deep\app\src', 'C:\Users\H\test_deep\app\docs', 'C:\Users\H\test_deep\library', 'C:\Users\H\test_deep\scripts']
 
-[deny]
-write   = ['C:\Users\H\test_deep\app\src\core']
-all     = ['C:\Users\H\test_deep\app\src\contrib']
-read    = ['C:\Users\H\test_deep\app\docs\classified', 'C:\Users\H\test_deep\library\experimental']
-execute = ['C:\Users\H\test_deep\scripts\restricted']
 [environment]
 inherit = true
 

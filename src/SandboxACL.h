@@ -134,10 +134,12 @@ namespace Sandbox {
                 CloseHandle(hDir);
             }
         } else if (isDir && level != AccessLevel::Peek) {
-            rc = TreeSetNamedSecurityInfoW(
+            // Use SetNamedSecurityInfoW (not TreeSet) — inheritable ACEs propagate
+            // to children via Windows auto-inheritance, which respects
+            // PROTECTED_DACL on children (e.g. deny paths from other instances).
+            rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
-                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr,
-                TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
+                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
         } else {
             rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
@@ -175,16 +177,18 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Deny access to a file/folder
+    // Deny access to a file/folder (Restricted Token only)
     //
     // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
-    // Strategy depends on SID type:
-    // - Restricted: real DENY_ACCESS ACEs (kernel enforces them)
-    // - AppContainer: DENY ACEs are IGNORED by kernel.  Instead, revoke
-    //   the existing ALLOW ACE and re-add a narrower one.
+    // Uses real DENY_ACCESS ACEs — the kernel evaluates deny-before-allow
+    // normally for Restricted Token SIDs.
+    //
+    // AppContainer mode does NOT support deny: the Windows kernel ignores
+    // DENY ACEs for AppContainer SIDs (S-1-15-2-*).  This is rejected at
+    // config validation time in SandboxConfig.h.
     // -----------------------------------------------------------------------
     inline DWORD DenyObjectAccess(PSID pSid, const std::wstring& path,
-                                  AccessLevel level, bool isAppContainer,
+                                  AccessLevel level,
                                   RecordGrantFn recordFn = nullptr,
                                   SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
     {
@@ -198,179 +202,39 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) return rc;
 
-        // Before PROTECTED_DACL — scan for inherited AppContainer SIDs
-        // that will become trapped as explicit ACEs.  We record them so
-        // cleanup can remove them and re-enable inheritance.
-        std::wstring trappedSids;
-        {
-            ACL_SIZE_INFORMATION scanInfo = {};
-            if (GetAclInformation(pOldDacl, &scanInfo, sizeof(scanInfo), AclSizeInformation)) {
-                for (DWORD i = 0; i < scanInfo.AceCount; i++) {
-                    PACE_HEADER pAceHdr = nullptr;
-                    if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
-                        continue;
-                    // Only care about inherited ACEs — those will become explicit
-                    if (!(pAceHdr->AceFlags & INHERITED_ACE)) continue;
-
-                    PSID pAceSid = nullptr;
-                    if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
-                        pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
-                    else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
-                        pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-                    if (!pAceSid) continue;
-
-                    // Check if this is an AppContainer SID (S-1-15-2-*)
-                    LPWSTR aceSidStr = nullptr;
-                    if (ConvertSidToStringSidW(pAceSid, &aceSidStr)) {
-                        if (wcsncmp(aceSidStr, L"S-1-15-2-", 9) == 0) {
-                            // Don't record our own SID as trapped
-                            LPWSTR ourSidStr = nullptr;
-                            bool isOurs = false;
-                            if (ConvertSidToStringSidW(pSid, &ourSidStr)) {
-                                isOurs = (wcscmp(aceSidStr, ourSidStr) == 0);
-                                LocalFree(ourSidStr);
-                            }
-                            if (!isOurs) {
-                                if (!trappedSids.empty()) trappedSids += L";";
-                                trappedSids += aceSidStr;
-                            }
-                        }
-                        LocalFree(aceSidStr);
-                    }
-                }
-            }
-            if (!trappedSids.empty()) {
-                g_logger.Log((L"DENY_TRAPPED: " + path + L" -> " + trappedSids).c_str());
-            }
-        }
-
-        // (grant recording moved below — record only after ACL application succeeds)
-
+        // Build new DACL with DENY ACE
         PACL pNewDacl = nullptr;
-
-        if (isAppContainer) {
-            // AppContainer: DENY ACEs don't work — subtract bits from ALLOW ACE
-
-            // Find existing allowed permissions for this SID
-            DWORD existingMask = 0;
-            ACL_SIZE_INFORMATION aclInfo = {};
-            if (GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
-                for (DWORD i = 0; i < aclInfo.AceCount; i++) {
-                    PACE_HEADER pAceHdr = nullptr;
-                    if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
-                        continue;
-                    if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
-                        auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
-                        if (EqualSid(&pAce->SidStart, pSid))
-                            existingMask |= pAce->Mask;
-                    }
-                }
-            }
-
-            // Compute reduced mask — only strip bits unique to the denied op
-            DWORD sharedBits = SYNCHRONIZE | FILE_READ_ATTRIBUTES | READ_CONTROL
-                             | STANDARD_RIGHTS_READ | STANDARD_RIGHTS_WRITE
-                             | STANDARD_RIGHTS_EXECUTE;
-            DWORD denyOnlyBits = denyMask & ~sharedBits;
-            DWORD reducedMask = existingMask & ~denyOnlyBits;
-
-            // Build new ACL manually
-            DWORD sidLen = GetLengthSid(pSid);
-            DWORD newAclSize = sizeof(ACL);
-            for (DWORD i = 0; i < aclInfo.AceCount; i++) {
-                PACE_HEADER pAceHdr = nullptr;
-                if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-                bool isSidAce = false;
-                if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
-                    auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
-                    isSidAce = EqualSid(&pAce->SidStart, pSid);
-                }
-                if (!isSidAce) newAclSize += pAceHdr->AceSize;
-            }
-            if (reducedMask != 0)
-                newAclSize += sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + sidLen;
-
-            pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
-            if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
-                LocalFree(pSD);
-                return ERROR_NOT_ENOUGH_MEMORY;
-            }
-
-            // Copy non-SID ACEs
-            for (DWORD i = 0; i < aclInfo.AceCount; i++) {
-                PACE_HEADER pAceHdr = nullptr;
-                if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-                bool isSidAce = false;
-                if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE) {
-                    auto* pAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr);
-                    isSidAce = EqualSid(&pAce->SidStart, pSid);
-                }
-                if (!isSidAce)
-                    AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
-            }
-
-            // Add reduced ACE
-            if (reducedMask != 0) {
-                DWORD aceFlags = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
-                DWORD aceSize = sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + sidLen;
-                auto* pNewAce = reinterpret_cast<ACCESS_ALLOWED_ACE*>(LocalAlloc(LPTR, aceSize));
-                if (pNewAce) {
-                    pNewAce->Header.AceType = ACCESS_ALLOWED_ACE_TYPE;
-                    pNewAce->Header.AceFlags = static_cast<BYTE>(aceFlags);
-                    pNewAce->Header.AceSize = static_cast<WORD>(aceSize);
-                    pNewAce->Mask = reducedMask;
-                    CopySid(sidLen, &pNewAce->SidStart, pSid);
-                    AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pNewAce, aceSize);
-                    LocalFree(pNewAce);
-                }
-            }
-
-            g_logger.LogFmt(L"DENY_AC: existing=0x%08X deny=0x%08X reduced=0x%08X",
-                            existingMask, denyMask, reducedMask);
-
-        } else {
-            // Restricted mode: real DENY ACEs work
-            EXPLICIT_ACCESSW ea{};
-            ea.grfAccessPermissions = denyMask;
-            ea.grfAccessMode = DENY_ACCESS;
-            ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
-            ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-            ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-            ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
-            rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
-        }
+        EXPLICIT_ACCESSW ea{};
+        ea.grfAccessPermissions = denyMask;
+        ea.grfAccessMode = DENY_ACCESS;
+        ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
+        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
 
         LocalFree(pSD);
-        if (rc != ERROR_SUCCESS || !pNewDacl) return (rc != ERROR_SUCCESS) ? rc : ERROR_NOT_ENOUGH_MEMORY;
+        if (rc != ERROR_SUCCESS || !pNewDacl)
+            return (rc != ERROR_SUCCESS) ? rc : ERROR_NOT_ENOUGH_MEMORY;
 
-        // Apply with PROTECTED_DACL to break inheritance from parent grants
-        DWORD siFlags = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-        DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
-        bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
-                     && (attr & FILE_ATTRIBUTE_DIRECTORY);
-        if (isDir) {
-            rc = TreeSetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                siFlags, nullptr, nullptr, pNewDacl, nullptr,
-                TREE_SEC_INFO_RESET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
-        } else {
-            rc = SetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                siFlags, nullptr, nullptr, pNewDacl, nullptr);
-        }
+        // Apply — standard SetNamedSecurityInfoW with auto-inheritance
+        rc = SetNamedSecurityInfoW(
+            const_cast<LPWSTR>(path.c_str()), objType,
+            DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
         LocalFree(pNewDacl);
 
         // Record the grant AFTER successful ACL application
         if (rc == ERROR_SUCCESS && recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, trappedSids, true, false);
+                recordFn(path, objType, sidStr, L"", true, false);
                 LocalFree(sidStr);
             }
         }
 
         // Log resulting DACL
         if (rc == ERROR_SUCCESS) {
+            g_logger.LogFmt(L"DENY_RT: %s -> mask=0x%08X", path.c_str(), denyMask);
             PACL pResultDacl = nullptr;
             PSECURITY_DESCRIPTOR pResultSD = nullptr;
             if (GetNamedSecurityInfoW(path.c_str(), objType,
@@ -400,28 +264,12 @@ namespace Sandbox {
                                   const std::wstring& sidString,
                                   SE_OBJECT_TYPE objType,
                                   bool wasDenied = false,
-                                  const std::wstring& trappedSids = L"",
                                   bool skipTreeSet = false)
     {
         // Convert SID string to binary SID
         PSID pTargetSid = nullptr;
         if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid))
             return 0;
-
-        // Build set of trapped SIDs to also remove
-        std::vector<PSID> trappedSidPtrs;
-        std::vector<std::wstring> trappedTokens;
-        if (!trappedSids.empty()) {
-            std::wistringstream ss(trappedSids);
-            std::wstring token;
-            while (std::getline(ss, token, L';')) {
-                if (token.empty()) continue;
-                trappedTokens.push_back(token);
-                PSID pTrap = nullptr;
-                if (ConvertStringSidToSidW(token.c_str(), &pTrap))
-                    trappedSidPtrs.push_back(pTrap);
-            }
-        }
 
         // Read current DACL
         PACL pOldDacl = nullptr;
@@ -431,8 +279,7 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) {
             LocalFree(pTargetSid);
-            for (auto p : trappedSidPtrs) LocalFree(p);
-            return 0;
+                        return 0;
         }
 
         // Walk ACE list, build new DACL without matching ACEs
@@ -440,17 +287,12 @@ namespace Sandbox {
         if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-            for (auto p : trappedSidPtrs) LocalFree(p);
-            return 0;
+                        return 0;
         }
 
-        // Helper: check if an ACE SID matches our target or any trapped SID
+        // Helper: check if an ACE SID matches our target
         auto shouldRemove = [&](PSID pAceSid) -> bool {
-            if (EqualSid(pAceSid, pTargetSid)) return true;
-            for (auto pTrap : trappedSidPtrs) {
-                if (EqualSid(pAceSid, pTrap)) return true;
-            }
-            return false;
+            return EqualSid(pAceSid, pTargetSid);
         };
 
         int removed = 0;
@@ -476,8 +318,7 @@ namespace Sandbox {
         if (removed == 0) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-            for (auto p : trappedSidPtrs) LocalFree(p);
-            return 0;
+                        return 0;
         }
 
         // Second pass: build new ACL
@@ -485,8 +326,7 @@ namespace Sandbox {
         if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-            for (auto p : trappedSidPtrs) LocalFree(p);
-            if (pNewDacl) LocalFree(pNewDacl);
+                        if (pNewDacl) LocalFree(pNewDacl);
             return 0;
         }
 
@@ -507,8 +347,7 @@ namespace Sandbox {
 
         LocalFree(pSD);
         LocalFree(pTargetSid);
-        for (auto p : trappedSidPtrs) LocalFree(p);
-
+        
         // Apply cleaned DACL
         // If this was a deny entry, re-enable inheritance with UNPROTECTED_DACL
         DWORD siFlags = DACL_SECURITY_INFORMATION;
@@ -519,10 +358,12 @@ namespace Sandbox {
                      && (attrs != INVALID_FILE_ATTRIBUTES)
                      && (attrs & FILE_ATTRIBUTE_DIRECTORY);
         if (isDir && !skipTreeSet) {
-            rc = TreeSetNamedSecurityInfoW(
+            // Use SetNamedSecurityInfoW (not TreeSet) — removing our ACE from
+            // the root lets auto-inheritance remove inherited copies from
+            // children, while respecting PROTECTED_DACL on deny paths.
+            rc = SetNamedSecurityInfoW(
                 const_cast<LPWSTR>(path.c_str()), objType,
-                siFlags, nullptr, nullptr, pNewDacl, nullptr,
-                TREE_SEC_INFO_SET, TreeSecurityProgress, ProgressInvokeOnError, nullptr);
+                siFlags, nullptr, nullptr, pNewDacl, nullptr);
         } else if (isDir && skipTreeSet) {
             // Peek cleanup: SetKernelObjectSecurity does NOT propagate to children
             HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
@@ -545,12 +386,15 @@ namespace Sandbox {
         }
         LocalFree(pNewDacl);
 
-        if (rc == ERROR_SUCCESS)
-            g_logger.LogFmt(L"ACL_REMOVE: %s -> %d ACEs removed for SID %s%s%s",
-                            path.c_str(), removed, sidString.c_str(),
-                            trappedSids.empty() ? L"" : L" +trapped:",
-                            trappedSids.empty() ? L"" : trappedSids.c_str());
-        return removed;
+        if (rc == ERROR_SUCCESS) {
+            g_logger.LogFmt(L"ACL_REMOVE: %s -> %d ACEs removed for SID %s",
+                            path.c_str(), removed, sidString.c_str());
+            return removed;
+        }
+
+        g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
+                        path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+        return 0;
     }
 
 } // namespace Sandbox

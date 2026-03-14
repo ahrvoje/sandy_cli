@@ -1,17 +1,15 @@
-# Mixed AC+RT test — AppContainer instance config
-# Grants all on test_mixed/shared, read on test_mixed/scripts,
-# deny write on test_mixed/shared/protected
+# Mixed AC+RT test — AppContainer instance config (AC, no deny)
+# Grants all on shared/workspace, read on shared/protected
 
 [sandbox]
 token = 'appcontainer'
 
 [allow]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_mixed\scripts']
-all = ['C:\Users\H\test_mixed\shared']
+read = ['C:\Users\H\test_mixed\scripts', 'C:\Users\H\test_mixed\shared\protected']
+all = ['C:\Users\H\test_mixed\shared\workspace']
+peek = ['C:\Users\H\test_mixed\shared']
 
-[deny]
-write   = ['C:\Users\H\test_mixed\shared\protected']
 [environment]
 inherit = true
 

@@ -57,9 +57,9 @@ def p(*parts):
 # ===========================================================================
 print("=== BASELINE ===")
 test("arena: write+read", True, lambda: (
-    open(p('baseline.tmp'), 'w').write('ok'),
-    open(p('baseline.tmp'), 'r').read(),
-    os.remove(p('baseline.tmp'))
+    open(p('playground', 'baseline.tmp'), 'w').write('ok'),
+    open(p('playground', 'baseline.tmp'), 'r').read(),
+    os.remove(p('playground', 'baseline.tmp'))
 ))
 test("denied_zone: list", False, lambda: os.listdir(p('denied_zone')))
 test("readonly_zone: read report.txt", True,
@@ -101,8 +101,8 @@ test("double_deny: write", False,
      lambda: open(p('double_deny', 'hack.tmp'), 'w').write('x'))
 test("double_deny: create subdir", False,
      lambda: os.mkdir(p('double_deny', 'sub')))
-# DELETE should still work (not denied explicitly)
-test("double_deny: delete should work (only write+read denied)", True,
+# DELETE is now also blocked (no grant at all in AC mode, not just deny)
+test("double_deny: delete blocked (no grant)", False,
      lambda: os.remove(p('double_deny', 'data.txt')))
 
 
@@ -129,7 +129,7 @@ try:
     # Save original CWD
     orig_cwd = os.getcwd()
     # Create a subdir in arena, chdir into it
-    test_dir = p('cwd_test')
+    test_dir = p('playground', 'cwd_test')
     os.makedirs(test_dir, exist_ok=True)
     os.chdir(test_dir)
     # Write using relative path (should work — we're in arena)
@@ -205,7 +205,7 @@ for var in ['USERNAME', 'COMPUTERNAME', 'LOGONSERVER', 'SESSIONNAME']:
 # C1: Runtime File Cleanup — create many files and dirs, verify cleanup
 # ===========================================================================
 print("\n=== C1: Runtime file storm (50 files + 10 dirs) ===")
-runtime_base = p('runtime_storm')
+runtime_base = p('playground', 'runtime_storm')
 os.makedirs(runtime_base, exist_ok=True)
 
 # Create 10 subdirs with 5 files each
@@ -235,23 +235,22 @@ test("runtime: read sample file", True,
 # ===========================================================================
 # C2: Deep Nested Deny — 5 levels down
 # ===========================================================================
-print("\n=== C2: Deep nested deny (5 levels) ===")
-deep_denied = p('deep', 'a', 'b', 'c', 'd')
-# Everything above 'd' should be accessible (inherits arena's all)
+print("\n=== C2: Deep nested access (5 levels) ===")
+deep_child = p('deep', 'a', 'b', 'c', 'd')
+# Peek chain: deep → a → b, then all on c (inherits to d)
 test("deep/a: list", True, lambda: os.listdir(p('deep', 'a')))
 test("deep/a/b: list", True, lambda: os.listdir(p('deep', 'a', 'b')))
 test("deep/a/b/c: list", True, lambda: os.listdir(p('deep', 'a', 'b', 'c')))
-# 'd' itself is denied
-test("deep/a/b/c/d: list (denied)", False, lambda: os.listdir(deep_denied))
-test("deep/a/b/c/d: read secret.txt", False,
-     lambda: open(os.path.join(deep_denied, 'secret.txt'), 'r').read())
-test("deep/a/b/c/d: write (denied)", False,
-     lambda: open(os.path.join(deep_denied, 'hack.tmp'), 'w').write('x'))
-test("deep/a/b/c/d: rmdir (denied)", False,
-     lambda: os.rmdir(deep_denied))
+# 'd' inherits all from c (AC has no deny to block it)
+test("deep/a/b/c/d: list (inherits all)", True, lambda: os.listdir(deep_child))
+test("deep/a/b/c/d: read secret.txt", True,
+     lambda: open(os.path.join(deep_child, 'secret.txt'), 'r').read())
+test("deep/a/b/c/d: write (inherits all)", True,
+     lambda: (open(os.path.join(deep_child, 'hack.tmp'), 'w').write('x'),
+              os.remove(os.path.join(deep_child, 'hack.tmp'))))
 
-# Write in 'c' (one level above denied) should WORK
-test("deep/a/b/c: write (above deny)", True,
+# Write in 'c' should also WORK
+test("deep/a/b/c: write", True,
      lambda: (open(p('deep', 'a', 'b', 'c', 'test.tmp'), 'w').write('ok'),
               os.remove(p('deep', 'a', 'b', 'c', 'test.tmp'))))
 

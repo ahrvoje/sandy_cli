@@ -29,6 +29,45 @@ namespace Sandbox {
         SandboxConfig config;       // parsed config
     };
 
+    // Durable profile teardown must be treated as a transaction: only forget
+    // profile ownership metadata after both loopback and container state are
+    // confirmed gone (or already absent).
+    inline bool TeardownPersistentProfileContainer(const std::wstring& containerName,
+                                                   const wchar_t* contextTag)
+    {
+        if (containerName.empty()) return true;
+
+        bool loopbackOk = RemoveLoopbackExemption(containerName);
+        HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
+        bool containerOk = SUCCEEDED(hr) || AppContainerMissing(hr);
+
+        g_logger.LogFmt(L"%ls: loopback=%s container=%s (%s)",
+                        contextTag,
+                        loopbackOk ? L"OK" : L"FAILED",
+                        containerName.c_str(),
+                        containerOk ? L"deleted-or-absent" : L"FAILED");
+        printf("  [CONTAINER] %ls -> %s\n", containerName.c_str(),
+               containerOk ? "deleted/already absent" : "FAILED");
+
+        return loopbackOk && containerOk;
+    }
+
+    inline bool DeleteProfileRegistryState(const std::wstring& profileName,
+                                           const wchar_t* contextTag)
+    {
+        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + profileName;
+        LSTATUS st = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
+        if (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND) {
+            g_logger.LogFmt(L"%ls: registry metadata deleted for profile '%s'",
+                            contextTag, profileName.c_str());
+            return true;
+        }
+
+        g_logger.LogFmt(L"%ls: registry metadata delete FAILED for profile '%s' (error %lu)",
+                        contextTag, profileName.c_str(), st);
+        return false;
+    }
+
     // -----------------------------------------------------------------------
     // ReadTomlFileText — read a TOML file as raw wide string for storage.
     // -----------------------------------------------------------------------
@@ -197,12 +236,14 @@ namespace Sandbox {
         cfg.integrity = (integ == L"medium") ? IntegrityLevel::Medium : IntegrityLevel::Low;
 
         // --- Strings ---
-        cfg.workdir   = ReadRegSz(hKey, L"_workdir");
+        cfg.workdir   = NormalizeFsPath(ReadRegSz(hKey, L"_workdir"));
         cfg.stdinMode = ReadRegSz(hKey, L"_stdin_mode");
         if (cfg.stdinMode == L"INHERIT")
             cfg.stdinMode.clear();  // inherit stdin
         else if (cfg.stdinMode.empty())
             cfg.stdinMode = L"NUL";  // default (unspecified)
+        else
+            cfg.stdinMode = NormalizeFsPath(cfg.stdinMode);
 
         // --- Booleans ---
         cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
@@ -231,7 +272,7 @@ namespace Sandbox {
             if (sep != std::wstring::npos) {
                 FolderEntry entry;
                 entry.access = ParseAccessTag(val.substr(0, sep));
-                entry.path = val.substr(sep + 1);
+                entry.path = NormalizeFsPath(val.substr(sep + 1));
                 cfg.folders.push_back(std::move(entry));
             }
         }
@@ -246,7 +287,7 @@ namespace Sandbox {
             if (sep != std::wstring::npos) {
                 FolderEntry entry;
                 entry.access = ParseAccessTag(val.substr(0, sep));
-                entry.path = val.substr(sep + 1);
+                entry.path = NormalizeFsPath(val.substr(sep + 1));
                 cfg.denyFolders.push_back(std::move(entry));
             }
         }
@@ -404,7 +445,7 @@ namespace Sandbox {
         if (!stageOk) {
             fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
             RegCloseKey(hKey);
-            RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
+            DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
             if (isAppContainer && !containerName.empty())
                 DeleteAppContainerProfile(containerName.c_str());
             FreeSid(pSid);
@@ -426,6 +467,15 @@ namespace Sandbox {
             if (!GrantRegistryAccess(pSid, config))
                 grantOk = false;
         }
+        // AppContainer localhost is durable profile-owned state and must be
+        // established with the profile rather than treated as a transient run
+        // side effect.
+        if (isAppContainer && config.allowLocalhost) {
+            if (!EnsureProfileLoopback(containerName)) {
+                g_logger.Log(L"CREATE_PROFILE: profile-owned loopback enable FAILED");
+                grantOk = false;
+            }
+        }
         if (!GrantTrackingHealthy()) {
             g_logger.Log(L"CREATE_PROFILE: grant tracking persistence FAILED — aborting");
             grantOk = false;
@@ -436,21 +486,26 @@ namespace Sandbox {
             fprintf(stderr, "Error: grant application failed (may need Administrator). "
                     "Profile not committed.\n");
             AbortStagingGrantCapture();
-            // F1/R11: Roll back ACLs and check whether rollback was complete.
-            // If incomplete, preserve staging key so --cleanup can retry later.
-            bool rollbackOk = RestoreGrantsFromKey(hKey);
-            if (isAppContainer && !containerName.empty())
-                DeleteAppContainerProfile(containerName.c_str());
+            // Roll back ACLs — SIDs are unique, so rollback is always complete
+            RestoreGrantsFromKey(hKey);
+            bool containerRollbackOk = true;
+            if (isAppContainer && !containerName.empty()) {
+                containerRollbackOk = TeardownPersistentProfileContainer(
+                    containerName, L"CREATE_PROFILE_ROLLBACK");
+            }
             AcquireSRWLockExclusive(&g_aclGrantsLock);
             g_aclGrants.clear();
             ReleaseSRWLockExclusive(&g_aclGrantsLock);
             RegCloseKey(hKey);
-            if (rollbackOk) {
+            if (containerRollbackOk) {
                 // Rollback complete — safe to delete staging key
-                RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
+                if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_ROLLBACK")) {
+                    g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: metadata delete failed, preserving staging key");
+                    fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
+                }
             } else {
-                // Rollback incomplete — preserve staging key for --cleanup retry
-                g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: incomplete, preserving staging key for retry");
+                // Container teardown failed — preserve staging key for --cleanup retry
+                g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: container teardown incomplete, preserving staging key for retry");
                 fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
             }
             FreeSid(pSid);
@@ -477,17 +532,23 @@ namespace Sandbox {
 
         if (!commitOk) {
             fprintf(stderr, "Error: profile metadata commit failed. Rolling back.\n");
-            bool rollbackOk = RestoreGrantsFromKey(hKey);
-            if (isAppContainer && !containerName.empty())
-                DeleteAppContainerProfile(containerName.c_str());
+            RestoreGrantsFromKey(hKey);
+            bool containerRollbackOk = true;
+            if (isAppContainer && !containerName.empty()) {
+                containerRollbackOk = TeardownPersistentProfileContainer(
+                    containerName, L"CREATE_PROFILE_COMMIT_ROLLBACK");
+            }
             AcquireSRWLockExclusive(&g_aclGrantsLock);
             g_aclGrants.clear();
             ReleaseSRWLockExclusive(&g_aclGrantsLock);
             RegCloseKey(hKey);
-            if (rollbackOk) {
-                RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
+            if (containerRollbackOk) {
+                if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_COMMIT_ROLLBACK")) {
+                    g_logger.Log(L"CREATE_PROFILE_COMMIT: metadata delete failed, preserving staging key for retry");
+                    fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
+                }
             } else {
-                g_logger.Log(L"CREATE_PROFILE_COMMIT: rollback incomplete, preserving staging key for retry");
+                g_logger.Log(L"CREATE_PROFILE_COMMIT: container teardown incomplete, preserving staging key for retry");
                 fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
             }
             FreeSid(pSid);
@@ -575,29 +636,36 @@ namespace Sandbox {
             if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
                 // Revoke ACLs recorded in the profile key
-                bool cleanOk = RestoreGrantsFromKey(hKey);
+                RestoreGrantsFromKey(hKey);
+                bool containerCleanOk = true;
 
                 // Delete AppContainer profile if present
                 std::wstring containerName = ReadRegSz(hKey, L"_container");
                 if (!containerName.empty()) {
-                    HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
-                    g_logger.LogFmt(L"STAGING_CLEANUP: container %s -> %s",
-                                    containerName.c_str(), SUCCEEDED(hr) ? L"deleted" : L"FAILED");
+                    containerCleanOk = TeardownPersistentProfileContainer(
+                        containerName, L"STAGING_CLEANUP");
                 }
                 RegCloseKey(hKey);
 
-                // F3/R8: Preserve metadata for retry if ACL revert was incomplete
-                if (!cleanOk) {
-                    g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' ACL revert incomplete, preserving metadata",
+                // Preserve metadata for retry until durable host state
+                // has been fully reverted.
+                if (!containerCleanOk) {
+                    g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' container teardown incomplete, preserving metadata",
                                     name.c_str());
-                    printf("  [STAGING] Profile '%ls' ACL revert incomplete — metadata preserved for retry.\n",
+                    printf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
                            name.c_str());
                     continue;
                 }
             }
 
             // Delete the incomplete profile registry key
-            RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
+            if (!DeleteProfileRegistryState(name, L"STAGING_CLEANUP")) {
+                g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' metadata delete failed, preserving metadata",
+                                name.c_str());
+                printf("  [STAGING] Profile '%ls' metadata delete failed — preserved for retry.\n",
+                       name.c_str());
+                continue;
+            }
             g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rolled back", name.c_str());
             printf("  [STAGING] Profile '%ls' rolled back.\n", name.c_str());
         }
@@ -649,7 +717,7 @@ namespace Sandbox {
         // F2/R8: Type-agnostic liveness guard — refuse deletion when any
         // live instance is using this profile (covers both AC and RT modes)
         auto liveProfiles = GetLiveProfileNames();
-        if (liveProfiles.count(name)) {
+        if (liveProfiles.count(NormalizeLookupKey(name))) {
             RegCloseKey(hKey);
             fprintf(stderr, "Error: profile '%ls' is currently in use by a live sandbox.\n"
                     "Wait for the sandbox to exit, or terminate it first.\n", name.c_str());
@@ -657,8 +725,8 @@ namespace Sandbox {
         }
         // Legacy AC container check (for instances that predate _profile_name)
         if (!containerName.empty()) {
-            auto liveContainers = GetLiveContainerNames();
-            if (liveContainers.count(containerName)) {
+                auto liveContainers = GetLiveContainerNames();
+                if (liveContainers.count(NormalizeLookupKey(containerName))) {
                 RegCloseKey(hKey);
                 fprintf(stderr, "Error: profile '%ls' is currently in use by a live sandbox.\n"
                         "Wait for the sandbox to exit, or terminate it first.\n", name.c_str());
@@ -668,28 +736,28 @@ namespace Sandbox {
 
         // Revoke all grant ACLs
         printf("Revoking grants for profile '%ls'...\n", name.c_str());
-        bool cleanOk = RestoreGrantsFromKey(hKey);
+        RestoreGrantsFromKey(hKey);
         RegCloseKey(hKey);
 
-        // F3/R8: If ACL revert was incomplete, preserve metadata for retry
-        if (!cleanOk) {
-            fprintf(stderr, "Warning: some ACL removals failed for profile '%ls'.\n"
-                    "Profile metadata preserved for retry via --cleanup or --delete-profile.\n",
-                    name.c_str());
-            return SandyExit::InternalError;
-        }
-
         // Delete AppContainer profile from Windows
+        bool containerDeleted = true;
         if (!containerName.empty()) {
-            HRESULT hr = DeleteAppContainerProfile(containerName.c_str());
-            printf("  [CONTAINER] %ls -> %s\n", containerName.c_str(),
-                   SUCCEEDED(hr) ? "deleted" : "FAILED (may not exist)");
+            containerDeleted = TeardownPersistentProfileContainer(
+                containerName, L"DELETE_PROFILE");
+            if (!containerDeleted) {
+                fprintf(stderr, "Warning: durable container teardown failed for profile '%ls'.\n"
+                        "Profile metadata preserved so --delete-profile can be retried safely.\n",
+                        name.c_str());
+                return SandyExit::InternalError;
+            }
         }
 
         // Delete registry key
-        LSTATUS st = RegDeleteTreeW(HKEY_CURRENT_USER, regKey.c_str());
-        if (st != ERROR_SUCCESS) {
-            fprintf(stderr, "Warning: registry key deletion failed (error %lu).\n", st);
+        if (!DeleteProfileRegistryState(name, L"DELETE_PROFILE")) {
+            fprintf(stderr, "Warning: registry key deletion failed for profile '%ls'.\n"
+                    "Profile metadata preserved so --delete-profile can be retried safely.\n",
+                    name.c_str());
+            return SandyExit::InternalError;
         }
 
         printf("Profile '%ls' deleted.\n", name.c_str());
@@ -808,45 +876,28 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // RunWithProfile — run a process using a saved profile's SID + config.
     //
-    // Reconstructs SID from stored profile, builds a PipelineContext, and
-    // delegates to RunPipeline.  Profile mode skips grant application and
-    // revocation; desktop and loopback are handled per-run by the pipeline.
+    // Reconstructs the profile's execution identity and delegates to the same
+    // ownership-driven pipeline used by transient runs. Persistent profile
+    // grants are treated as the primary ownership model rather than as a
+    // special-case "normal run plus profile exceptions".
     // -----------------------------------------------------------------------
     inline int RunWithProfile(const SavedProfile& prof,
                                const std::wstring& exePath,
-                               const std::wstring& exeArgs,
-                               const std::wstring& auditLogPath = L"",
-                               const std::wstring& dumpPath = L"")
+                               const std::wstring& exeArgs)
     {
         const SandboxConfig& config = prof.config;
         bool isRestricted = (config.tokenMode == TokenMode::Restricted);
         bool isAppContainer = !isRestricted;
 
-        // Generate instance ID for this run (unique per run, NOT the profile SID)
         g_instanceId = GenerateInstanceId();
 
-        // Working directory
-        std::wstring exeFolder = config.workdir.empty() ? GetExeFolder() : config.workdir;
+        std::wstring exeFolder = config.workdir.empty() ? GetInheritedWorkdir() : config.workdir;
         if (exeFolder.empty())
             return SandyExit::SetupError;
 
-        // Startup housekeeping (same as RunSandboxed — crash resilience safety net)
-        CleanupStaleStartupState(exePath);
-        CleanStagingProfiles();
-        RestoreStaleGrants();  // F3/R9: retry deferred stale cleanup on every normal startup
-        WarnStaleRegistryEntries();
-        CreateCleanupTask(g_instanceId);
-        LogSandyIdentity();
-        g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
-        g_logger.Log((L"PROFILE: " + prof.name).c_str());
+        BeginRunSession(exePath, L"profile:" + prof.name, prof.name, false);
         g_logger.Log((L"PROFILE_SID: " + prof.sidString).c_str());
-        g_logger.Log((L"CONFIG_SOURCE: profile:" + prof.name).c_str());
 
-        // Reconstruct SID from stored profile
-        PipelineContext ctx;
-        ctx.profileMode = true;
-
-        // SID + token cleanup guard — these must outlive RunPipeline
         PSID pSid = nullptr;
         HANDLE hRestrictedToken = nullptr;
 
@@ -889,14 +940,18 @@ namespace Sandbox {
                          : L"MODE: restricted token (Medium integrity, profile)");
         }
 
-        ctx.pSid = pSid;
-        ctx.hToken = hRestrictedToken;
-
-        std::wstring containerName = prof.containerName;
+        ExecutionIdentity identity;
+        identity.pSid = pSid;
+        identity.hToken = hRestrictedToken;
+        identity.containerName = prof.containerName;
+        identity.profileName = prof.name;
+        identity.persistentProfile = true;
+        identity.grantsPreexisting = true;
+        identity.deleteContainerOnExit = false;
 
         // Register live-state so both GetLiveContainerNames() and
         // GetLiveProfileNames() can detect this run (F2/R8)
-        if (!PersistLiveState(containerName, prof.name)) {
+        if (!PersistLiveState(identity.containerName, prof.name)) {
             if (hRestrictedToken) CloseHandle(hRestrictedToken);
             if (isAppContainer)
                 FreeSid(pSid);
@@ -908,8 +963,8 @@ namespace Sandbox {
             return SandyExit::SetupError;
         }
 
-        int result = RunPipeline(config, exePath, exeArgs, containerName,
-                                  exeFolder, auditLogPath, dumpPath, ctx);
+        int result = RunPipeline(config, exePath, exeArgs, exeFolder,
+                                 identity);
 
         // Cleanup SID and token (RunPipeline doesn't own these in profile mode)
         ClearLiveState();

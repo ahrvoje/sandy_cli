@@ -95,4 +95,23 @@ namespace Sandbox {
         return true;
     }
 
+    inline LSTATUS DeleteRegTreeBestEffort(HKEY hRoot, const std::wstring& subKey)
+    {
+        LSTATUS st = RegDeleteTreeW(hRoot, subKey.c_str());
+        if (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND)
+            return st;
+
+        LSTATUS fallback = RegDeleteKeyW(hRoot, subKey.c_str());
+        if (fallback == ERROR_SUCCESS || fallback == ERROR_FILE_NOT_FOUND || fallback == ERROR_PATH_NOT_FOUND)
+            return fallback;
+
+        return fallback;
+    }
+
+    inline bool DeleteRegTreeIfExists(HKEY hRoot, const std::wstring& subKey)
+    {
+        LSTATUS st = DeleteRegTreeBestEffort(hRoot, subKey);
+        return st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND;
+    }
+
 } // namespace Sandbox
