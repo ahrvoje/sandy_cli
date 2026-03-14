@@ -26,6 +26,7 @@ if exist "%ROOT%" (
 REM --- Build tree ---
 mkdir "%ARENA%\forbidden" 2>nul
 mkdir "%ARENA%\readonly" 2>nul
+mkdir "%ARENA%\workspace" 2>nul
 mkdir "%ROOT%\scripts" 2>nul
 
 REM --- Seed files ---
@@ -86,7 +87,7 @@ REM --- Check for ADS artifacts left behind ---
 echo.
 echo --- ADS Artifact Check ---
 set "ADS_FOUND=0"
-for /f "delims=" %%L in ('dir /s /r "%ARENA%\*" 2^>nul ^| findstr ":"') do (
+for /f "delims=" %%L in ('dir /s /r "%ARENA%\workspace\*" 2^>nul ^| findstr ":"') do (
     echo %%L | findstr /i "phantom_data" >nul 2>&1
     if !ERRORLEVEL! EQU 0 (
         set "ADS_FOUND=1"
@@ -104,8 +105,8 @@ if "!ADS_FOUND!"=="0" (
 REM --- Check for armored files (READONLY attribute) ---
 echo.
 echo --- Attribute Armor Check ---
-if exist "%ARENA%\armored.txt" (
-    attrib "%ARENA%\armored.txt"
+if exist "%ARENA%\workspace\armored.txt" (
+    attrib "%ARENA%\workspace\armored.txt"
     echo   [INFO] armored.txt still exists with attributes
 ) else (
     echo   [PASS] armored.txt cleaned

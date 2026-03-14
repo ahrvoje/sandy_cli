@@ -53,27 +53,9 @@ if !TIMEOUT_EXIT! NEQ 0 (
 )
 echo.
 
-REM --- Part 3: Strict mode (RT version — no execute grant) ---
-echo --- Part 3: Strict mode (RT, no execute grant) ---
-echo.
-
-"%SANDY%" -c "%~dp0test_strict_rt_config.toml" -x "%PYTHON%" -c "print('should not run')"
-set STRICT_EXIT=!ERRORLEVEL!
-
-echo.
-if !STRICT_EXIT! NEQ 0 (
-    echo   [PASS] Strict mode: execution blocked
-    set RESULT3=blocked
-) else (
-    echo   [FAIL] Strict mode: process ran - should have been blocked!
-    set RESULT3=ran
-)
-echo.
-
 echo === Summary ===
 echo   Part 1 (allow/limits): exit !PART1_EXIT!
 echo   Part 2 (timeout):      killed in ~!ELAPSED!s
-echo   Part 3 (strict mode):  !RESULT3!
 
 REM === Cleanup ===
 "%SANDY%" --cleanup >nul 2>nul

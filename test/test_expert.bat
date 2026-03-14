@@ -104,9 +104,6 @@ if exist "%ARENA%\runtime_storm" (
     set /a CLEANUP_PASS+=1
 )
 
-REM --- Clean stale state before checking ---
-"%SANDY%" --cleanup >nul 2>&1
-
 REM --- Check registry ---
 reg query "HKCU\Software\Sandy\Grants" >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (

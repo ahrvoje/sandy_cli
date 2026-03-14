@@ -2,8 +2,9 @@
 # Theme: persistence, observation, and cleanup interference
 #
 # arena/
-#   forbidden/     (no grant — fully blocked)
-#   readonly/      [allow read] — was deny.write
+#   workspace/   [allow all] — writable zone for test fixtures
+#   forbidden/   (no grant — fully blocked)
+#   readonly/    [allow read]
 
 [sandbox]
 token = 'appcontainer'
@@ -12,6 +13,7 @@ token = 'appcontainer'
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_phantom\scripts', 'C:\Users\H\test_phantom\arena\readonly']
 peek = ['C:\Users\H\test_phantom\arena']
+all = ['C:\Users\H\test_phantom\arena\workspace']
 
 [privileges]
 child_processes = false

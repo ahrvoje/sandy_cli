@@ -21,6 +21,7 @@ import os, sys, ctypes, ctypes.wintypes, struct, time
 
 ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_phantom')
 ARENA = os.path.join(ROOT, 'arena')
+WORKSPACE = os.path.join(ARENA, 'workspace')
 results = []
 
 def test(name, should_pass, fn):
@@ -61,6 +62,10 @@ def test(name, should_pass, fn):
 def p(*parts):
     return os.path.join(ARENA, *parts)
 
+def w(*parts):
+    """Path in writable workspace zone."""
+    return os.path.join(WORKSPACE, *parts)
+
 kernel32 = ctypes.windll.kernel32
 
 
@@ -72,7 +77,7 @@ kernel32 = ctypes.windll.kernel32
 # Sandy exits — this is a data persistence channel, not an ACL bypass.
 # ===========================================================================
 print("=== P1: Alternate Data Stream persistence ===")
-ads_file = p('ads_target.txt')
+ads_file = w('ads_target.txt')
 ads_path = ads_file + ':phantom_data'
 try:
     # Create the base file
@@ -112,7 +117,7 @@ except (PermissionError, OSError):
 # fail when the file has READONLY set? This could interfere with cleanup.
 # ===========================================================================
 print("\n=== P2: File attribute armor ===")
-armor_file = p('armored.txt')
+armor_file = w('armored.txt')
 try:
     with open(armor_file, 'w') as f:
         f.write('armor test')
@@ -162,8 +167,8 @@ else:
 # After cleanup, does the hard link retain any AppContainer ACEs?
 # ===========================================================================
 print("\n=== P3: Hard link inode sharing ===")
-hl_orig = p('hl_original.txt')
-hl_link = p('hl_linked.txt')
+hl_orig = w('hl_original.txt')
+hl_link = w('hl_linked.txt')
 try:
     with open(hl_orig, 'w') as f:
         f.write('original data')
@@ -273,9 +278,13 @@ try:
                 # The RID of the integrity SID tells us the level
                 pSid = ctypes.c_void_p.from_buffer_copy(buf, 0).value
                 if pSid:
-                    subAuth = advapi32.GetSidSubAuthority(pSid, advapi32.GetSidSubAuthorityCount(pSid)[0] - 1)
-                    if subAuth:
-                        rid = ctypes.cast(subAuth, ctypes.POINTER(ctypes.wintypes.DWORD))[0]
+                    advapi32.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+                    advapi32.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+                    advapi32.GetSidSubAuthority.restype = ctypes.POINTER(ctypes.wintypes.DWORD)
+                    advapi32.GetSidSubAuthority.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD]
+                    count = advapi32.GetSidSubAuthorityCount(pSid)[0]
+                    if count > 0:
+                        rid = advapi32.GetSidSubAuthority(pSid, count - 1)[0]
                         levels = {0x1000: 'Low', 0x2000: 'Medium', 0x3000: 'High', 0x4000: 'System'}
                         level_name = levels.get(rid, f'0x{rid:04X}')
                         print(f"  [INFO] Integrity level: {level_name} (RID=0x{rid:04X})")
@@ -379,7 +388,7 @@ except (PermissionError, OSError, ValueError) as e:
     results.append(('PASS', 'mmap: readonly blocked'))
 
 # mmap in arena (should work)
-mmap_file = p('mmap_test.bin')
+mmap_file = w('mmap_test.bin')
 try:
     with open(mmap_file, 'wb') as f:
         f.write(b'\x00' * 4096)
@@ -404,7 +413,7 @@ except Exception as e:
 # Can we forge timestamps in the arena? Can we mess with denied zone attrs?
 # ===========================================================================
 print("\n=== P9: Timestamp/attribute forgery ===")
-ts_file = p('timestamp_victim.txt')
+ts_file = w('timestamp_victim.txt')
 try:
     with open(ts_file, 'w') as f:
         f.write('timestamp test')
@@ -450,7 +459,7 @@ else:
 # when we close the handle. Does it leave any ACL artifacts?
 # ===========================================================================
 print("\n=== P10: DELETE_ON_CLOSE and temporary files ===")
-doc_file = p('delete_on_close.tmp')
+doc_file = w('delete_on_close.tmp')
 FILE_FLAG_DELETE_ON_CLOSE = 0x04000000
 GENERIC_WRITE = 0x40000000
 GENERIC_READ = 0x80000000
@@ -491,7 +500,7 @@ else:
 # Does this affect cleanup performance or disk quota?
 # ===========================================================================
 print("\n=== P11: Sparse file manipulation ===")
-sparse_file = p('sparse.dat')
+sparse_file = w('sparse.dat')
 FSCTL_SET_SPARSE = 0x000900C4
 FSCTL_SET_ZERO_DATA = 0x000980C8
 try:
