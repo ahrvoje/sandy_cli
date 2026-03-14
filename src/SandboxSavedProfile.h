@@ -487,7 +487,7 @@ namespace Sandbox {
                     "Profile not committed.\n");
             AbortStagingGrantCapture();
             // Roll back ACLs — SIDs are unique, so rollback is always complete
-            RestoreGrantsFromKey(hKey);
+            bool grantsRestored = RestoreGrantsFromKey(hKey);
             bool containerRollbackOk = true;
             if (isAppContainer && !containerName.empty()) {
                 containerRollbackOk = TeardownPersistentProfileContainer(
@@ -497,15 +497,17 @@ namespace Sandbox {
             g_aclGrants.clear();
             ReleaseSRWLockExclusive(&g_aclGrantsLock);
             RegCloseKey(hKey);
-            if (containerRollbackOk) {
+            if (grantsRestored && containerRollbackOk) {
                 // Rollback complete — safe to delete staging key
                 if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_ROLLBACK")) {
                     g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: metadata delete failed, preserving staging key");
                     fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
                 }
             } else {
-                // Container teardown failed — preserve staging key for --cleanup retry
-                g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: container teardown incomplete, preserving staging key for retry");
+                // Preserve staging metadata until both ACL and container rollback are complete.
+                g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: rollback incomplete (acl=%s container=%s), preserving staging key for retry",
+                                grantsRestored ? L"OK" : L"FAILED",
+                                containerRollbackOk ? L"OK" : L"FAILED");
                 fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
             }
             FreeSid(pSid);
@@ -532,7 +534,7 @@ namespace Sandbox {
 
         if (!commitOk) {
             fprintf(stderr, "Error: profile metadata commit failed. Rolling back.\n");
-            RestoreGrantsFromKey(hKey);
+            bool grantsRestored = RestoreGrantsFromKey(hKey);
             bool containerRollbackOk = true;
             if (isAppContainer && !containerName.empty()) {
                 containerRollbackOk = TeardownPersistentProfileContainer(
@@ -542,13 +544,15 @@ namespace Sandbox {
             g_aclGrants.clear();
             ReleaseSRWLockExclusive(&g_aclGrantsLock);
             RegCloseKey(hKey);
-            if (containerRollbackOk) {
+            if (grantsRestored && containerRollbackOk) {
                 if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_COMMIT_ROLLBACK")) {
                     g_logger.Log(L"CREATE_PROFILE_COMMIT: metadata delete failed, preserving staging key for retry");
                     fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
                 }
             } else {
-                g_logger.Log(L"CREATE_PROFILE_COMMIT: container teardown incomplete, preserving staging key for retry");
+                g_logger.LogFmt(L"CREATE_PROFILE_COMMIT: rollback incomplete (acl=%s container=%s), preserving staging key for retry",
+                                grantsRestored ? L"OK" : L"FAILED",
+                                containerRollbackOk ? L"OK" : L"FAILED");
                 fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
             }
             FreeSid(pSid);
@@ -636,7 +640,7 @@ namespace Sandbox {
             if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
                 // Revoke ACLs recorded in the profile key
-                RestoreGrantsFromKey(hKey);
+                bool grantsRestored = RestoreGrantsFromKey(hKey);
                 bool containerCleanOk = true;
 
                 // Delete AppContainer profile if present
@@ -649,9 +653,11 @@ namespace Sandbox {
 
                 // Preserve metadata for retry until durable host state
                 // has been fully reverted.
-                if (!containerCleanOk) {
-                    g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' container teardown incomplete, preserving metadata",
-                                    name.c_str());
+                if (!grantsRestored || !containerCleanOk) {
+                    g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rollback incomplete (acl=%s container=%s), preserving metadata",
+                                    name.c_str(),
+                                    grantsRestored ? L"OK" : L"FAILED",
+                                    containerCleanOk ? L"OK" : L"FAILED");
                     printf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
                            name.c_str());
                     continue;
@@ -736,8 +742,14 @@ namespace Sandbox {
 
         // Revoke all grant ACLs
         printf("Revoking grants for profile '%ls'...\n", name.c_str());
-        RestoreGrantsFromKey(hKey);
+        bool grantsRestored = RestoreGrantsFromKey(hKey);
         RegCloseKey(hKey);
+        if (!grantsRestored) {
+            fprintf(stderr, "Warning: ACL rollback failed for profile '%ls'.\n"
+                    "Profile metadata preserved so --delete-profile can be retried safely.\n",
+                    name.c_str());
+            return SandyExit::InternalError;
+        }
 
         // Delete AppContainer profile from Windows
         bool containerDeleted = true;
@@ -885,6 +897,7 @@ namespace Sandbox {
                                const std::wstring& exePath,
                                const std::wstring& exeArgs)
     {
+        ResetEmergencyCleanupState();
         const SandboxConfig& config = prof.config;
         bool isRestricted = (config.tokenMode == TokenMode::Restricted);
         bool isAppContainer = !isRestricted;
@@ -958,6 +971,7 @@ namespace Sandbox {
             else
                 LocalFree(pSid);
             DeleteCleanupTask(g_instanceId);
+            ResetEmergencyCleanupState();
             fprintf(stderr, "Error: failed to persist live profile state for '%ls'.\n",
                     prof.name.c_str());
             return SandyExit::SetupError;
@@ -968,11 +982,13 @@ namespace Sandbox {
 
         // Cleanup SID and token (RunPipeline doesn't own these in profile mode)
         ClearLiveState();
+        FinalizeCleanupTaskForCurrentRun();
         if (hRestrictedToken) CloseHandle(hRestrictedToken);
         if (isAppContainer)
             FreeSid(pSid);
         else
             LocalFree(pSid);
+        ResetEmergencyCleanupState();
 
         return result;
     }

@@ -11,6 +11,20 @@
 
 namespace Sandbox {
 
+    enum class AceRemovalMode {
+        AllForSid,
+        AllowOnly,
+        DenyOnly,
+    };
+
+    struct AceRemovalResult {
+        int   removed = 0;
+        DWORD error = ERROR_SUCCESS;
+        bool  targetMissing = false;
+
+        bool Succeeded() const { return error == ERROR_SUCCESS; }
+    };
+
     // Callback type for recording grants (defined in SandboxGrants.h)
     // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isPeek flag
     typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool, bool);
@@ -257,19 +271,32 @@ namespace Sandbox {
     //
     // Multi-instance safe: only removes ACEs matching the given SID string.
     // Other ACEs (from other instances, users, system) are untouched.
-    // Uses TreeSet for directories to propagate to children.
-    // Returns number of ACEs removed.
-    // -----------------------------------------------------------------------
-    inline int RemoveSidFromDacl(const std::wstring& path,
-                                  const std::wstring& sidString,
-                                  SE_OBJECT_TYPE objType,
-                                  bool wasDenied = false,
-                                  bool skipTreeSet = false)
+    // Uses SetNamedSecurityInfoW/auto-inheritance for directory cleanup.
+    inline bool IsMissingSecurityTargetError(DWORD rc)
     {
+        return rc == ERROR_FILE_NOT_FOUND ||
+               rc == ERROR_PATH_NOT_FOUND ||
+               rc == ERROR_NOT_FOUND;
+    }
+
+    // Returns a structured result so callers can distinguish "already clean"
+    // from an actual ACL mutation failure.
+    // -----------------------------------------------------------------------
+    inline AceRemovalResult RemoveSidFromDaclDetailed(const std::wstring& path,
+                                                     const std::wstring& sidString,
+                                                     SE_OBJECT_TYPE objType,
+                                                     bool wasDenied = false,
+                                                     bool skipTreeSet = false,
+                                                     AceRemovalMode removalMode = AceRemovalMode::AllForSid)
+    {
+        AceRemovalResult result;
+
         // Convert SID string to binary SID
         PSID pTargetSid = nullptr;
-        if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid))
-            return 0;
+        if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid)) {
+            result.error = GetLastError();
+            return result;
+        }
 
         // Read current DACL
         PACL pOldDacl = nullptr;
@@ -279,7 +306,13 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) {
             LocalFree(pTargetSid);
-                        return 0;
+            result.error = IsMissingSecurityTargetError(rc) ? ERROR_SUCCESS : rc;
+            result.targetMissing = IsMissingSecurityTargetError(rc);
+            if (!result.targetMissing) {
+                g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
+                                path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+            }
+            return result;
         }
 
         // Walk ACE list, build new DACL without matching ACEs
@@ -287,12 +320,28 @@ namespace Sandbox {
         if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-                        return 0;
+            result.error = GetLastError();
+            g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
+                            path.c_str(), result.error,
+                            GetSystemErrorMessage(result.error).c_str());
+            return result;
         }
 
         // Helper: check if an ACE SID matches our target
-        auto shouldRemove = [&](PSID pAceSid) -> bool {
-            return EqualSid(pAceSid, pTargetSid);
+        auto shouldRemove = [&](BYTE aceType, PSID pAceSid) -> bool {
+            if (!EqualSid(pAceSid, pTargetSid))
+                return false;
+
+            switch (removalMode) {
+            case AceRemovalMode::AllowOnly:
+                return aceType == ACCESS_ALLOWED_ACE_TYPE;
+            case AceRemovalMode::DenyOnly:
+                return aceType == ACCESS_DENIED_ACE_TYPE;
+            case AceRemovalMode::AllForSid:
+            default:
+                return aceType == ACCESS_ALLOWED_ACE_TYPE ||
+                       aceType == ACCESS_DENIED_ACE_TYPE;
+            }
         };
 
         int removed = 0;
@@ -308,7 +357,7 @@ namespace Sandbox {
             else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
                 pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
 
-            if (pAceSid && shouldRemove(pAceSid)) {
+            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) {
                 removed++;
             } else {
                 newAclSize += pAceHdr->AceSize;
@@ -318,7 +367,7 @@ namespace Sandbox {
         if (removed == 0) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-                        return 0;
+            return result;
         }
 
         // Second pass: build new ACL
@@ -326,8 +375,12 @@ namespace Sandbox {
         if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
             LocalFree(pSD);
             LocalFree(pTargetSid);
-                        if (pNewDacl) LocalFree(pNewDacl);
-            return 0;
+            result.error = GetLastError();
+            if (pNewDacl) LocalFree(pNewDacl);
+            g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
+                            path.c_str(), result.error,
+                            GetSystemErrorMessage(result.error).c_str());
+            return result;
         }
 
         for (DWORD i = 0; i < aclInfo.AceCount; i++) {
@@ -340,7 +393,7 @@ namespace Sandbox {
             else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
                 pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
 
-            if (pAceSid && shouldRemove(pAceSid))
+            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid))
                 continue;  // skip — this is ours or a trapped SID
             AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
         }
@@ -389,12 +442,27 @@ namespace Sandbox {
         if (rc == ERROR_SUCCESS) {
             g_logger.LogFmt(L"ACL_REMOVE: %s -> %d ACEs removed for SID %s",
                             path.c_str(), removed, sidString.c_str());
-            return removed;
+            result.removed = removed;
+            return result;
         }
 
+        result.error = rc;
         g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
                         path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
-        return 0;
+        return result;
+    }
+
+    // Returns number of ACEs removed.
+    // -----------------------------------------------------------------------
+    inline int RemoveSidFromDacl(const std::wstring& path,
+                                 const std::wstring& sidString,
+                                 SE_OBJECT_TYPE objType,
+                                 bool wasDenied = false,
+                                 bool skipTreeSet = false,
+                                 AceRemovalMode removalMode = AceRemovalMode::AllForSid)
+    {
+        return RemoveSidFromDaclDetailed(path, sidString, objType,
+                                         wasDenied, skipTreeSet, removalMode).removed;
     }
 
 } // namespace Sandbox

@@ -20,11 +20,29 @@
 
 namespace Sandbox {
 
+    struct ExecutionIdentity;
+
     // Global launch ownership handles for emergency cleanup coordination.
     // The process handle tracks the root process; the job handle tracks the
     // whole sandbox-owned process tree when descendants are allowed.
     inline HANDLE g_childProcess = nullptr;
     inline HANDLE g_childJob = nullptr;
+
+    // Emergency cleanup only needs the transient AppContainer teardown target.
+    // Run-ledger presence and cleanup-task retention are derived from the
+    // recovery ledger itself rather than mirrored in separate shadow flags.
+    struct EmergencyCleanupState {
+        bool         deleteContainerOnExit = false;
+        std::wstring containerName;
+    };
+
+    inline EmergencyCleanupState g_emergencyCleanupState;
+    inline SRWLOCK               g_emergencyCleanupStateLock = SRWLOCK_INIT;
+
+    inline void ResetEmergencyCleanupState();
+    inline void ConfigureEmergencyCleanupState(const std::wstring& containerName,
+                                               bool deleteContainerOnExit);
+    inline EmergencyCleanupState SnapshotEmergencyCleanupState();
 
     // -----------------------------------------------------------------------
     // RecordGrant callback — bridges SandboxACL.h → SandboxGrants.h
@@ -169,7 +187,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
                         e.path.c_str(), isPeek ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
-                                     true, isPeek);
+                                     true, isPeek, AceRemovalMode::DenyOnly);
                 }
 
                 // Apply allow
@@ -360,6 +378,30 @@ namespace Sandbox {
         bool         deleteContainerOnExit = false;
     };
 
+    inline void ResetEmergencyCleanupState()
+    {
+        AcquireSRWLockExclusive(&g_emergencyCleanupStateLock);
+        g_emergencyCleanupState = {};
+        ReleaseSRWLockExclusive(&g_emergencyCleanupStateLock);
+    }
+
+    inline void ConfigureEmergencyCleanupState(const std::wstring& containerName,
+                                               bool deleteContainerOnExit)
+    {
+        AcquireSRWLockExclusive(&g_emergencyCleanupStateLock);
+        g_emergencyCleanupState.deleteContainerOnExit = deleteContainerOnExit;
+        g_emergencyCleanupState.containerName = deleteContainerOnExit ? containerName : L"";
+        ReleaseSRWLockExclusive(&g_emergencyCleanupStateLock);
+    }
+
+    inline EmergencyCleanupState SnapshotEmergencyCleanupState()
+    {
+        AcquireSRWLockShared(&g_emergencyCleanupStateLock);
+        EmergencyCleanupState snapshot = g_emergencyCleanupState;
+        ReleaseSRWLockShared(&g_emergencyCleanupStateLock);
+        return snapshot;
+    }
+
     // -----------------------------------------------------------------------
     // DynamicWatcherThread — polls config file, applies only grant deltas.
     //
@@ -450,33 +492,126 @@ namespace Sandbox {
             int revokeCount = 0, grantCount = 0, failCount = 0;
             ResetGrantTrackingHealth();
 
+            auto ReapplySamePathFileEntries = [&](const std::wstring& path) -> bool {
+                std::vector<GrantKey> survivors;
+                for (const auto& k : newKeys) {
+                    if (_wcsicmp(k.path.c_str(), path.c_str()) == 0)
+                        survivors.push_back(k);
+                }
+                if (survivors.empty())
+                    return true;
+
+                std::stable_sort(survivors.begin(), survivors.end(),
+                    [](const GrantKey& a, const GrantKey& b) {
+                        if (a.isDeny != b.isDeny) return a.isDeny;
+                        return false;
+                    });
+
+                bool hasDeny = false;
+                for (const auto& entry : survivors) {
+                    if (entry.isDeny) {
+                        hasDeny = true;
+                        break;
+                    }
+                }
+
+                bool ok = true;
+                for (const auto& entry : survivors) {
+                    if (entry.isDeny) {
+                        DWORD rc = DenyObjectAccess(ctx->pSid, entry.path, entry.access,
+                                                    RecordGrantCallback);
+                        if (rc == ERROR_SUCCESS) {
+                            g_logger.LogFmt(L"DYNAMIC_REAPPLY: [deny] %s -> OK",
+                                            entry.path.c_str());
+                            grantCount++;
+                        } else {
+                            g_logger.LogFmt(L"DYNAMIC_REAPPLY: [deny] %s -> FAILED (0x%08X)",
+                                            entry.path.c_str(), rc);
+                            failCount++;
+                            ok = false;
+                        }
+                        continue;
+                    }
+
+                    if (hasDeny && !ctx->sidString.empty()) {
+                        bool isPeek = (entry.access == AccessLevel::Peek);
+                        g_logger.LogFmt(L"DYNAMIC_REAPPLY: strip deny [%s] %s",
+                                        AccessTag(entry.access), entry.path.c_str());
+                        RemoveSidFromDacl(entry.path, ctx->sidString, SE_FILE_OBJECT,
+                                          true, isPeek, AceRemovalMode::DenyOnly);
+                    }
+
+                    DWORD rc = GrantObjectAccess(ctx->pSid, entry.path, entry.access,
+                                                 RecordGrantCallback);
+                    if (rc == ERROR_SUCCESS) {
+                        g_logger.LogFmt(L"DYNAMIC_REAPPLY: [%s] %s -> OK",
+                                        AccessTag(entry.access), entry.path.c_str());
+                        grantCount++;
+                    } else {
+                        g_logger.LogFmt(L"DYNAMIC_REAPPLY: [%s] %s -> FAILED (0x%08X)",
+                                        AccessTag(entry.access), entry.path.c_str(), rc);
+                        failCount++;
+                        ok = false;
+                    }
+                }
+                return ok;
+            };
+
+            auto ReapplySamePathRegistryEntries = [&](const std::wstring& path) -> bool {
+                bool ok = true;
+                for (const auto& entry : newRegKeys) {
+                    if (_wcsicmp(entry.path.c_str(), path.c_str()) != 0)
+                        continue;
+
+                    std::wstring win32Path = RegistryToWin32Path(entry.path);
+                    DWORD rc = GrantObjectAccess(ctx->pSid, win32Path, entry.access,
+                                                 RecordGrantCallback, SE_REGISTRY_KEY);
+                    if (rc == ERROR_SUCCESS) {
+                        g_logger.LogFmt(L"DYNAMIC_REAPPLY_REG: [%s] %s -> OK",
+                                        entry.access == AccessLevel::Read ? L"R" : L"W",
+                                        entry.path.c_str());
+                        grantCount++;
+                    } else {
+                        g_logger.LogFmt(L"DYNAMIC_REAPPLY_REG: [%s] %s -> FAILED (0x%08X)",
+                                        entry.access == AccessLevel::Read ? L"R" : L"W",
+                                        entry.path.c_str(), rc);
+                        failCount++;
+                        ok = false;
+                    }
+                }
+                return ok;
+            };
+
             // ---- Phase 1: Revoke removed entries ----
-            for (const auto& r : removed) {
-                if (RevokeGrant(r.path, ctx->sidString, r.isDeny, SE_FILE_OBJECT))
+            std::set<std::wstring> removedFilePaths;
+            for (const auto& r : removed)
+                removedFilePaths.insert(ToLower(r.path));
+
+            for (const auto& pathLower : removedFilePaths) {
+                std::wstring path;
+                bool hadDeny = false;
+                bool peekOnly = true;
+
+                for (const auto& current : currentKeys) {
+                    if (current.pathLower != pathLower)
+                        continue;
+                    if (path.empty())
+                        path = current.path;
+                    if (current.isDeny)
+                        hadDeny = true;
+                    if (current.access != AccessLevel::Peek)
+                        peekOnly = false;
+                }
+
+                if (path.empty())
+                    continue;
+
+                if (RevokePathEntries(path, ctx->sidString, SE_FILE_OBJECT, hadDeny, peekOnly))
                     revokeCount++;
                 else
                     failCount++;
 
-                // After revoking an allow, re-apply any remaining allows on the
-                // same path from the NEW config.  RevokeGrant strips our SID from
-                // the DACL entirely, so any surviving same-path allows must be
-                // re-granted to keep their permissions intact.
-                if (!r.isDeny) {
-                    for (const auto& k : newKeys) {
-                        if (k.isDeny) continue;
-                        if (_wcsicmp(k.path.c_str(), r.path.c_str()) != 0) continue;
-                        DWORD rc = GrantObjectAccess(ctx->pSid, k.path, k.access,
-                                                     RecordGrantCallback);
-                        if (rc == ERROR_SUCCESS) {
-                            g_logger.LogFmt(L"DYNAMIC_REGRANT: [%s] %s -> OK (same-path surviving allow)",
-                                            AccessTag(k.access), k.path.c_str());
-                        } else {
-                            g_logger.LogFmt(L"DYNAMIC_REGRANT: [%s] %s -> FAILED (0x%08X)",
-                                            AccessTag(k.access), k.path.c_str(), rc);
-                            failCount++;
-                        }
-                    }
-                }
+                ReapplySamePathFileEntries(path);
             }
 
             // ---- Phase 2: Apply added entries (context-aware) ----
@@ -495,6 +630,8 @@ namespace Sandbox {
             //           This mirrors the pipeline's deny-before-allow rule.
             std::vector<GrantKey> addedDenies, addedAllows;
             for (const auto& a : added) {
+                if (removedFilePaths.count(a.pathLower))
+                    continue;
                 if (a.isDeny) addedDenies.push_back(a);
                 else          addedAllows.push_back(a);
             }
@@ -531,7 +668,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_FIXUP: strip deny + re-grant [%s] %s",
                                     AccessTag(existing.access), existing.path.c_str());
                     RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isPeek);
+                                     true, isPeek, AceRemovalMode::DenyOnly);
                     DWORD rc = GrantObjectAccess(ctx->pSid, existing.path, existing.access,
                                                  RecordGrantCallback);
                     if (rc == ERROR_SUCCESS) {
@@ -558,7 +695,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_STRIP: %s (%s)",
                                     a.path.c_str(), isPeek ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(a.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isPeek);
+                                     true, isPeek, AceRemovalMode::DenyOnly);
                 }
 
                 DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback);
@@ -574,14 +711,32 @@ namespace Sandbox {
             }
 
             // ---- Phase 3: Registry delta (RT mode) ----
-            for (const auto& r : regRemoved) {
-                std::wstring win32Path = RegistryToWin32Path(r.path);
-                if (RevokeGrant(win32Path, ctx->sidString, false, SE_REGISTRY_KEY))
+            std::set<std::wstring> removedRegistryPaths;
+            for (const auto& r : regRemoved)
+                removedRegistryPaths.insert(ToLower(r.path));
+
+            for (const auto& pathLower : removedRegistryPaths) {
+                std::wstring path;
+                for (const auto& current : currentRegKeys) {
+                    if (current.pathLower == pathLower) {
+                        path = current.path;
+                        break;
+                    }
+                }
+                if (path.empty())
+                    continue;
+
+                std::wstring win32Path = RegistryToWin32Path(path);
+                if (RevokePathEntries(win32Path, ctx->sidString, SE_REGISTRY_KEY))
                     revokeCount++;
                 else
                     failCount++;
+
+                ReapplySamePathRegistryEntries(path);
             }
             for (const auto& a : regAdded) {
+                if (removedRegistryPaths.count(a.pathLower))
+                    continue;
                 std::wstring win32Path = RegistryToWin32Path(a.path);
                 DWORD rc = GrantObjectAccess(ctx->pSid, win32Path, a.access,
                                               RecordGrantCallback, SE_REGISTRY_KEY);
@@ -673,6 +828,8 @@ namespace Sandbox {
             hRestrictedToken = setup.hRestrictedToken;
         }
 
+        ConfigureEmergencyCleanupState(containerName, identity.deleteContainerOnExit);
+
         g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
 
         auto AbortBeforeLaunch = [&](int exitCode, const wchar_t* reason) -> int {
@@ -680,7 +837,7 @@ namespace Sandbox {
                 TeardownTransientContainerForCurrentRun(containerName, L"ABORT_BEFORE_LAUNCH");
             }
             guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
+            FinalizeCleanupTaskForCurrentRun();
             g_logger.Log(reason);
             g_logger.Stop();
             return exitCode;
@@ -834,7 +991,7 @@ namespace Sandbox {
             if (isAppContainer && identity.deleteContainerOnExit)
                 TeardownTransientContainerForCurrentRun(containerName, L"LAUNCH_FAILURE");
             guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
+            FinalizeCleanupTaskForCurrentRun();
             g_logger.Log(L"CLEANUP: complete (launch failure)");
             g_logger.Stop();
             // POSIX convention: 127 = not found, 126 = cannot execute
@@ -853,7 +1010,7 @@ namespace Sandbox {
             if (isAppContainer && identity.deleteContainerOnExit)
                 TeardownTransientContainerForCurrentRun(containerName, containerContext);
             guard.RunAll();
-            DeleteCleanupTask(g_instanceId);
+            FinalizeCleanupTaskForCurrentRun();
             g_logger.Log(cleanupReason);
             g_logger.Stop();
             return sandyExit;
@@ -984,7 +1141,7 @@ namespace Sandbox {
         // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
         guard.RunAll();
 
-        DeleteCleanupTask(g_instanceId);
+        FinalizeCleanupTaskForCurrentRun();
         g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
         g_logger.Stop();
 
@@ -1012,9 +1169,11 @@ namespace Sandbox {
                                 bool dynamic = false)
     {
         ResetGrantMetadataPreservation();
+        ResetDeferredCleanupRequest();
         CleanupStaleStartupState(exePath);
         CleanStagingProfiles();
         RestoreStaleGrants();
+        DeleteStaleCleanupTasks();
         WarnStaleRegistryEntries();
         CreateCleanupTask(g_instanceId);
         LogSandyIdentity();
@@ -1039,6 +1198,7 @@ namespace Sandbox {
                             bool dynamic = false,
                             const std::wstring& configPath = L"")
     {
+        ResetEmergencyCleanupState();
         g_instanceId = GenerateInstanceId();
 
         std::wstring exeFolder = config.workdir.empty() ? GetInheritedWorkdir() : config.workdir;
@@ -1053,8 +1213,10 @@ namespace Sandbox {
         identity.grantsPreexisting = false;
         identity.deleteContainerOnExit = (config.tokenMode == TokenMode::AppContainer);
 
-        return RunPipeline(config, exePath, exeArgs, exeFolder,
-                           identity, dynamic, configPath);
+        int result = RunPipeline(config, exePath, exeArgs, exeFolder,
+                                 identity, dynamic, configPath);
+        ResetEmergencyCleanupState();
+        return result;
     }
 
     // -----------------------------------------------------------------------
@@ -1067,6 +1229,7 @@ namespace Sandbox {
     inline void CleanupSandbox()
     {
         g_logger.Log(L"EMERGENCY_CLEANUP: starting");
+        EmergencyCleanupState cleanupState = SnapshotEmergencyCleanupState();
 
         // Step 0: terminate the owned process tree before revoking sandbox state.
         // The job object is the authoritative run lifetime when child processes
@@ -1100,14 +1263,15 @@ namespace Sandbox {
         RevokeDesktopAccess();
         RevokeAllGrants();
         DisableLoopback();
-        std::wstring containerName = ContainerNameFromId(g_instanceId);
-        if (!containerName.empty()) {
-            if (!DeleteTransientContainerNow(containerName, L"EMERGENCY_CLEANUP")) {
-                PersistTransientContainerCleanup(g_instanceId, containerName);
-            }
-        }
+        if (cleanupState.deleteContainerOnExit && !cleanupState.containerName.empty())
+            TeardownTransientContainerForCurrentRun(cleanupState.containerName, L"EMERGENCY_CLEANUP");
+        // Cleanup-task retention is ledger-driven: if any retry metadata
+        // survived emergency cleanup, FinalizeCleanupTaskForCurrentRun keeps it.
+        if (!g_instanceId.empty())
+            FinalizeCleanupTaskForCurrentRun();
         RestoreStaleGrants();
         DeleteStaleCleanupTasks();
+        ResetEmergencyCleanupState();
         g_logger.Log(L"EMERGENCY_CLEANUP: complete");
         g_logger.Stop();
     }

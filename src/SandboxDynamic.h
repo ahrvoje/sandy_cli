@@ -154,39 +154,28 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // RevokeGrant — revoke a single grant entry (allow or deny).
+    // RevokePathEntries — revoke all ACEs we currently own on one path.
     //
-    // Removes ACEs for our SID from the specific path, removes the
-    // matching grant from g_aclGrants in-memory list.
-    // Registry persistence is not updated here — the in-memory list
-    // is the source of truth for final RevokeAllGrants() on exit,
-    // and --cleanup handles crash recovery for any stale state.
+    // Sandy's cleanup primitive is path+SID scoped: once we decide a path
+    // must be rebuilt, we remove the SID-owned ACEs from that path and let
+    // the caller re-apply the surviving same-path config entries in the
+    // correct deny/allow order.
     //
-    // NOTE: when multiple allow rules share a path with different access
-    // levels, the caller must re-apply remaining allows after this call
-    // (see DynamicWatcherThread).
+    // Registry persistence is not updated here — the in-memory list remains
+    // the source of truth for final RevokeAllGrants(), and --cleanup handles
+    // stale recovery for any interrupted reload.
     // -----------------------------------------------------------------------
-    inline bool RevokeGrant(const std::wstring& path, const std::wstring& sidStr,
-                            bool isDeny, SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
+    inline bool RevokePathEntries(const std::wstring& path, const std::wstring& sidStr,
+                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT,
+                                  bool hadDeny = false,
+                                  bool peekOnly = false)
     {
         std::wstring normalizedPath = (objType == SE_FILE_OBJECT)
             ? NormalizeFsPath(path)
             : path;
-        // Snapshot matching grant metadata first. We only remove the in-memory
-        // records after the ACL revoke succeeds; otherwise retries/final cleanup
-        // would lose the information needed to clean the path correctly.
-        bool wasPeek = false;
-        AcquireSRWLockExclusive(&g_aclGrantsLock);
-        for (const auto& grant : g_aclGrants) {
-            if (_wcsicmp(grant.path.c_str(), normalizedPath.c_str()) == 0 &&
-                grant.wasDenied == isDeny && grant.objType == objType) {
-                wasPeek = grant.wasPeek;
-            }
-        }
-        ReleaseSRWLockExclusive(&g_aclGrantsLock);
 
         // Remove ACEs from the object DACL
-        int removed = RemoveSidFromDacl(normalizedPath, sidStr, objType, isDeny, wasPeek);
+        int removed = RemoveSidFromDacl(normalizedPath, sidStr, objType, hadDeny, peekOnly);
         bool targetExists = false;
         if (objType == SE_FILE_OBJECT) {
             DWORD attrs = GetFileAttributesW(normalizedPath.c_str());
@@ -206,18 +195,18 @@ namespace Sandbox {
                 RegCloseKey(hTest);
             }
         }
-        g_logger.LogFmt(L"DYNAMIC_REVOKE: %s [%s] -> %d ACEs removed",
-                        normalizedPath.c_str(), isDeny ? L"deny" : L"allow", removed);
+        g_logger.LogFmt(L"DYNAMIC_REVOKE: %s -> %d ACEs removed",
+                        normalizedPath.c_str(), removed);
         if (removed == 0 && targetExists) {
-            g_logger.LogFmt(L"DYNAMIC_REVOKE: %s [%s] FAILED (target still exists, no ACEs removed)",
-                            normalizedPath.c_str(), isDeny ? L"deny" : L"allow");
+            g_logger.LogFmt(L"DYNAMIC_REVOKE: %s FAILED (target still exists, no ACEs removed)",
+                            normalizedPath.c_str());
             return false;
         }
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
         for (auto it = g_aclGrants.begin(); it != g_aclGrants.end(); ) {
             if (_wcsicmp(it->path.c_str(), normalizedPath.c_str()) == 0 &&
-                it->wasDenied == isDeny && it->objType == objType) {
+                it->objType == objType) {
                 it = g_aclGrants.erase(it);
             } else {
                 ++it;

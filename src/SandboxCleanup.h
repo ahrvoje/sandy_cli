@@ -53,7 +53,7 @@ namespace Sandbox {
             if (!excludeInstanceId.empty() && excludeInstanceId == name)
                 continue;
 
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
@@ -125,6 +125,17 @@ namespace Sandbox {
         }
     }
 
+    inline void FinalizeCleanupTaskForCurrentRun()
+    {
+        if (g_instanceId.empty()) return;
+        if (ShouldRetainCleanupTask(g_instanceId, DeferredCleanupRequested())) {
+            g_logger.LogFmt(L"SCHTASK: retained %s (cleanup retry still pending)",
+                            CleanupTaskName(g_instanceId).c_str());
+            return;
+        }
+        DeleteCleanupTask(g_instanceId);
+    }
+
     inline std::vector<std::wstring> ListCleanupTasks()
     {
         std::vector<std::wstring> tasks;
@@ -149,31 +160,18 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // DeleteStaleCleanupTasks — remove tasks from dead instances.
+    // DeleteStaleCleanupTasks — remove tasks whose recovery ledgers are gone.
     //
     // Lists all SandyCleanup_* tasks via schtasks, extracts instance IDs,
-    // and deletes tasks whose instance has no live grants registry entry.
-    // Called by --cleanup and RestoreStaleGrants.
+    // and deletes tasks only after the run no longer has any recovery ledger.
+    // Called by startup recovery, --cleanup, and emergency cleanup.
     // -----------------------------------------------------------------------
     inline void DeleteStaleCleanupTasks()
     {
         for (const auto& taskName : ListCleanupTasks()) {
             std::wstring instanceId = taskName.substr(wcslen(kCleanupTaskPrefix));
             if (instanceId.empty()) continue;
-
-            // Check if this instance has live grants
-            std::wstring regKey = std::wstring(kGrantsParentKey) + L"\\" + instanceId;
-            HKEY hKey = nullptr;
-            bool isLive = false;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
-                              KEY_READ, &hKey) == ERROR_SUCCESS) {
-                DWORD pid = 0; ULONGLONG ctime = 0;
-                ReadPidAndCtime(hKey, pid, ctime);
-                isLive = IsProcessAlive(pid, ctime);
-                RegCloseKey(hKey);
-            }
-
-            if (!isLive) {
+            if (!QueryRecoveryLedgerPresence(instanceId).Any()) {
                 std::wstring delArgs = L"/Delete /TN \"" + taskName + L"\" /F";
                 if (RunSchtasks(delArgs) == 0) {
                     g_logger.Log((L"SCHTASK_STALE: deleted " + taskName).c_str());

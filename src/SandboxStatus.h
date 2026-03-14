@@ -142,9 +142,9 @@ inline int HandleCleanup()
                 staleProfiles.size());
     for (const auto& m : staleProfiles) {
         if (DeleteTransientContainerNow(m, L"MANUAL_CLEANUP")) {
-            ClearTransientContainerCleanup(m);
+            ClearTransientContainerCleanupByContainerName(m);
             printf("  [PROFILE] %ls -> deleted\n", m.c_str());
-        } else if (PersistTransientContainerCleanup(m, m)) {
+        } else if (PersistTransientContainerCleanupForOrphanedContainer(m)) {
             fprintf(stderr, "  [PROFILE] %ls -> deferred for retry\n", m.c_str());
         } else {
             fprintf(stderr, "  [PROFILE] %ls -> FAILED\n", m.c_str());

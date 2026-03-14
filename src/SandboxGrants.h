@@ -9,6 +9,7 @@
 
 #include "SandboxTypes.h"
 #include "SandboxACL.h"
+#include "SandboxRecoveryLedger.h"
 #include "SandboxRegistry.h"
 #include <set>
 #include <atomic>
@@ -49,22 +50,7 @@ namespace Sandbox {
     // ACLs without durable cleanup inventory are not safe to keep.
     inline std::atomic<bool>     g_grantTrackingHealthy{ true };
     inline std::atomic<bool>     g_preserveGrantMetadata{ false };
-
-    // Per-instance UUID — set once at startup
-    inline std::wstring g_instanceId;
-
-    // Registry keys for grant persistence
-    static const wchar_t* kGrantsParentKey = L"Software\\Sandy\\Grants";
-    static const wchar_t* kTransientContainersParentKey = L"Software\\Sandy\\TransientContainers";
-
-    inline std::wstring GetGrantsRegKey() {
-        return std::wstring(kGrantsParentKey) + L"\\" + g_instanceId;
-    }
-
-    inline std::wstring GetTransientContainerRegKey(const std::wstring& instanceId)
-    {
-        return std::wstring(kTransientContainersParentKey) + L"\\" + instanceId;
-    }
+    inline std::atomic<bool>     g_deferredCleanupRequested{ false };
 
     inline void ResetGrantTrackingHealth()
     {
@@ -91,6 +77,11 @@ namespace Sandbox {
         g_preserveGrantMetadata.store(false);
     }
 
+    inline void ResetDeferredCleanupRequest()
+    {
+        g_deferredCleanupRequested.store(false);
+    }
+
     inline void RequestGrantMetadataPreservation(const wchar_t* reason)
     {
         g_preserveGrantMetadata.store(true);
@@ -101,6 +92,18 @@ namespace Sandbox {
     inline bool PreserveGrantMetadataRequested()
     {
         return g_preserveGrantMetadata.load();
+    }
+
+    inline void RequestDeferredCleanup(const wchar_t* reason)
+    {
+        g_deferredCleanupRequested.store(true);
+        if (reason && *reason)
+            g_logger.LogFmt(L"CLEANUP_RETRY: requested (%ls)", reason);
+    }
+
+    inline bool DeferredCleanupRequested()
+    {
+        return g_deferredCleanupRequested.load();
     }
 
     inline void BeginStagingGrantCapture(HKEY hKey)
@@ -526,6 +529,61 @@ namespace Sandbox {
         return ok;
     }
 
+    inline std::vector<std::wstring> FindTransientContainerCleanupInstanceIds(const std::wstring& containerName)
+    {
+        std::vector<std::wstring> instanceIds;
+        if (containerName.empty()) return instanceIds;
+
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return instanceIds;
+
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        std::wstring lookup = NormalizeLookupKey(containerName);
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                              nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                continue;
+
+            std::wstring fullKey = GetTransientContainerRegKey(name);
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey) != ERROR_SUCCESS)
+                continue;
+
+            std::wstring recordedContainer = ReadRegSz(hKey, L"_container");
+            RegCloseKey(hKey);
+            if (NormalizeLookupKey(recordedContainer) == lookup)
+                instanceIds.push_back(name);
+        }
+        RegCloseKey(hParent);
+        return instanceIds;
+    }
+
+    inline bool ClearTransientContainerCleanupByContainerName(const std::wstring& containerName)
+    {
+        bool allOk = true;
+        for (const auto& instanceId : FindTransientContainerCleanupInstanceIds(containerName)) {
+            if (!ClearTransientContainerCleanup(instanceId))
+                allOk = false;
+        }
+        return allOk;
+    }
+
+    inline bool PersistTransientContainerCleanupForOrphanedContainer(const std::wstring& containerName)
+    {
+        auto instanceIds = FindTransientContainerCleanupInstanceIds(containerName);
+        if (!instanceIds.empty())
+            return PersistTransientContainerCleanup(instanceIds.front(), containerName);
+        return PersistTransientContainerCleanup(containerName, containerName);
+    }
+
     inline bool DeleteTransientContainerNow(const std::wstring& containerName,
                                             const wchar_t* contextTag)
     {
@@ -549,6 +607,7 @@ namespace Sandbox {
             return true;
         }
 
+        RequestDeferredCleanup(L"transient container teardown incomplete");
         if (!PersistTransientContainerCleanup(g_instanceId, containerName)) {
             RequestGrantMetadataPreservation(L"transient container delete failed and retry metadata could not be persisted");
             return false;
@@ -696,7 +755,7 @@ namespace Sandbox {
                     nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
                 continue;
 
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
@@ -741,7 +800,7 @@ namespace Sandbox {
                     nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
                 continue;
 
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + name;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
@@ -844,9 +903,12 @@ namespace Sandbox {
     // RestoreGrantsFromKey — remove ACEs from a single registry subkey.
     // Parses TYPE|PATH|SID format and removes the SID's ACEs.
     // Since SIDs are unique per instance, no cross-instance checks needed.
+    // Returns true only when every reachable ACL rollback completed or the
+    // target object was already absent.
     // -----------------------------------------------------------------------
-    inline void RestoreGrantsFromKey(HKEY hKey)
+    inline bool RestoreGrantsFromKey(HKEY hKey)
     {
+        bool allOk = true;
         DWORD valueCount = 0;
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
@@ -871,11 +933,22 @@ namespace Sandbox {
 
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
 
-            int n = RemoveSidFromDacl(rec.path, rec.sidString, objType,
-                              rec.wasDenied, rec.wasPeek);
-            if (n > 0)
+            AceRemovalResult removal = RemoveSidFromDaclDetailed(rec.path, rec.sidString, objType,
+                                                                 rec.wasDenied, rec.wasPeek);
+            if (removal.removed > 0) {
                 printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
+                continue;
+            }
+            if (!removal.Succeeded()) {
+                allOk = false;
+                g_logger.LogFmt(L"ACL_RESTORE: %s %s -> FAILED (0x%08X)",
+                                rec.type.c_str(), rec.path.c_str(), removal.error);
+            } else if (removal.targetMissing) {
+                g_logger.LogFmt(L"ACL_RESTORE: %s %s -> target already absent",
+                                rec.type.c_str(), rec.path.c_str());
+            }
         }
+        return allOk;
     }
 
     // -----------------------------------------------------------------------
@@ -911,7 +984,7 @@ namespace Sandbox {
         std::vector<std::pair<std::wstring, DWORD>> staleKeys; // {subKey, pid}
 
         for (const auto& subKey : subKeys) {
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + subKey;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS) {
@@ -938,7 +1011,7 @@ namespace Sandbox {
         for (const auto& stale : staleKeys) {
             const auto& subKey = stale.first;
             DWORD stalePid = stale.second;
-            std::wstring fullKey = std::wstring(kGrantsParentKey) + L"\\" + subKey;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
@@ -969,12 +1042,16 @@ namespace Sandbox {
                                containerDeleted ? "deleted" : (containerRetryReady ? "deferred for retry" : "FAILED"));
                     }
                 }
-                RestoreGrantsFromKey(hKey);
+                bool grantsRestored = RestoreGrantsFromKey(hKey);
                 RegCloseKey(hKey);
 
-                if (!containerRetryReady) {
-                    g_logger.LogFmt(L"STALE_PRESERVE: %ls transient container retry metadata incomplete, keeping grant metadata",
-                                    subKey.c_str());
+                if (!grantsRestored || !containerRetryReady) {
+                    if (!grantsRestored)
+                        g_logger.LogFmt(L"STALE_PRESERVE: %ls ACL rollback incomplete, keeping grant metadata",
+                                        subKey.c_str());
+                    if (!containerRetryReady)
+                        g_logger.LogFmt(L"STALE_PRESERVE: %ls transient container retry metadata incomplete, keeping grant metadata",
+                                        subKey.c_str());
                     printf("  [GRANTS] instance %ls (PID %lu) -> metadata preserved for retry\n",
                            subKey.c_str(), (unsigned long)stalePid);
                     continue;
