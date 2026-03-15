@@ -156,7 +156,7 @@ delete  = ['C:\temp\scratch']
 all     = ['C:\workspace']
 
 [allow.this]
-= ['C:\', 'C:\Users', 'C:\Users\H']    # directory listing only
+read    = ['C:\', 'C:\Users', 'C:\Users\H']    # directory listing only
 stat    = ['C:\important_file.dat']             # attributes only
 ```
 
