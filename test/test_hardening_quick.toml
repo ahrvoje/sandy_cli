@@ -5,7 +5,7 @@
 token = 'restricted'
 integrity = 'medium'
 
-[allow]
+[allow.deep]
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\repos\sandy_cli\test\test_hardening_exit.py']
 
 [environment]

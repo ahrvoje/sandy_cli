@@ -26,8 +26,75 @@ namespace Sandbox {
     };
 
     // Callback type for recording grants (defined in SandboxGrants.h)
-    // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isPeek flag
+    // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isThis flag
     typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool, bool);
+
+    // -----------------------------------------------------------------------
+    // AclMutexGuard -- serialize DACL read-modify-write across Sandy instances.
+    //
+    // Windows has no atomic ACE-add/remove API.  Every DACL mutation is:
+    //   GetNamedSecurityInfoW -> build new ACL -> Set*SecurityInfo
+    // Without serialization, concurrent instances can lose each other's ACEs.
+    //
+    // Uses a named mutex per path (CRC32 hash) for filesystem objects, or a
+    // single named mutex for Desktop/WinSta objects.  Mutex is auto-released
+    // by the OS if the holder crashes (WAIT_ABANDONED is treated as acquired).
+    // -----------------------------------------------------------------------
+    inline uint32_t Crc32Path(const std::wstring& path)
+    {
+        uint32_t crc = 0xFFFFFFFF;
+        for (wchar_t ch : path) {
+            wchar_t lc = (ch >= L'A' && ch <= L'Z') ? (ch + 32) : ch;
+            crc ^= static_cast<uint32_t>(lc);
+            for (int b = 0; b < 16; b++)
+                crc = (crc >> 1) ^ (0xEDB88320 & (~(crc & 1) + 1));
+        }
+        return ~crc;
+    }
+
+    struct AclMutexGuard
+    {
+        HANDLE hMutex = nullptr;
+
+        explicit AclMutexGuard(const std::wstring& path)
+        {
+            wchar_t name[64];
+            swprintf_s(name, L"Local\\Sandy_FS_%08X", Crc32Path(path));
+            Acquire(name);
+        }
+
+        explicit AclMutexGuard(const wchar_t* fixedName)
+        {
+            Acquire(fixedName);
+        }
+
+        ~AclMutexGuard()
+        {
+            if (hMutex) {
+                ReleaseMutex(hMutex);
+                CloseHandle(hMutex);
+            }
+        }
+
+        AclMutexGuard(const AclMutexGuard&) = delete;
+        AclMutexGuard& operator=(const AclMutexGuard&) = delete;
+
+    private:
+        void Acquire(const wchar_t* name)
+        {
+            hMutex = CreateMutexW(nullptr, FALSE, name);
+            if (hMutex) {
+                DWORD wait = WaitForSingleObject(hMutex, 5000);
+                if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+                    g_logger.LogFmt(L"ACL_MUTEX: timeout acquiring %ls", name);
+                    CloseHandle(hMutex);
+                    hMutex = nullptr;
+                }
+            }
+        }
+    };
+
+
 
     // -----------------------------------------------------------------------
     // Convert user-friendly registry path to Win32 object path
@@ -55,10 +122,15 @@ namespace Sandbox {
         // WRITE_DAC excluded: prevents sandbox from modifying ACLs.
         // WRITE_OWNER excluded: no legitimate sandbox use for ownership changes.
         case AccessLevel::All:     return FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER);
-        // Peek: just enough to traverse a directory (lstat + readdir).
-        // No GENERIC_READ (avoids reading file contents), no inheritance.
-        case AccessLevel::Peek:    return FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES |
-                                          FILE_READ_EA | READ_CONTROL | SYNCHRONIZE;
+        // Run: execute-only — OS loader can run the binary, sandbox can't read it.
+        case AccessLevel::Run:     return FILE_EXECUTE | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        // Stat: check existence, size, timestamps only.
+        case AccessLevel::Stat:    return FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        // Touch: modify timestamps/attributes, no data read/write.
+        case AccessLevel::Touch:   return FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+        // Create: create new files/subdirs, no overwrite/read of existing.
+        case AccessLevel::Create:  return FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY |
+                                          FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         default:                   return 0;
         }
     }
@@ -89,15 +161,17 @@ namespace Sandbox {
     inline DWORD GrantObjectAccess(PSID pSid, const std::wstring& path,
                                   AccessLevel level,
                                   RecordGrantFn recordFn = nullptr,
-                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
+                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT,
+                                  GrantScope scope = GrantScope::Deep)
     {
+        AclMutexGuard aclLock(path);
         DWORD permissions = AccessMask(level);
 
         EXPLICIT_ACCESSW ea{};
         ea.grfAccessPermissions = permissions;
         ea.grfAccessMode = GRANT_ACCESS;  // GRANT_ACCESS unions with existing ACE for same SID
-        // Peek: non-recursive — ACE applies only to this directory, not children
-        ea.grfInheritance = (level == AccessLevel::Peek)
+        // This scope: ACE applies only to this object, not children
+        ea.grfInheritance = (scope == GrantScope::This)
             ? 0
             : (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
         ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -124,8 +198,8 @@ namespace Sandbox {
         DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
         bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
                      && (attr & FILE_ATTRIBUTE_DIRECTORY);
-        if (level == AccessLevel::Peek && isDir) {
-            // Peek: use SetKernelObjectSecurity — the raw kernel API that does NOT
+        if (scope == GrantScope::This && isDir) {
+            // This scope: use SetKernelObjectSecurity — the raw kernel API that does NOT
             // trigger auto-inheritance propagation.  SetSecurityInfo/SetNamedSecurityInfoW
             // both walk all children to re-evaluate inherited ACEs on directories like
             // C:\Users\H (65+ seconds).  SetKernelObjectSecurity writes the DACL to
@@ -147,7 +221,7 @@ namespace Sandbox {
                 }
                 CloseHandle(hDir);
             }
-        } else if (isDir && level != AccessLevel::Peek) {
+        } else if (isDir && scope != GrantScope::This) {
             // Use SetNamedSecurityInfoW (not TreeSet) — inheritable ACEs propagate
             // to children via Windows auto-inheritance, which respects
             // PROTECTED_DACL on children (e.g. deny paths from other instances).
@@ -165,7 +239,7 @@ namespace Sandbox {
         if (rc == ERROR_SUCCESS && recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", false, level == AccessLevel::Peek);
+                recordFn(path, objType, sidStr, L"", false, scope == GrantScope::This);
                 LocalFree(sidStr);
             }
         }
@@ -204,8 +278,10 @@ namespace Sandbox {
     inline DWORD DenyObjectAccess(PSID pSid, const std::wstring& path,
                                   AccessLevel level,
                                   RecordGrantFn recordFn = nullptr,
-                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT)
+                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT,
+                                  GrantScope scope = GrantScope::Deep)
     {
+        AclMutexGuard aclLock(path);
         DWORD denyMask = AccessMask(level);
 
         // Read current DACL
@@ -221,7 +297,9 @@ namespace Sandbox {
         EXPLICIT_ACCESSW ea{};
         ea.grfAccessPermissions = denyMask;
         ea.grfAccessMode = DENY_ACCESS;
-        ea.grfInheritance = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        ea.grfInheritance = (scope == GrantScope::This)
+            ? 0
+            : (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
         ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
         ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
         ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
@@ -241,7 +319,7 @@ namespace Sandbox {
         if (rc == ERROR_SUCCESS && recordFn) {
             LPWSTR sidStr = nullptr;
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", true, false);
+                recordFn(path, objType, sidStr, L"", true, scope == GrantScope::This);
                 LocalFree(sidStr);
             }
         }
@@ -289,6 +367,7 @@ namespace Sandbox {
                                                      bool skipTreeSet = false,
                                                      AceRemovalMode removalMode = AceRemovalMode::AllForSid)
     {
+        AclMutexGuard aclLock(path);
         AceRemovalResult result;
 
         // Convert SID string to binary SID

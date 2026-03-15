@@ -18,6 +18,9 @@ for %%F in (
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
+    test_dynamic.bat
+    test_new_levels.bat
+    test_scope.bat
     test_concurrent.bat
     test_diabolical.bat
     test_diabolical_rt.bat
@@ -35,8 +38,10 @@ for %%F in (
     test_stress.bat
     test_profile.bat
     test_removed_features.bat
+    test_grant_matrix.bat
     test_clean.bat
     test_dryrun.bat
+    test_collude4.bat
     test_collusion.bat
 ) do (
     echo ----------------------------------------------------------------
@@ -55,7 +60,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 27
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 32
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

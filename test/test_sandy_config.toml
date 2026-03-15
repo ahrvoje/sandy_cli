@@ -4,7 +4,7 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 read = [
     'C:\Users\H\test_sandy\scripts',
     'C:\Users\H\test_sandy\R',

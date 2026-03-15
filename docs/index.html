@@ -623,7 +623,7 @@
 <span class="code-keyword">[sandbox]</span>
 token = <span class="code-string">'appcontainer'</span>
 workdir = <span class="code-string">'C:\project\test\output'</span>
-<span class="code-keyword">[allow]</span>
+<span class="code-keyword">[allow.deep]</span>
 all = [<span class="code-string">'C:\project\test\output'</span>]  <span class="code-comment"># nothing else is reachable</span>
 <span class="code-keyword">[limit]</span>
 timeout = 30
@@ -890,13 +890,16 @@ timeout = 30
           <tr><th>Level</th><th>Config Key</th><th>What It Grants</th><th>Key Restriction</th></tr>
         </thead>
         <tbody>
-          <tr><td><strong>Peek</strong></td><td><code>peek</code></td><td>List + stat a single directory</td><td>Non-recursive — directory only</td></tr>
           <tr><td><strong>Read</strong></td><td><code>read</code></td><td>Read files, list directories</td><td>No <code>FILE_EXECUTE</code> — can't load DLLs</td></tr>
           <tr><td><strong>Write</strong></td><td><code>write</code></td><td>Create and modify files</td><td>No read — write-blind</td></tr>
           <tr><td><strong>Execute</strong></td><td><code>execute</code></td><td>Read + execute</td><td>Standard <code>(RX)</code> — for running programs</td></tr>
           <tr><td><strong>Append</strong></td><td><code>append</code></td><td>Append data to files</td><td>No overwrite, no read</td></tr>
           <tr><td><strong>Delete</strong></td><td><code>delete</code></td><td>Delete files and directories</td><td>No read, no write</td></tr>
           <tr><td><strong>All</strong></td><td><code>all</code></td><td>Full data control</td><td>No <code>WRITE_DAC</code>, <code>WRITE_OWNER</code>, <code>FILE_DELETE_CHILD</code></td></tr>
+          <tr><td><strong>Run</strong></td><td><code>run</code></td><td>Execute only, no read</td><td>OS loader can run binary, sandbox can't copy it</td></tr>
+          <tr><td><strong>Stat</strong></td><td><code>stat</code></td><td>Read attributes only</td><td>Check existence, size, timestamps</td></tr>
+          <tr><td><strong>Touch</strong></td><td><code>touch</code></td><td>Modify attributes only</td><td>No data read or write</td></tr>
+          <tr><td><strong>Create</strong></td><td><code>create</code></td><td>Create new files/subdirs</td><td>No overwrite of existing files</td></tr>
         </tbody>
       </table>
     </div>
@@ -938,17 +941,19 @@ timeout = 30
       are merged into a single pipeline, sorted by path depth. The most specific (deepest) path always wins:
     </p>
     <pre><code><span class="code-comment"># Config: deny all of C:\repos, but allow C:\repos\snipps</span>
-<span class="code-keyword">[deny]</span>
+<span class="code-keyword">[deny.deep]</span>
 <span class="code-string">all</span> = [<span class="code-string">'C:\repos'</span>]
 
-<span class="code-keyword">[allow]</span>
+<span class="code-keyword">[allow.deep]</span>
 <span class="code-string">all</span>  = [<span class="code-string">'C:\repos\snipps'</span>]
-<span class="code-string">peek</span> = [<span class="code-string">'C:\repos'</span>]         <span class="code-comment"># list the repos dir itself</span>
+
+<span class="code-keyword">[allow.this]</span>
+<span class="code-key">stat</span> = [<span class="code-string">'C:\repos'</span>]         <span class="code-comment"># stat the repos dir itself</span>
 
 <span class="code-comment"># Pipeline execution log:</span>
 PIPELINE: sorted 3 entries by path depth:
     DENY  [ALL    ] C:\repos
-    ALLOW [PEEK   ] C:\repos            &lt;- strip deny (dir only)
+    ALLOW [STAT   ] C:\repos            &lt;- strip deny (dir only)
     ALLOW [ALL    ] C:\repos\snipps     &lt;- strip deny (subtree)</code></pre>
   </div>
 </section>
@@ -1093,7 +1098,7 @@ PIPELINE: sorted 3 entries by path depth:
       <div class="callout-title">🛑 DENY ACE kernel invariant</div>
       <p>
         The Windows kernel does <strong>not</strong> evaluate <code>DENY_ACCESS</code> ACEs for AppContainer SIDs.
-        This is an immutable property of the OS. Sandy rejects <code>[deny]</code> for AppContainer mode at config validation time.
+        This is an immutable property of the OS. Sandy rejects <code>[deny.*]</code> for AppContainer mode at config validation time.
         Only Restricted Token mode supports deny rules, using real <code>DENY_ACCESS</code> ACEs — the correct approach for each kernel behavior.
       </p>
     </div>

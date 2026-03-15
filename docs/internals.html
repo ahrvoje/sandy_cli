@@ -192,17 +192,17 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>The ACL <span class="accent">Pipelines</span></h2>
-    <p class="section-lead">Sandy translates your <code>[allow]</code> rules into ACEs. <code>[deny]</code> is only supported in Restricted Token mode — AppContainer mode rejects deny rules at config validation time.</p>
+    <p class="section-lead">Sandy translates your <code>[allow.*]</code> rules into ACEs. <code>[deny.*]</code> is only supported in Restricted Token mode — AppContainer mode rejects deny rules at config validation time.</p>
 
     <div class="callout warning">
       <div class="callout-title">⚠️ AppContainer: Allow-Only Model</div>
-      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. Sandy therefore rejects <code>[deny]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.—Mask Reduction—for AC.</p>
+      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. Sandy therefore rejects <code>[deny.*]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.—Mask Reduction—for AC.</p>
     </div>
 
     <!-- Case 1: Standard Allow -->
     <div class="card">
       <h3 style="margin-bottom:12px;">Case 1: Single Item Allow</h3>
-      <pre><code>[allow]
+      <pre><code>[allow.deep]
 read = ['C:\Data']</code></pre>
       <div class="table-wrap">
         <table>
@@ -224,10 +224,10 @@ read = ['C:\Data']</code></pre>
     <!-- Case 2: Mixed Allow/Deny -->
     <div class="card">
       <h3 style="margin-bottom:12px;">Case 2: Single Item Mixed Grants</h3>
-      <pre><code>[allow]
+      <pre><code>[allow.deep]
 all = ['C:\Data']
 
-[deny]
+[deny.deep]
 write = ['C:\Data']</code></pre>
       <div class="table-wrap">
         <table>
@@ -250,10 +250,10 @@ write = ['C:\Data']</code></pre>
     <!-- Case 3: Overlapping Hierarchies -->
     <div class="card">
       <h3 style="margin-bottom:12px;">Case 3: Overlapping Hierarchies</h3>
-      <pre style="margin-bottom:16px;"><code>[allow]
+      <pre style="margin-bottom:16px;"><code>[allow.deep]
 all = ['C:\Data']
 
-[deny]
+[deny.deep]
 write = ['C:\Data\Temp']</code></pre>
       <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">The <code>C:\Data</code> grant uses <code>TreeSetNamedSecurityInfoW</code> to recursively propagate inheritable ACEs to all child folders, including <code>\Temp</code>. Sandy then targets <code>\Temp</code> explicitly.</p>
       <div class="table-wrap">
@@ -325,7 +325,7 @@ write = ['C:\Data\Temp']</code></pre>
           <li><strong style="color:var(--accent);">Removed</strong> = entries in current but not in new → revoke with <code>RemoveSidFromDacl</code></li>
           <li><strong style="color:var(--accent);">Unchanged</strong> = present in both → zero operations</li>
         </ul>
-        <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:12px;">Adding one peek path to a 200-entry config produces at most 2 API calls (1 strip-deny + 1 grant if under a deny, or just 1 grant if independent). A full pipeline rerun would require 200+ operations.</p>
+        <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:12px;">Adding one path to a 200-entry config produces at most 2 API calls (1 strip-deny + 1 grant if under a deny, or just 1 grant if independent). A full pipeline rerun would require 200+ operations.</p>
       </div>
 
       <!-- Deny Interaction Correctness -->
@@ -335,7 +335,7 @@ write = ['C:\Data\Temp']</code></pre>
         <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
           <li><strong style="color:var(--accent2);">Allow under deny:</strong> Deny ACEs propagate recursively via <code>TreeSet</code>. Before granting a new allow under a deny, Sandy strips inherited deny ACEs from the target path — identical to the initial pipeline's strip-deny step.</li>
           <li><strong style="color:var(--accent2);">Deny over existing allows:</strong> A new deny would block existing child allows. After applying the deny, Sandy finds all affected child allows and re-grants them (strip + re-apply), preserving correct access.</li>
-          <li><strong style="color:var(--accent2);">Peek semantics:</strong> Peek grants use directory-only (non-recursive) ACE stripping, consistent with the initial pipeline.</li>
+          <li><strong style="color:var(--accent2);">This-scope semantics:</strong> <code>[allow.this]</code> and <code>[deny.this]</code> grants use directory-only (non-recursive) ACE application, consistent with the initial pipeline.</li>
         </ul>
         <p style="color:var(--text-secondary);font-size:0.85rem;margin-top:12px;">The resulting ACL state after a delta application is provably identical to a full pipeline run on the new config.</p>
       </div>
@@ -348,7 +348,7 @@ write = ['C:\Data\Temp']</code></pre>
         <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">Not all settings can change at runtime. Token-level state is fixed at process creation — changing them mid-run is meaningless.</p>
         <table>
           <tbody>
-            <tr><td><strong>Dynamic</strong></td><td><code>[allow]</code>, <code>[deny]</code>, <code>[registry]</code></td></tr>
+            <tr><td><strong>Dynamic</strong></td><td><code>[allow.*]</code>, <code>[deny.*]</code>, <code>[registry]</code></td></tr>
             <tr><td><strong>Immutable</strong></td><td><code>token</code>, <code>integrity</code>, <code>workdir</code>, <code>[privileges]</code>, <code>[environment]</code>, <code>[limit]</code>, network flags</td></tr>
           </tbody>
         </table>

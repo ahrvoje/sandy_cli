@@ -73,6 +73,7 @@ namespace Sandbox {
         AccessLevel  access;
         bool         isDeny;
         int          depth;
+        GrantScope   scope = GrantScope::Deep;
     };
 
     static int PathDepth(const std::wstring& p) {
@@ -99,11 +100,11 @@ namespace Sandbox {
         std::vector<PipelineEntry> pipeline;
         for (const auto& e : config.folders) {
             if (e.path.empty()) continue;
-            pipeline.push_back({ e.path, e.access, false, PathDepth(e.path) });
+            pipeline.push_back({ e.path, e.access, false, PathDepth(e.path), e.scope });
         }
         for (const auto& e : config.denyFolders) {
             if (e.path.empty()) continue;
-            pipeline.push_back({ e.path, e.access, true, PathDepth(e.path) });
+            pipeline.push_back({ e.path, e.access, true, PathDepth(e.path), e.scope });
         }
 
         // 2. Stable sort: by depth ascending, deny before allow at same depth
@@ -134,7 +135,7 @@ namespace Sandbox {
             if (e.isDeny) {
                 g_logger.LogFmt(L"    DENY  [%-7s] %s",
                     AccessTag(e.access), e.path.c_str());
-            } else if (underDeny && e.access == AccessLevel::Peek) {
+            } else if (underDeny && e.scope == GrantScope::This) {
                 g_logger.LogFmt(L"    ALLOW [%-7s] %s  <- strip deny (dir only)",
                     AccessTag(e.access), e.path.c_str());
             } else if (underDeny) {
@@ -162,7 +163,8 @@ namespace Sandbox {
         for (const auto& e : pipeline) {
             if (e.isDeny) {
                 // Apply deny
-                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, RecordGrantCallback);
+                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, RecordGrantCallback,
+                                            SE_FILE_OBJECT, e.scope);
                 bool ok = (rc == ERROR_SUCCESS);
                 if (!ok) allOk = false;
                 if (ok) {
@@ -183,15 +185,16 @@ namespace Sandbox {
 
                 // Strip deny ACEs if needed
                 if (underDeny && !sidStr.empty()) {
-                    bool isPeek = (e.access == AccessLevel::Peek);
+                    bool isThis = (e.scope == GrantScope::This);
                     g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
-                        e.path.c_str(), isPeek ? L"dir only" : L"subtree");
+                        e.path.c_str(), isThis ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
-                                     true, isPeek, AceRemovalMode::DenyOnly);
+                                     true, isThis, AceRemovalMode::DenyOnly);
                 }
 
                 // Apply allow
-                DWORD rc = GrantObjectAccess(pSid, e.path, e.access, RecordGrantCallback);
+                DWORD rc = GrantObjectAccess(pSid, e.path, e.access, RecordGrantCallback,
+                                             SE_FILE_OBJECT, e.scope);
                 bool ok = (rc == ERROR_SUCCESS);
                 if (!ok) allOk = false;
                 if (ok) {
@@ -534,15 +537,16 @@ namespace Sandbox {
                     }
 
                     if (hasDeny && !ctx->sidString.empty()) {
-                        bool isPeek = (entry.access == AccessLevel::Peek);
+                        bool isThis = (entry.scope == GrantScope::This);
                         g_logger.LogFmt(L"DYNAMIC_REAPPLY: strip deny [%s] %s",
                                         AccessTag(entry.access), entry.path.c_str());
                         RemoveSidFromDacl(entry.path, ctx->sidString, SE_FILE_OBJECT,
-                                          true, isPeek, AceRemovalMode::DenyOnly);
+                                          true, isThis, AceRemovalMode::DenyOnly);
                     }
 
                     DWORD rc = GrantObjectAccess(ctx->pSid, entry.path, entry.access,
-                                                 RecordGrantCallback);
+                                                 RecordGrantCallback,
+                                                 SE_FILE_OBJECT, entry.scope);
                     if (rc == ERROR_SUCCESS) {
                         g_logger.LogFmt(L"DYNAMIC_REAPPLY: [%s] %s -> OK",
                                         AccessTag(entry.access), entry.path.c_str());
@@ -599,7 +603,7 @@ namespace Sandbox {
                         path = current.path;
                     if (current.isDeny)
                         hadDeny = true;
-                    if (current.access != AccessLevel::Peek)
+                    if (current.scope != GrantScope::This)
                         peekOnly = false;
                 }
 
@@ -639,7 +643,8 @@ namespace Sandbox {
             // Apply new deny entries
             for (const auto& d : addedDenies) {
                 DWORD rc = DenyObjectAccess(ctx->pSid, d.path, d.access,
-                                            RecordGrantCallback);
+                                            RecordGrantCallback,
+                                            SE_FILE_OBJECT, d.scope);
                 if (rc == ERROR_SUCCESS) {
                     g_logger.LogFmt(L"DYNAMIC_GRANT: [deny] %s -> OK", d.path.c_str());
                     grantCount++;
@@ -664,13 +669,14 @@ namespace Sandbox {
                     if (isNewlyAdded) continue;
 
                     // Strip deny ACEs from this existing allow path, then re-grant
-                    bool isPeek = (existing.access == AccessLevel::Peek);
+                    bool isThis = (existing.scope == GrantScope::This);
                     g_logger.LogFmt(L"DYNAMIC_FIXUP: strip deny + re-grant [%s] %s",
                                     AccessTag(existing.access), existing.path.c_str());
                     RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isPeek, AceRemovalMode::DenyOnly);
+                                     true, isThis, AceRemovalMode::DenyOnly);
                     DWORD rc = GrantObjectAccess(ctx->pSid, existing.path, existing.access,
-                                                 RecordGrantCallback);
+                                                 RecordGrantCallback,
+                                                 SE_FILE_OBJECT, existing.scope);
                     if (rc == ERROR_SUCCESS) {
                         grantCount++;
                     } else {
@@ -691,14 +697,15 @@ namespace Sandbox {
 
                 // Strip deny ACEs first if under a deny (pipeline semantics)
                 if (underDeny && !ctx->sidString.empty()) {
-                    bool isPeek = (a.access == AccessLevel::Peek);
+                    bool isThis = (a.scope == GrantScope::This);
                     g_logger.LogFmt(L"DYNAMIC_STRIP: %s (%s)",
-                                    a.path.c_str(), isPeek ? L"dir only" : L"subtree");
+                                    a.path.c_str(), isThis ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(a.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isPeek, AceRemovalMode::DenyOnly);
+                                     true, isThis, AceRemovalMode::DenyOnly);
                 }
 
-                DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback);
+                DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback,
+                                             SE_FILE_OBJECT, a.scope);
                 if (rc == ERROR_SUCCESS) {
                     g_logger.LogFmt(L"DYNAMIC_GRANT: [%s] %s -> OK",
                                     AccessTag(a.access), a.path.c_str());

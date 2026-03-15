@@ -34,7 +34,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ### Key Features
 
 - 🔒 **Dual sandbox modes** — AppContainer or Restricted Token with configurable integrity
-- 📁 **Granular access control** — read, write, execute, append, delete, peek, or full access per file or folder
+- 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
 - 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
 - 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
 - 💾 **Profile-first design** — persistent sandbox identities with reusable grants and config
@@ -119,7 +119,7 @@ All sandbox behavior is controlled by a TOML config. Every config **must** inclu
 **Config limits (defense-in-depth):**
 - Config file size: max **1 MB**
 - Path length: max **32,768 characters** per path (Win32 extended limit)
-- Rules per section: max **256** entries in `[allow]`, `[deny]`, or `[registry]`
+- Rules per section: max **256** entries in `[allow.*]`, `[deny.*]`, or `[registry]`
 
 See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_config_appcontainer.toml`](sandy_config_appcontainer.toml) and [`sandy_config_restricted.toml`](sandy_config_restricted.toml) for mode-specific templates.
 
@@ -138,81 +138,91 @@ workdir = 'C:\projects'   # child working directory (default: inherit Sandy curr
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
 | `workdir` | path | both | Child process working directory (default: `'inherit'`) |
 
-### `[allow]` — File and folder grants
+### `[allow.deep]` / `[allow.this]` — File and folder grants
 
 Grant the sandboxed process access to specific files or folders. Sandy modifies folder ACLs at launch and restores them on exit. Requires `WRITE_DAC` on each path (user-owned folders work without admin).
 
+Two scopes control inheritance:
+- **`[allow.deep]`** — grants apply recursively to the path and **all descendants** (OI|CI inheritance)
+- **`[allow.this]`** — grants apply **only to the named object** itself (uses `SetKernelObjectSecurity` — instant, no child walk)
+
 ```toml
-[allow]
-peek    = ['C:\', 'C:\Users', 'C:\Users\H']    # non-recursive directory traversal
+[allow.deep]
 read    = ['C:\data\config.json', 'C:\Python314']
 write   = ['C:\logs\agent.log', 'C:\temp\output']
 execute = ['C:\tools\bin']
 append  = ['C:\logs\audit.log']
 delete  = ['C:\temp\scratch']
 all     = ['C:\workspace']
+
+[allow.this]
+= ['C:\', 'C:\Users', 'C:\Users\H']    # directory listing only
+stat    = ['C:\important_file.dat']             # attributes only
 ```
 
 | Key | Permission granted |
 |-----|--------------------|
-| `peek` | List directory + stat only — **non-recursive**, applies to the named directory only |
-| `read` | Read files, list directories (recursive) |
-| `write` | Create and modify files, no read (recursive) |
-| `execute` | Read + execute files, list directories (recursive) |
-| `append` | Append only, no overwrite, no read (recursive) |
-| `delete` | Delete only (recursive) |
-| `all` | Full access: read + write + execute + delete (recursive) |
+| `read` | Read files, list directories |
+| `write` | Create and modify files, no read |
+| `execute` | Read + execute files, list directories |
+| `append` | Append only, no overwrite, no read |
+| `delete` | Delete only |
+| `all` | Full access: read + write + execute + delete |
+| `run` | Execute only, no read (can't copy binary) |
+| `stat` | Read attributes only |
+| `touch` | Modify attributes only |
+| `create` | Create new files/subdirs, no overwrite |
 
 > [!IMPORTANT]
-> **Recursive propagation:** All grants except `peek` apply to the path **and all its descendants** — every subdirectory and file underneath inherits the same access level. `peek` is explicitly non-recursive: it grants access only to the named directory itself.
+> **Scope controls inheritance.** In `[allow.deep]`, all access levels apply recursively. In `[allow.this]`, all access levels apply to the single object only. The access level determines *what* permissions are granted; the scope determines *where* they propagate.
 
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
 
-### `[deny]` — Deny access to specific paths *(restricted token only)*
+### `[deny.deep]` / `[deny.this]` — Deny access to specific paths *(restricted token only)*
 
-Block specific permissions on paths that would otherwise be accessible. Uses the same 6 access keys as `[allow]` (except `peek`). All keys optional (default `[]`).
+Block specific permissions on paths that would otherwise be accessible. Same access keys and scope semantics as allow. All keys optional (default `[]`).
 
 > [!CAUTION]
-> `[deny]` is **not available in AppContainer mode**. The Windows kernel ignores DENY ACEs for AppContainer SIDs. Use Restricted Token mode for deny rules.
+> `[deny.*]` is **not available in AppContainer mode**. The Windows kernel ignores DENY ACEs for AppContainer SIDs. Use Restricted Token mode for deny rules.
 
 ```toml
-[deny]
-read    = []
-write   = ['C:\workspace\src\core']         # block writes in core/ even though workspace has all
-execute = []
-append  = []
-delete  = []
-all     = ['C:\workspace\secrets']           # fully block secrets/ even though workspace has all
+[deny.deep]
+write   = ['C:\workspace\src\core']         # block writes in core/ and all descendants
+all     = ['C:\workspace\secrets']           # fully block secrets/ recursively
+
+[deny.this]
+write   = ['C:\workspace\config.lock']      # block writes to this single file only
 ```
 
 **Key behaviors:**
 
-- **Deny is recursive.** A deny on a directory blocks the denied permissions on that directory **and all descendants** — subdirectories and files at every depth.
+- **`[deny.deep]` is recursive.** A deny on a directory blocks the denied permissions on that directory **and all descendants** — subdirectories and files at every depth.
+- **`[deny.this]` is non-recursive.** Applies only to the named object itself.
 - **Deny is surgical.** Only the specific permission type is blocked. For example, `deny.write` blocks writing and creating files, but `read`, `execute`, and `delete` remain allowed.
 - **`deny.write` does NOT block delete.** `DELETE` is a separate Windows permission from `WRITE`. To block deletion, use `deny.delete` or `deny.all`.
 - **`deny.read` blocks listing.** Denying read also blocks `os.listdir()` / `dir` because directory listing requires read-data permission.
 
 #### Allow-inside-deny (depth-sorted pipeline)
 
-Sandy supports carving out allowed subtrees from within denied areas. When an `[allow]` path is under a `[deny]` path, Sandy automatically strips the deny ACEs from the allowed subtree before granting access.
+Sandy supports carving out allowed subtrees from within denied areas. When an allow path is under a deny path, Sandy automatically strips the deny ACEs from the allowed subtree before granting access.
 
 ```toml
-[deny]
-all = ['C:\repos']                 # deny all access to repos 
+[deny.deep]
+all = ['C:\repos']                 # deny all access to repos
 
-[allow]
+[allow.deep]
 all  = ['C:\repos\snipps']         # but allow full access to snipps
-peek = ['C:\repos']                # and allow listing the repos dir
-```
 
-**How it works:** All allow and deny entries are merged into a single pipeline, sorted by path depth (shallowest first). At each depth, deny is applied before allow. When an allow is detected under an active deny, Sandy strips the deny ACEs from the allow subtree before granting. For `peek`, the strip is non-recursive (directory only).
+[allow.this]
+stat = ['C:\repos']                # and allow stat on the repos dir itself
+```
 
 The pipeline execution is logged:
 ```
 PIPELINE: sorted 3 entries by path depth:
     DENY  [ALL    ] C:\repos
-    ALLOW [PEEK   ] C:\repos            <- strip deny (dir only)
+    ALLOW [STAT   ] C:\repos            <- strip deny (dir only)
     ALLOW [ALL    ] C:\repos\snipps     <- strip deny (subtree)
 ```
 
@@ -268,7 +278,7 @@ Enables the `ALL_APPLICATION_PACKAGES` group, granting **read-only** access to:
 | User profile (Desktop, Documents, Downloads) | ❌ blocked |
 
 > [!TIP]
-> Python's Windows installer sets `ALL_APPLICATION_PACKAGES` on its install directory. With `system_dirs = true`, the Python folder is readable without an explicit `[allow]` entry.
+> Python's Windows installer sets `ALL_APPLICATION_PACKAGES` on its install directory. With `system_dirs = true`, the Python folder is readable without an explicit `[allow.deep]` entry.
 
 ### `[registry]` — Registry key grants *(restricted only)*
 
@@ -328,8 +338,10 @@ processes = 10      # max total active processes (default: 0)
 | &ensp; `token` | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
 | &ensp; `workdir` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` |
-| **`[allow]`** | 🔵 default: `[]` | 🔵 default: `[]` |
-| **`[deny]`** | 🔴 n/a | 🔵 default: `[]` |
+| **`[allow.deep]`** | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[allow.this]`** | 🔵 default: `[]` | 🔵 default: `[]` |
+| **`[deny.deep]`** | 🔴 n/a | 🔵 default: `[]` |
+| **`[deny.this]`** | 🔴 n/a | 🔵 default: `[]` |
 | **`[privileges]`** | 🔵 optional | 🔵 optional |
 | &ensp; `system_dirs` | 🔵 default: `true` | 🔴 n/a |
 | &ensp; `network` | 🔵 default: `false` | 🔴 n/a |
@@ -366,8 +378,8 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Network** | ⚙️ `network` `lan` `localhost` | ✅ Allowed | ✅ Allowed |
 | **System dir reads** | ⚙️ `system_dirs` | ✅ Allowed | ✅ Allowed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **User profile reads** | ⚙️ `[allow]` | ✅ Allowed | ✅ Allowed |
-| **User profile writes** | ⚙️ `[allow]` | ⚙️ `[allow]` ¹ | ✅ Allowed |
+| **User profile reads** | ⚙️ `[allow.*]` | ✅ Allowed | ✅ Allowed |
+| **User profile writes** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` ¹ | ✅ Allowed |
 | **Registry reads** | ✅ Private hive | ✅ Allowed | ✅ Allowed |
 | **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked |
@@ -379,12 +391,12 @@ Merged view across AppContainer and Restricted Token (Low / Medium integrity).
 | **Child processes** | ⚙️ `child_processes` | ⚙️ `child_processes` | ⚙️ `child_processes` |
 | **Stdin** | ⚙️ `stdin` | ⚙️ `stdin` | ⚙️ `stdin` |
 | **Environment** | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` |
-| **File/folder grants** | ⚙️ `[allow]` | ⚙️ `[allow]` | ⚙️ `[allow]` |
+| **File/folder grants** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` |
 | **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
 
 🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning
 
-¹ Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[allow]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
+¹ Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[allow.*]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
 
 **Use AppContainer** when you need network isolation and don't require named pipes or COM.
 
@@ -398,7 +410,7 @@ AppContainer with network access:
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
@@ -434,7 +446,7 @@ Restricted Token with pipes and medium integrity:
 token = 'restricted'
 integrity = 'medium'
 
-[allow]
+[allow.deep]
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
@@ -545,7 +557,7 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
-| **ACL grants** | `[allow]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant) |
+| **ACL grants** | `[allow.*]` / `[deny.*]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
 | **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |

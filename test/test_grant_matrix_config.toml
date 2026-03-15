@@ -1,0 +1,35 @@
+# Grant Matrix Test — AppContainer (deep vs this, risky combos)
+#
+# Z1: allow.this read on parent, allow.deep all on child
+#     Risk: cleanup might leave orphan ACEs on inner/ children
+#
+# Z2: SAME PATH in both allow.deep (read) AND allow.this (write)
+#     Risk: masks might clobber instead of combining
+#
+# Z3: 3-level allow.this chain — different perms per level, no inheritance
+#     Risk: per-object ACEs might bleed between levels
+#
+# Z4: allow.deep all → gap (no grant) → allow.deep read
+#     Risk: gap might inherit from grandparent's deep grant
+#
+# Z5: Directory allow.deep read + file-level allow.this write
+#     Risk: file-level this-grant might fail or inherit incorrectly
+
+[sandbox]
+token = 'appcontainer'
+
+[allow.deep]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read    = ['C:\Users\H\test_gmatrix\scripts', 'C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\deep_hole', 'C:\Users\H\test_gmatrix\file_vs_dir']
+all     = ['C:\Users\H\test_gmatrix\overlap\inner', 'C:\Users\H\test_gmatrix\deep_hole\gap\bottom']
+
+[allow.this]
+read    = ['C:\Users\H\test_gmatrix\overlap', 'C:\Users\H\test_gmatrix\multi_this']
+write   = ['C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\multi_this\mid', 'C:\Users\H\test_gmatrix\file_vs_dir\target.txt']
+all     = ['C:\Users\H\test_gmatrix\multi_this\mid\leaf']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

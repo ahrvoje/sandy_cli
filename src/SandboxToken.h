@@ -289,6 +289,7 @@ namespace Sandbox {
         LocalFree(sidStr);
 
         auto grantObj = [&](HANDLE hObj, bool isDesktop) -> bool {
+            AclMutexGuard aclLock(L"Local\\\\Sandy_Desktop");
             SECURITY_INFORMATION si = DACL_SECURITY_INFORMATION;
             PSECURITY_DESCRIPTOR pSD = nullptr;
             PACL pOldDacl = nullptr;
@@ -375,6 +376,7 @@ namespace Sandbox {
         // ALLOW ACEs to desktop/WinSta objects (via GrantDesktopAccess).
         auto removeSidAces = [&allOk](HANDLE hObj, const std::wstring& sidString,
                                 const wchar_t* objName) -> bool {
+            AclMutexGuard aclLock(L"Local\\\\Sandy_Desktop");
             PSID pTargetSid = nullptr;
             if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid)) {
                 g_logger.LogFmt(L"DESKTOP_REVOKE: ConvertStringSidToSid failed for %ls (SID=%ls, error %lu)",

@@ -15,7 +15,7 @@ token = 'appcontainer'
 # ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
 
-# [allow]
+# [allow.deep]
 # peek    = []              # non-recursive: list dir + stat only
 # read    = []              # read files, list dirs (recursive)
 # write   = []              # create/modify files (recursive)
@@ -24,7 +24,7 @@ token = 'appcontainer'
 # delete  = []              # delete only (recursive)
 # all     = []              # full access (recursive)
 
-# [deny] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
+# [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown

@@ -3,38 +3,38 @@
 #
 # TREE (4 levels deep):
 #   test_deep/
-#     app/                        [allow] all  (L1)
+#     app/                        [allow.deep] all  (L1)
 #       src/                      inherits all (L2)
-#         core/                   [deny] write (L3)
+#         core/                   [deny.deep] write (L3)
 #           engine/               inherits deny (L4)
-#         contrib/                [deny] all (L3)
+#         contrib/                [deny.deep] all (L3)
 #           plugins/              inherits deny (L4)
 #       docs/                     inherits all (L2)
 #         public/                 inherits all (L3)
 #           guides/               inherits all (L4)
-#         classified/             [deny] read (L3)
+#         classified/             [deny.deep] read (L3)
 #           memos/                inherits deny (L4)
-#     library/                    [allow] read (L1)
+#     library/                    [allow.deep] read (L1)
 #       stable/                   inherits read (L2)
 #         v1/                     inherits read (L3)
-#       experimental/             [deny] read (L2)
+#       experimental/             [deny.deep] read (L2)
 #         beta/                   inherits deny (L3)
-#     scripts/                    [allow] execute (L1)
+#     scripts/                    [allow.deep] execute (L1)
 #       common/                   inherits execute (L2)
 #         utils/                  inherits execute (L3)
-#       restricted/               [deny] execute (L2)
+#       restricted/               [deny.deep] execute (L2)
 #         admin/                  inherits deny (L3)
 
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\test_deep\scripts']
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
 all = ['C:\Users\H\test_deep\app']
 
-[deny]
+[deny.deep]
 write   = ['C:\Users\H\test_deep\app\src\core']
 all     = ['C:\Users\H\test_deep\app\src\contrib']
 read    = ['C:\Users\H\test_deep\app\docs\classified', 'C:\Users\H\test_deep\library\experimental']

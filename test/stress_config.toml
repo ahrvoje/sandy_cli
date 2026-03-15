@@ -2,7 +2,7 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_stress_scripts']
 all = ['C:\Users\H\test_stress_A', 'C:\Users\H\test_stress_B', 'C:\Users\H\test_stress_C']

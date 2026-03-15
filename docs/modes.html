@@ -271,9 +271,9 @@
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">File System</td></tr>
           <tr><td class="td-aspect">System dir reads (Windows, PF)</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>system_dirs</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">System dir writes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="no">❌</span> Blocked</td></tr>
-          <tr><td class="td-aspect">User profile reads</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
-          <tr><td class="td-aspect">User profile writes</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow]</code> ²</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
-          <tr><td class="td-aspect">Custom file/folder grants</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[allow]</code></td></tr>
+          <tr><td class="td-aspect">User profile reads</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">User profile writes</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow.*]</code> ²</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Custom file/folder grants</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td></tr>
           <tr><td class="td-aspect">DLL/API set resolution</td><td class="col-ac center"><span class="ok">✅</span> Allowed</td><td class="col-rtl center"><span class="warn">⚠️</span> May break apps</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
 
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Registry</td></tr>
@@ -295,7 +295,7 @@
 
     <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
       ¹ <code>localhost</code> (AppContainer) requires admin. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked).<br>
-      ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.
+      ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.
     </p>
   </div>
 </section>

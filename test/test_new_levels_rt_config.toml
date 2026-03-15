@@ -1,0 +1,27 @@
+# Test config for new access levels in Restricted Token mode:
+# run, stat, touch, create — both allow and deny
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+
+[allow.deep]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read = ['C:\Users\H\test_new_levels\scripts']
+run = ['C:\Users\H\test_new_levels\run_dir']
+stat = ['C:\Users\H\test_new_levels\stat_dir']
+touch = ['C:\Users\H\test_new_levels\touch_dir']
+create = ['C:\Users\H\test_new_levels\create_dir']
+all = ['C:\Users\H\test_new_levels\denied']
+
+[deny.deep]
+run = ['C:\Users\H\test_new_levels\denied\no_run']
+stat = ['C:\Users\H\test_new_levels\denied\no_stat']
+touch = ['C:\Users\H\test_new_levels\denied\no_touch']
+create = ['C:\Users\H\test_new_levels\denied\no_create']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

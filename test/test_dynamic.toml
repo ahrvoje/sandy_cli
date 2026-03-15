@@ -4,5 +4,5 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 read = ['%DYNAMIC_DIR_A%']

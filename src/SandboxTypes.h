@@ -64,11 +64,17 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Folder access level
     // -----------------------------------------------------------------------
-    enum class AccessLevel { Read, Write, Execute, Append, Delete, All, Peek };
+    enum class AccessLevel { Read, Write, Execute, Append, Delete, All, Run, Stat, Touch, Create };
+
+    // -----------------------------------------------------------------------
+    // Grant scope — Deep = recursive (OI|CI), This = single object only
+    // -----------------------------------------------------------------------
+    enum class GrantScope { Deep, This };
 
     struct FolderEntry {
         std::wstring path;
         AccessLevel  access;
+        GrantScope   scope = GrantScope::Deep;
     };
 
     // Normalize filesystem paths to Sandy's canonical separator style.
@@ -113,7 +119,10 @@ namespace Sandbox {
         case AccessLevel::Append:  return L"APPEND";
         case AccessLevel::Delete:  return L"DELETE";
         case AccessLevel::All:     return L"ALL";
-        case AccessLevel::Peek:    return L"PEEK";
+        case AccessLevel::Run:     return L"RUN";
+        case AccessLevel::Stat:    return L"STAT";
+        case AccessLevel::Touch:   return L"TOUCH";
+        case AccessLevel::Create:  return L"CREATE";
         default:                   return L"?";
         }
     }
@@ -127,7 +136,10 @@ namespace Sandbox {
         case AccessLevel::Append:  return L"append";
         case AccessLevel::Delete:  return L"delete";
         case AccessLevel::All:     return L"all";
-        case AccessLevel::Peek:    return L"peek";
+        case AccessLevel::Run:     return L"run";
+        case AccessLevel::Stat:    return L"stat";
+        case AccessLevel::Touch:   return L"touch";
+        case AccessLevel::Create:  return L"create";
         default:                   return L"?";
         }
     }
@@ -140,7 +152,10 @@ namespace Sandbox {
         if (_wcsicmp(s.c_str(), L"append")  == 0) return AccessLevel::Append;
         if (_wcsicmp(s.c_str(), L"delete")  == 0) return AccessLevel::Delete;
         if (_wcsicmp(s.c_str(), L"all")     == 0) return AccessLevel::All;
-        if (_wcsicmp(s.c_str(), L"peek")    == 0) return AccessLevel::Peek;
+        if (_wcsicmp(s.c_str(), L"run")     == 0) return AccessLevel::Run;
+        if (_wcsicmp(s.c_str(), L"stat")    == 0) return AccessLevel::Stat;
+        if (_wcsicmp(s.c_str(), L"touch")   == 0) return AccessLevel::Touch;
+        if (_wcsicmp(s.c_str(), L"create")  == 0) return AccessLevel::Create;
         return AccessLevel::Read;  // safe fallback
     }
 
@@ -215,7 +230,7 @@ namespace Sandbox {
         IntegrityLevel integrity = IntegrityLevel::Low;   // [sandbox] integrity (restricted only)
         std::wstring workdir;                              // [sandbox] workdir (optional)
         std::vector<FolderEntry> folders;
-        std::vector<FolderEntry> denyFolders;  // [deny] — DENY ACEs
+        std::vector<FolderEntry> denyFolders;  // [deny.*] — DENY ACEs
 
         // [privileges] — sandbox capabilities (optional, defaults shown)
         bool allowNetwork    = false;

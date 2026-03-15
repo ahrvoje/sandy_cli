@@ -89,7 +89,7 @@ echo [sandbox]
 echo token = 'appcontainer'
 echo workdir = '%ARENA%'
 echo.
-echo [allow]
+echo [allow.deep]
 echo execute = ['%PYDIR%']
 echo read    = ['%ARENA%']
 echo all     = ['%ARENA%\sub1', '%ARENA%\sub2']

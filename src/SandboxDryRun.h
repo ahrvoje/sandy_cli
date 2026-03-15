@@ -18,33 +18,37 @@ namespace Sandbox {
 // Print folder entries grouped by access level (for dry-run display)
 // -----------------------------------------------------------------------
 inline void PrintFolderEntries(const wchar_t* section,
-                               const std::vector<FolderEntry>& entries)
+                               const std::vector<FolderEntry>& entries,
+                               GrantScope scope)
 {
     printf("[%ls]\n", section);
-    if (entries.empty()) { printf("  (none)\n"); return; }
-    for (int a = 0; a <= 5; a++) {
+    bool anyMatch = false;
+    for (int a = 0; a <= static_cast<int>(AccessLevel::Create); a++) {
         auto lvl = static_cast<AccessLevel>(a);
         bool first = true;
         for (auto& e : entries) {
-            if (e.access != lvl) continue;
+            if (e.access != lvl || e.scope != scope) continue;
+            anyMatch = true;
             if (first) { printf("  %ls:\n", AccessLevelName(lvl)); first = false; }
             printf("    %ls\n", e.path.c_str());
         }
     }
+    if (!anyMatch) printf("  (none)\n");
 }
 
 // -----------------------------------------------------------------------
 // Print folder entries as TOML (for --print-config)
 // -----------------------------------------------------------------------
 inline void PrintFolderToml(const wchar_t* section,
-                            const std::vector<FolderEntry>& entries)
+                            const std::vector<FolderEntry>& entries,
+                            GrantScope scope)
 {
     printf("[%ls]\n", section);
-    for (int a = 0; a <= 5; a++) {
+    for (int a = 0; a <= static_cast<int>(AccessLevel::Create); a++) {
         auto lvl = static_cast<AccessLevel>(a);
         bool first = true;
         for (auto& e : entries) {
-            if (e.access != lvl) continue;
+            if (e.access != lvl || e.scope != scope) continue;
             if (first) {
                 printf("%ls = [", AccessLevelName(lvl));
                 first = false;
@@ -78,9 +82,13 @@ inline int HandleDryRun(const SandboxConfig& config,
     else
         printf("Working dir: %ls\n\n", config.workdir.c_str());
 
-    PrintFolderEntries(L"allow", config.folders);
+    PrintFolderEntries(L"allow.deep", config.folders, GrantScope::Deep);
     printf("\n");
-    PrintFolderEntries(L"deny", config.denyFolders);
+    PrintFolderEntries(L"allow.this", config.folders, GrantScope::This);
+    printf("\n");
+    PrintFolderEntries(L"deny.deep", config.denyFolders, GrantScope::Deep);
+    printf("\n");
+    PrintFolderEntries(L"deny.this", config.denyFolders, GrantScope::This);
 
     printf("\n[privileges]\n");
     if (!isRestricted) {
@@ -189,7 +197,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
         printf("  [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
 
     if (!config.denyFolders.empty()) {
-        printf("[deny] — %zu path(s)\n", config.denyFolders.size());
+        printf("[deny.*] \u2014 %zu path(s)\n", config.denyFolders.size());
         for (auto& f : config.denyFolders)
             printf("  [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
     }
@@ -219,9 +227,11 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     printf("workdir = '%ls'\n\n",
            config.workdir.empty() ? L"inherit" : config.workdir.c_str());
 
-    PrintFolderToml(L"allow", config.folders);
+    PrintFolderToml(L"allow.deep", config.folders, GrantScope::Deep);
+    PrintFolderToml(L"allow.this", config.folders, GrantScope::This);
     printf("\n");
-    PrintFolderToml(L"deny", config.denyFolders);
+    PrintFolderToml(L"deny.deep", config.denyFolders, GrantScope::Deep);
+    PrintFolderToml(L"deny.this", config.denyFolders, GrantScope::This);
 
     printf("\n[privileges]\n");
     if (!isRT) {

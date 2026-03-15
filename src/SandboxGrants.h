@@ -26,7 +26,7 @@ namespace Sandbox {
         // SID of the principal granted/denied
         std::wstring       trappedSids;    // semicolon-separated trapped AC SIDs (deny entries only)
         bool               wasDenied = false;
-        bool               wasPeek = false;     // peek = non-recursive, skip tree-set on cleanup
+        bool               wasThis = false;     // this scope (non-recursive) — skip tree-set on cleanup
     };
 
     // -----------------------------------------------------------------------
@@ -51,6 +51,8 @@ namespace Sandbox {
     inline std::atomic<bool>     g_grantTrackingHealthy{ true };
     inline std::atomic<bool>     g_preserveGrantMetadata{ false };
     inline std::atomic<bool>     g_deferredCleanupRequested{ false };
+
+    inline std::set<std::wstring> GetSavedProfileContainerNames();
 
     inline void ResetGrantTrackingHealth()
     {
@@ -139,7 +141,7 @@ namespace Sandbox {
         std::wstring sidString;
         std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
         bool         wasDenied = false;
-        bool         wasPeek = false;
+        bool         wasThis = false;
     };
 
     // -----------------------------------------------------------------------
@@ -222,7 +224,7 @@ namespace Sandbox {
 
         // Parse optional |KEY:VALUE suffixes
         out.wasDenied = false;
-        out.wasPeek = false;
+        out.wasThis = false;
         out.trappedSids.clear();
         if (pipePos != std::wstring::npos) {
             remaining = remaining.substr(pipePos);
@@ -232,7 +234,10 @@ namespace Sandbox {
                     out.wasDenied = true;
                     remaining = remaining.substr(6);
                 } else if (remaining.compare(0, 6, L"PEEK:1") == 0) {
-                    out.wasPeek = true;
+                    out.wasThis = true;  // backward compat: PEEK:1 → wasThis
+                    remaining = remaining.substr(6);
+                } else if (remaining.compare(0, 6, L"THIS:1") == 0) {
+                    out.wasThis = true;
                     remaining = remaining.substr(6);
                 } else if (remaining.compare(0, 10, L"DEFERRED:1") == 0) {
                     // Legacy flag from removed deferred-cleanup mechanism; just skip it
@@ -371,7 +376,7 @@ namespace Sandbox {
                             const std::wstring& sidString,
                             const std::wstring& trappedSids = L"",
                             bool isDeny = false,
-                            bool isPeek = false)
+                            bool isThis = false)
     {
         std::wstring normalizedPath = (objType == SE_FILE_OBJECT)
             ? NormalizeFsPath(path)
@@ -425,8 +430,8 @@ namespace Sandbox {
                 if (!trappedSids.empty()) {
                     data += L"|TRAPPED:" + trappedSids;
                 }
-                if (isPeek) {
-                    data += L"|PEEK:1";
+                if (isThis) {
+                    data += L"|THIS:1";
                 }
 
                 wchar_t valueName[32];
@@ -450,7 +455,7 @@ namespace Sandbox {
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { normalizedPath, objType, sidString, trappedSids, isDeny, isPeek };
+        ACLGrant grant = { normalizedPath, objType, sidString, trappedSids, isDeny, isThis };
         g_aclGrants.push_back(std::move(grant));
 
         // --- Incremental staging profile write (crash-safe profile creation) ---
@@ -459,7 +464,7 @@ namespace Sandbox {
             std::wstring data = typeStr + L"|" + normalizedPath + L"|" + sidString;
             if (isDeny) data += L"|DENY:1";
             if (!trappedSids.empty()) data += L"|TRAPPED:" + trappedSids;
-            if (isPeek) data += L"|PEEK:1";
+            if (isThis) data += L"|THIS:1";
 
             wchar_t valName[32];
             swprintf(valName, 32, L"%lu", g_stagingGrantIdx);
@@ -617,6 +622,8 @@ namespace Sandbox {
 
     inline void RestoreTransientContainers()
     {
+        std::set<std::wstring> savedProfileContainers = GetSavedProfileContainerNames();
+
         HKEY hParent = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
@@ -645,6 +652,13 @@ namespace Sandbox {
             std::wstring containerName = ReadRegSz(hKey, L"_container");
             RegCloseKey(hKey);
             if (containerName.empty()) {
+                ClearTransientContainerCleanup(instanceId);
+                continue;
+            }
+
+            if (savedProfileContainers.count(NormalizeLookupKey(containerName)) > 0) {
+                g_logger.LogFmt(L"TRANSIENT_RETRY_SKIP: %ls is profile-owned; clearing stale retry metadata for instance %ls",
+                                containerName.c_str(), instanceId.c_str());
                 ClearTransientContainerCleanup(instanceId);
                 continue;
             }
@@ -874,18 +888,31 @@ namespace Sandbox {
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
-        // Deduplicate: same path may appear for allow + deny — use composite key
+        // Pre-scan: detect paths that have at least one deep (non-this) entry.
+        // When a path has both allow.deep and allow.this entries, cleanup must
+        // use SetNamedSecurityInfoW (skipTreeSet=false) so inherited copies of
+        // the deep ACE are removed from children via auto-inheritance.
+        std::set<std::wstring> pathsNeedingTreeSet;
+        for (const auto& g : g_aclGrants) {
+            if (!g.wasThis) {
+                std::wstring key = g.path + L"|" + (g.wasDenied ? L"D" : L"A");
+                pathsNeedingTreeSet.insert(key);
+            }
+        }
+
+        // Deduplicate: same path may appear for allow + deny
         std::set<std::wstring> processed;
         int removed = 0;
         for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
-            // Composite key: path + deny/allow type — allows both records to be processed
             std::wstring dedupKey = it->path + L"|" + (it->wasDenied ? L"D" : L"A");
             if (processed.count(dedupKey)) continue;
             processed.insert(dedupKey);
 
-            // Peek grants are non-recursive (no inheritance) — skip tree-set
+            // skipTreeSet=true only when ALL entries for this key are this-scope.
+            // If any entry is deep, must use SetNamedSecurityInfoW to cascade.
+            bool skipTree = it->wasThis && !pathsNeedingTreeSet.count(dedupKey);
             int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
-                                  it->wasDenied, it->wasPeek);
+                                   it->wasDenied, skipTree);
             removed += n;
         }
         g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed", removed);
@@ -913,6 +940,19 @@ namespace Sandbox {
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
+        // Pre-scan: detect paths that have deep (non-this) entries.
+        // Same fix as RevokeAllGrants: dual-scope paths must use tree-set.
+        std::set<std::wstring> deepPaths;
+        for (DWORD pre = 0; pre < valueCount; pre++) {
+            std::wstring pvname, pdata;
+            if (!ReadRegSzEnum(hKey, pre, pvname, pdata)) continue;
+            GrantRecord pr;
+            if (!ParseGrantRecord(pdata, pr, nullptr)) continue;
+            if (!pr.wasThis) {
+                deepPaths.insert(pr.path + L"|" + (pr.wasDenied ? L"D" : L"A"));
+            }
+        }
+
         std::set<std::wstring> processed;
         for (DWORD vi = 0; vi < valueCount; vi++) {
             std::wstring vname, data;
@@ -933,8 +973,9 @@ namespace Sandbox {
 
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
 
+            bool skipTree = rec.wasThis && !deepPaths.count(dedupKey);
             AceRemovalResult removal = RemoveSidFromDaclDetailed(rec.path, rec.sidString, objType,
-                                                                 rec.wasDenied, rec.wasPeek);
+                                                                 rec.wasDenied, skipTree);
             if (removal.removed > 0) {
                 printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
                 continue;

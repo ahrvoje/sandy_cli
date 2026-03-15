@@ -2,7 +2,7 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 read = ['C:\Users\H\test_multiinstance\scripts']
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 all = ['C:\Users\H\test_multiinstance\shared']

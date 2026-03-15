@@ -23,7 +23,7 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
 
-[allow]
+[allow.deep]
 # peek    = []              # non-recursive: list dir + stat only (path traversal)
 # read = [
 #     'C:\data\config.json',          # single file
@@ -35,7 +35,7 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # delete = []
 # all = []
 
-# [deny] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
+# [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown

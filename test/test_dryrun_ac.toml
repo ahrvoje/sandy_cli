@@ -2,7 +2,7 @@
 token = 'appcontainer'
 workdir = 'C:\Windows\Temp'
 
-[allow]
+[allow.deep]
 execute = ['C:\Windows\System32']
 
 [limit]

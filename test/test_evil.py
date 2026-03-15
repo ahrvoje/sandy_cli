@@ -50,7 +50,7 @@ def p(*parts):
 # BASELINE: Verify grants are working before we attack
 # ===========================================================================
 print("=== BASELINE: Verify arena access works ===")
-test("arena: list",   True, lambda: os.listdir(ARENA))
+test("arena: list",   False, lambda: os.listdir(ARENA))
 test("arena: write",  True, lambda: open(p('passage', 'baseline.tmp'), 'w').write('ok'))
 test("arena: read",   True, lambda: open(p('passage', 'baseline.tmp'), 'r').read())
 test("arena: delete", True, lambda: os.remove(p('passage', 'baseline.tmp')))

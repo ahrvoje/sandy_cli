@@ -76,14 +76,16 @@ namespace Sandbox {
         std::wstring pathLower;     // lowercase for comparison
         AccessLevel  access;
         bool         isDeny;
+        GrantScope   scope = GrantScope::Deep;
 
         bool operator==(const GrantKey& o) const {
-            return pathLower == o.pathLower && access == o.access && isDeny == o.isDeny;
+            return pathLower == o.pathLower && access == o.access && isDeny == o.isDeny && scope == o.scope;
         }
         bool operator<(const GrantKey& o) const {
             if (pathLower != o.pathLower) return pathLower < o.pathLower;
             if (access != o.access) return access < o.access;
-            return isDeny < o.isDeny;
+            if (isDeny != o.isDeny) return isDeny < o.isDeny;
+            return scope < o.scope;
         }
     };
 
@@ -102,12 +104,12 @@ namespace Sandbox {
         for (const auto& e : config.folders) {
             if (e.path.empty()) continue;
             std::wstring normalizedPath = NormalizeFsPath(e.path);
-            keys.insert({ normalizedPath, ToLower(normalizedPath), e.access, false });
+            keys.insert({ normalizedPath, ToLower(normalizedPath), e.access, false, e.scope });
         }
         for (const auto& e : config.denyFolders) {
             if (e.path.empty()) continue;
             std::wstring normalizedPath = NormalizeFsPath(e.path);
-            keys.insert({ normalizedPath, ToLower(normalizedPath), e.access, true });
+            keys.insert({ normalizedPath, ToLower(normalizedPath), e.access, true, e.scope });
         }
         return keys;
     }

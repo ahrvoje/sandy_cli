@@ -6,7 +6,7 @@ token = 'restricted'
 integrity = 'low'
 workdir = 'C:\Users\H'
 
-[allow]
+[allow.deep]
 read    = ['C:\Users\H']
 [environment]
 inherit = true

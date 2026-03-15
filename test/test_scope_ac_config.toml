@@ -1,0 +1,13 @@
+# Sandy scope test — AppContainer allow.deep + allow.this
+[sandbox]
+token = 'appcontainer'
+
+[allow.deep]
+all     = ['C:\Users\H\test_scope\deep', 'C:\Users\H\test_scope\deep_all']
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_scope\scripts']
+
+[allow.this]
+all     = ['C:\Users\H\test_scope\this']
+
+[environment]
+pass = ['PATH', 'TEST_ROOT', 'TEST_MODE']

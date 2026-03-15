@@ -5,7 +5,7 @@
 token = 'restricted'
 integrity = 'low'
 
-[allow]
+[allow.deep]
 read    = ['C:\Users\H\test_sandy_profile\data']
 [environment]
 inherit = true

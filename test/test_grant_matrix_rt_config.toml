@@ -1,0 +1,36 @@
+# Grant Matrix Test — Restricted Token (deep vs this + deny combos)
+#
+# Zones Z1-Z5: same allow structure as AC config
+# Z6: allow.deep all + deny.deep write — deny subtracts write from all
+# Z7: deny.this read on parent + allow.deep all on child — child must NOT inherit deny
+# Z8: deny.deep all + allow.this read on SAME PATH — what wins?
+# Z9: deny.this write + allow.deep write on SAME PATH — scope mismatch
+
+[sandbox]
+token     = 'restricted'
+integrity = 'low'
+
+[allow.deep]
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read    = ['C:\Users\H\test_gmatrix\scripts', 'C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\deep_hole', 'C:\Users\H\test_gmatrix\file_vs_dir', 'C:\Users\H\test_gmatrix\deny_scope']
+all     = ['C:\Users\H\test_gmatrix\overlap\inner', 'C:\Users\H\test_gmatrix\deep_hole\gap\bottom', 'C:\Users\H\test_gmatrix\deny_sub', 'C:\Users\H\test_gmatrix\deny_parent\child']
+write   = ['C:\Users\H\test_gmatrix\deny_clash']
+
+[allow.this]
+read    = ['C:\Users\H\test_gmatrix\overlap', 'C:\Users\H\test_gmatrix\multi_this', 'C:\Users\H\test_gmatrix\deny_clash']
+write   = ['C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\multi_this\mid', 'C:\Users\H\test_gmatrix\file_vs_dir\target.txt']
+all     = ['C:\Users\H\test_gmatrix\multi_this\mid\leaf']
+
+[deny.deep]
+write   = ['C:\Users\H\test_gmatrix\deny_sub']
+all     = ['C:\Users\H\test_gmatrix\deny_clash']
+
+[deny.this]
+read    = ['C:\Users\H\test_gmatrix\deny_parent']
+write   = ['C:\Users\H\test_gmatrix\deny_scope']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

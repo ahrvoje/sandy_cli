@@ -58,7 +58,9 @@ namespace Sandbox {
         // Reject unknown sections
         for (const auto& [name, section] : doc) {
             if (!name.empty() &&
-                name != L"sandbox" && name != L"allow" && name != L"deny" &&
+                name != L"sandbox" &&
+                name != L"allow.deep" && name != L"allow.this" &&
+                name != L"deny.deep" && name != L"deny.this" &&
                 name != L"privileges" &&
                 name != L"registry" && name != L"environment" && name != L"limit")
             {
@@ -108,63 +110,81 @@ namespace Sandbox {
             fprintf(stderr, "Error: 'token' is required in [sandbox]. Use token = 'appcontainer' or 'restricted'.\n");
             config.parseError = true;
         }
-
-        // --- [allow] — file/folder ALLOW ACEs ---
+        // --- [allow.deep] / [allow.this] — file/folder ALLOW ACEs ---
         std::set<std::wstring> allowSeen;
         {
-            auto sit = doc.find(L"allow");
-            if (sit != doc.end()) {
-                static const std::map<std::wstring, AccessLevel> allowKeys = {
-                    {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
-                    {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
-                    {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All},
-                    {L"peek", AccessLevel::Peek}
-                };
+            static const std::map<std::wstring, AccessLevel> allowKeys = {
+                {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
+                {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
+                {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All},
+                {L"run", AccessLevel::Run}, {L"stat", AccessLevel::Stat},
+                {L"touch", AccessLevel::Touch}, {L"create", AccessLevel::Create}
+            };
+            auto parseAllow = [&](const wchar_t* sectionName, GrantScope scope) {
+                auto sit = doc.find(sectionName);
+                if (sit == doc.end()) return;
                 for (const auto& [key, val] : sit->second) {
                     auto it = allowKeys.find(key);
                     if (it == allowKeys.end()) {
-                        fprintf(stderr, "Error: Unknown key in [allow]: %ls\n", key.c_str());
+                        fprintf(stderr, "Error: Unknown key in [%ls]: %ls\n", sectionName, key.c_str());
                         config.parseError = true;
                         continue;
                     }
                     if (val.isArray) {
                         allowSeen.insert(key);
                         for (size_t i = 0; i < val.arr.size(); i++)
-                            config.folders.push_back({ val.arr[i], it->second });
+                            config.folders.push_back({ val.arr[i], it->second, scope });
                     } else {
-                        fprintf(stderr, "Error: '%ls' in [allow] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str());
+                        fprintf(stderr, "Error: '%ls' in [%ls] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str(), sectionName);
                         config.parseError = true;
                     }
                 }
+            };
+            parseAllow(L"allow.deep", GrantScope::Deep);
+            parseAllow(L"allow.this", GrantScope::This);
+            // Reject bare [allow] — must use [allow.deep] or [allow.this]
+            if (doc.find(L"allow") != doc.end()) {
+                fprintf(stderr, "Error: [allow] is no longer supported. Use [allow.deep] or [allow.this].\n");
+                config.parseError = true;
             }
         }
 
-        // --- [deny] — file/folder DENY ACEs (mandatory, all 6 keys) ---
+        // --- [deny.deep] / [deny.this] — file/folder DENY ACEs ---
         std::set<std::wstring> denySeen;
         {
-            auto sit = doc.find(L"deny");
-            if (sit != doc.end()) {
-                static const std::map<std::wstring, AccessLevel> denyKeys = {
-                    {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
-                    {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
-                    {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All}
-                };
+            static const std::map<std::wstring, AccessLevel> denyKeys = {
+                {L"read", AccessLevel::Read}, {L"write", AccessLevel::Write},
+                {L"execute", AccessLevel::Execute}, {L"append", AccessLevel::Append},
+                {L"delete", AccessLevel::Delete}, {L"all", AccessLevel::All},
+                {L"run", AccessLevel::Run}, {L"stat", AccessLevel::Stat},
+                {L"touch", AccessLevel::Touch}, {L"create", AccessLevel::Create}
+            };
+            auto parseDeny = [&](const wchar_t* sectionName, GrantScope scope) {
+                auto sit = doc.find(sectionName);
+                if (sit == doc.end()) return;
                 for (const auto& [key, val] : sit->second) {
                     auto it = denyKeys.find(key);
                     if (it == denyKeys.end()) {
-                        fprintf(stderr, "Error: Unknown key in [deny]: %ls\n", key.c_str());
+                        fprintf(stderr, "Error: Unknown key in [%ls]: %ls\n", sectionName, key.c_str());
                         config.parseError = true;
                         continue;
                     }
                     if (val.isArray) {
                         denySeen.insert(key);
                         for (size_t i = 0; i < val.arr.size(); i++)
-                            config.denyFolders.push_back({ val.arr[i], it->second });
+                            config.denyFolders.push_back({ val.arr[i], it->second, scope });
                     } else {
-                        fprintf(stderr, "Error: '%ls' in [deny] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str());
+                        fprintf(stderr, "Error: '%ls' in [%ls] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str(), sectionName);
                         config.parseError = true;
                     }
                 }
+            };
+            parseDeny(L"deny.deep", GrantScope::Deep);
+            parseDeny(L"deny.this", GrantScope::This);
+            // Reject bare [deny]
+            if (doc.find(L"deny") != doc.end()) {
+                fprintf(stderr, "Error: [deny] is no longer supported. Use [deny.deep] or [deny.this].\n");
+                config.parseError = true;
             }
         }
 
@@ -324,9 +344,9 @@ namespace Sandbox {
                 if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
                 if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
                 if (!config.denyFolders.empty()) {
-                    fprintf(stderr, "Error: [deny] is not available in appcontainer mode.\n");
+                    fprintf(stderr, "Error: [deny.*] is not available in appcontainer mode.\n");
                     fprintf(stderr, "  The Windows kernel ignores DENY ACEs for AppContainer SIDs.\n");
-                    fprintf(stderr, "  Use token = 'restricted' for deny rules, or remove the [deny] section.\n");
+                    fprintf(stderr, "  Use token = 'restricted' for deny rules, or remove the deny sections.\n");
                     config.parseError = true;
                 }
             }
@@ -371,8 +391,8 @@ namespace Sandbox {
                     }
                 }
             };
-            validatePaths(config.folders, L"allow");
-            validatePaths(config.denyFolders, L"deny");
+            validatePaths(config.folders, L"allow.*");
+            validatePaths(config.denyFolders, L"deny.*");
 
             // Validate registry paths have proper prefix
             for (const auto& key : config.registryRead) {
@@ -403,16 +423,16 @@ namespace Sandbox {
                     }
                 }
             };
-            checkPathLengths(config.folders, L"allow");
-            checkPathLengths(config.denyFolders, L"deny");
+            checkPathLengths(config.folders, L"allow.*");
+            checkPathLengths(config.denyFolders, L"deny.*");
 
             if (config.folders.size() > kMaxRulesPerSection) {
-                fprintf(stderr, "Error: [allow] has %zu rules (max %zu). Reduce configuration complexity.\n",
+                fprintf(stderr, "Error: allow sections have %zu rules (max %zu). Reduce configuration complexity.\n",
                         config.folders.size(), kMaxRulesPerSection);
                 config.parseError = true;
             }
             if (config.denyFolders.size() > kMaxRulesPerSection) {
-                fprintf(stderr, "Error: [deny] has %zu rules (max %zu). Reduce configuration complexity.\n",
+                fprintf(stderr, "Error: deny sections have %zu rules (max %zu). Reduce configuration complexity.\n",
                         config.denyFolders.size(), kMaxRulesPerSection);
                 config.parseError = true;
             }

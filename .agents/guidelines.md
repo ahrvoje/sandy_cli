@@ -70,7 +70,7 @@ Always know which mode you are changing before touching ACL or cleanup logic.
 
 **Consequences (mandatory, no exceptions):**
 
-1. `[deny]` is **rejected at config time** for AppContainer mode.
+1. `[deny.*]` is **rejected at config time** for AppContainer mode.
 2. Only Restricted Token mode supports deny rules (real `DENY_ACCESS` ACEs).
 3. Deny uses standard `SetNamedSecurityInfoW` with auto-inheritance — same as
    grants. No `PROTECTED_DACL` or `TreeSet` required.
@@ -103,8 +103,10 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | Section | Key | Default | Notes |
 |---------|-----|---------|-------|
 | `[sandbox]` | `workdir` | `'inherit'` (exe folder) | |
-| `[allow]` | `peek/read/write/execute/append/delete/all` | `[]` | No grants |
-| `[deny]` | `read/write/execute/append/delete/all` | `[]` | No denies |
+| `[allow.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive grants (OI\|CI) |
+| `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
+| `[deny.deep]` | same keys | `[]` | Recursive denies (RT only) |
+| `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
 | `[privileges]` | `system_dirs` | `true` | AC only — false breaks most apps |
 | `[privileges]` | `network` | `false` | AC only |
 | `[privileges]` | `localhost` | `false` | AC only, needs admin |
@@ -205,7 +207,7 @@ Rules:
 - Deny interactions must remain equivalent to a full pipeline run.
 - State is updated only after reload work actually succeeds.
 - Immutable after launch: `token`, `integrity`, `workdir`, `[privileges]`, `[environment]`, `[limit]`, network flags.
-- Dynamic-only sections: `[allow]`, `[deny]`, `[registry]`.
+- Dynamic-only sections: `[allow.deep]`, `[allow.this]`, `[deny.deep]`, `[deny.this]`, `[registry]`.
 - **Compatibility:** requires `-c <file>`. Incompatible with `-s`, `-p`, `--dry-run`, `--print-config`, `--create-profile`.
 
 # Removed Surface Area

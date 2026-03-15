@@ -6,30 +6,28 @@
 # TREE (4 levels deep):
 #   test_deep/
 #     app/
-#       src/                      [allow] peek  (list only — children get specific grants)
-#         core/                   [allow] read  (read-only, no write)
+#         core/                   [allow.deep] read  (read-only, no write)
 #           engine/               inherits read from core
 #         contrib/                (no grant → blocked)
 #           plugins/              (no grant → blocked)
 #       docs/
-#         public/                 [allow] all (inherits to guides/)
+#         public/                 [allow.deep] all (inherits to guides/)
 #         classified/             (no grant → blocked, AC can't do write-only)
 #           memos/                (no grant → blocked)
 #     library/
-#       stable/                   [allow] read (inherits to v1/)
+#       stable/                   [allow.deep] read (inherits to v1/)
 #       experimental/             (no grant → blocked)
 #     scripts/
-#       common/                   [allow] execute + read
+#       common/                   [allow.deep] execute + read
 #       restricted/               (no grant → blocked)
 
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts\common']
 read = ['C:\Users\H\test_deep\scripts\test_deep_acl.py', 'C:\Users\H\test_deep\scripts\common', 'C:\Users\H\test_deep\app\src\core', 'C:\Users\H\test_deep\library\stable']
 all = ['C:\Users\H\test_deep\app\docs\public']
-peek = ['C:\Users\H\test_deep\app', 'C:\Users\H\test_deep\app\src', 'C:\Users\H\test_deep\app\docs', 'C:\Users\H\test_deep\library', 'C:\Users\H\test_deep\scripts']
 
 [environment]
 inherit = true

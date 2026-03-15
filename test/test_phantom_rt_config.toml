@@ -5,11 +5,11 @@
 token = 'restricted'
 integrity = 'medium'
 
-[allow]
+[allow.deep]
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_phantom\scripts']
 all = ['C:\Users\H\test_phantom\arena']
 
-[deny]
+[deny.deep]
 all = ['C:\Users\H\test_phantom\arena\forbidden']
 write = ['C:\Users\H\test_phantom\arena\readonly']
 

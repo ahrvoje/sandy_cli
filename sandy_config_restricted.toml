@@ -23,7 +23,7 @@ integrity = 'low'          # required: 'low' or 'medium'
 # ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
 
-# [allow]
+# [allow.deep]
 # peek    = []              # non-recursive: list dir + stat only
 # read    = []              # read files, list dirs (recursive)
 # write   = []              # create/modify files (recursive)
@@ -32,7 +32,7 @@ integrity = 'low'          # required: 'low' or 'medium'
 # delete  = []              # delete only (recursive)
 # all     = []              # full access (recursive)
 
-# [deny]                    # optional, default: no denies
+# [deny.deep]                    # optional, default: no denies
 
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown

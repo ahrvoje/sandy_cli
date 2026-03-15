@@ -3,7 +3,6 @@
 # TREE:
 #   test_evil/
 #     scripts/              [allow read]  — test script
-#     arena/                (peek only — children have selective grants)
 #       passage/            [allow all]   — contains junction escape
 #       vault/              (no grant)    — primary target
 #       LongSecretName/     (no grant)    — 8.3 alias target
@@ -14,11 +13,10 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_evil\scripts', 'C:\Users\H\test_evil\arena\records']
 all = ['C:\Users\H\test_evil\arena\passage', 'C:\Users\H\test_evil\arena\deep']
-peek = ['C:\Users\H\test_evil\arena']
 
 [environment]
 inherit = true

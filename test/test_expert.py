@@ -237,9 +237,9 @@ test("runtime: read sample file", True,
 # ===========================================================================
 print("\n=== C2: Deep nested access (5 levels) ===")
 deep_child = p('deep', 'a', 'b', 'c', 'd')
-# Peek chain: deep → a → b, then all on c (inherits to d)
-test("deep/a: list", True, lambda: os.listdir(p('deep', 'a')))
-test("deep/a/b: list", True, lambda: os.listdir(p('deep', 'a', 'b')))
+# deep/a and deep/a/b have no grant — only deep/a/b/c has allow.all
+test("deep/a: list", False, lambda: os.listdir(p('deep', 'a')))
+test("deep/a/b: list", False, lambda: os.listdir(p('deep', 'a', 'b')))
 test("deep/a/b/c: list", True, lambda: os.listdir(p('deep', 'a', 'b', 'c')))
 # 'd' inherits all from c (AC has no deny to block it)
 test("deep/a/b/c/d: list (inherits all)", True, lambda: os.listdir(deep_child))

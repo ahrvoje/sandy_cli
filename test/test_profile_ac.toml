@@ -4,7 +4,7 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 read    = ['C:\Users\H\test_sandy_profile\data']
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 [environment]

@@ -146,7 +146,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <table>
             <tr><td>Config file</td><td>max 1 MB</td></tr>
             <tr><td>Path length</td><td>max 32,768 chars</td></tr>
-            <tr><td>Rules per section</td><td>max 256 in <code>[allow]</code>, <code>[deny]</code>, <code>[registry]</code></td></tr>
+            <tr><td>Rules per section</td><td>max 256 in <code>[allow.*]</code>, <code>[deny.*]</code>, <code>[registry]</code></td></tr>
           </table>
         </div>
       </div>
@@ -185,35 +185,38 @@ token = <span class="code-string">'appcontainer'</span></pre>
       </table>
     </div>
 
-    <!-- [allow] -->
+    <!-- [allow.deep] / [allow.this] -->
     <div class="section-header">
-      <h3><code>[allow]</code> — File and folder grants</h3><span class="tag both">both modes</span>
+      <h3><code>[allow.deep]</code> / <code>[allow.this]</code> — File and folder grants</h3><span class="tag both">both modes</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). All grants are recursive except <code>peek</code> (directory itself only, non-recursive).</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). Two scopes: <strong><code>[allow.deep]</code></strong> applies recursively (OI|CI inheritance); <strong><code>[allow.this]</code></strong> applies to the named object only (instant, no child walk). Same access keys in both scopes.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>AC</th><th>RT</th><th>Permission granted</th></tr></thead>
         <tbody>
-          <tr><td>peek</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>List directory + stat only — non-recursive, directory itself only</td></tr>
-          <tr><td>read</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read files, list dirs (recursive). Does NOT grant execute.</td></tr>
-          <tr><td>write</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create/modify files (recursive). Does NOT grant read.</td></tr>
-          <tr><td>execute</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read + execute files, list dirs (recursive)</td></tr>
+          <tr><td>read</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read files, list dirs. Does NOT grant execute.</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create/modify files. Does NOT grant read.</td></tr>
+          <tr><td>execute</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read + execute files, list dirs</td></tr>
           <tr><td>append</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Append-only. Cannot overwrite or read.</td></tr>
           <tr><td>delete</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Delete only. No read or write.</td></tr>
           <tr><td>all</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Full access: read+write+execute+delete. Strips WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD.</td></tr>
+          <tr><td>run</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Execute only, no read (can't copy binary)</td></tr>
+          <tr><td>stat</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read attributes only</td></tr>
+          <tr><td>touch</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Modify attributes only</td></tr>
+          <tr><td>create</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create new files/subdirs, no overwrite</td></tr>
         </tbody>
       </table>
     </div>
     <div class="callout info">
       <div class="callout-title">💡 Allow-inside-deny pipeline (restricted token only)</div>
-      <p>In Restricted Token mode, you can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>deny.all = ['C:\repos']</code> + <code>allow.all = ['C:\repos\snipps']</code>.</p>
+      <p>In Restricted Token mode, you can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>[deny.deep] all = ['C:\repos']</code> + <code>[allow.deep] all = ['C:\repos\snipps']</code>.</p>
     </div>
 
-    <!-- [deny] -->
+    <!-- [deny.deep] / [deny.this] -->
     <div class="section-header">
-      <h3><code>[deny]</code> — Block specific permissions</h3><span class="tag rt">Restricted only</span>
+      <h3><code>[deny.deep]</code> / <code>[deny.this]</code> — Block specific permissions</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). <code>peek</code> is not in <code>[deny]</code>. Deny is recursive and surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). Same access keys and scope semantics as allow. <code>[deny.deep]</code> is recursive; <code>[deny.this]</code> applies to the single object only. Deny is surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>Mechanism (Restricted Token only)</th></tr></thead>
@@ -224,12 +227,16 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>append</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
           <tr><td>delete</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
           <tr><td>all</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE (all bits)</td></tr>
+          <tr><td>run</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>stat</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>touch</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>create</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
         </tbody>
       </table>
     </div>
     <div class="callout warning">
       <div class="callout-title">⚠️ AppContainer does not support deny rules</div>
-      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
+      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny.*]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
     </div>
 
     <!-- [privileges] -->
@@ -327,8 +334,8 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>&ensp;token</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;integrity</td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;workdir</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
-          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow] all keys</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
-          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny] all keys</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow.deep] / [allow.this]</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
           <tr><td>&ensp;system_dirs</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
@@ -356,7 +363,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Permission <span class="accent">Bit Reference</span></h2>
-    <p class="section-lead">Exact Windows access masks per <code>[allow]</code> level. <code>write</code> ≠ <code>read</code>, and <code>read</code> ≠ <code>execute</code>.</p>
+    <p class="section-lead">Exact Windows access masks per <code>[allow.*]</code> level. <code>write</code> ≠ <code>read</code>, and <code>read</code> ≠ <code>execute</code>.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Level</th><th>Key</th><th>Key Windows bits</th><th>Notes</th></tr></thead>
@@ -367,6 +374,10 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>Append</td><td><code>append</code></td><td><code>FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Cannot overwrite existing data</td></tr>
           <tr><td>Delete</td><td><code>delete</code></td><td><code>DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>No read or write</td></tr>
           <tr><td>All</td><td><code>all</code></td><td><code>FILE_ALL_ACCESS &amp; ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER)</code></td><td>Full data control. WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD intentionally stripped.</td></tr>
+          <tr><td>Run</td><td><code>run</code></td><td><code>FILE_EXECUTE, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Execute only, no read (can’t copy binary)</td></tr>
+          <tr><td>Stat</td><td><code>stat</code></td><td><code>FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Attributes only</td></tr>
+          <tr><td>Touch</td><td><code>touch</code></td><td><code>FILE_WRITE_ATTRIBUTES, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Modify attributes only</td></tr>
+          <tr><td>Create</td><td><code>create</code></td><td><code>FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Create new files/subdirs, no overwrite</td></tr>
         </tbody>
       </table>
     </div>

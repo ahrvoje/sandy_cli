@@ -3,19 +3,19 @@
 # FOLDER TREE:
 #   test_acl/
 #     workspace/
-#       src/              [allow] all
-#       build/            [allow] read  (was deny.write → read-only behavior)
+#       src/              [allow.deep] all
+#       build/            [allow.deep] read  (was deny.write → read-only behavior)
 #       secrets/          (no grant — fully blocked in AC)
 #     data/
-#       public/           [allow] read (inherits from data)
+#       public/           [allow.deep] read (inherits from data)
 #       private/          (no grant — fully blocked in AC)
-#     logs/               [allow] append
-#     tools/              [allow] execute → read+exec, no write
+#     logs/               [allow.deep] append
+#     tools/              [allow.deep] execute → read+exec, no write
 
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\tools']
 read = ['C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data\public', 'C:\Users\H\test_acl\workspace\build']
 append = ['C:\Users\H\test_acl\logs']

@@ -48,7 +48,7 @@ auto-inheritance. This is only supported in **Restricted Token** mode.
 
 > [!CAUTION]
 > The Windows kernel **ignores** DENY ACEs for AppContainer SIDs (`S-1-15-2-*`).
-> Sandy rejects `[deny]` for AppContainer mode at config validation time.
+> Sandy rejects `[deny.*]` for AppContainer mode at config validation time.
 
 ## Rules
 
@@ -62,7 +62,7 @@ auto-inheritance. This is only supported in **Restricted Token** mode.
 be loaded by the OS loader requires `execute`, not `read`.
 
 ```toml
-[allow]
+[allow.deep]
 execute = ['C:\path\to\python']
 read    = ['C:\path\to\data']
 ```
@@ -79,6 +79,10 @@ Do not “fix” loader failures by adding execute to the read mask.
 | Append | `append` | `FILE_APPEND_DATA \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Append-only, no read/overwrite |
 | Delete | `delete` | `DELETE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Delete only, no read/write |
 | All | `all` | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | Full data control, no ACL modification |
+| Run | `run` | `FILE_EXECUTE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Execute only, no read (can't copy binary) |
+| Stat | `stat` | `FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Attributes only (NON-recursive, like ) |
+| Touch | `touch` | `FILE_WRITE_ATTRIBUTES \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Modify attributes only (NON-recursive, like ) |
+| Create | `create` | `FILE_ADD_FILE \| FILE_ADD_SUBDIRECTORY \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Create new files/subdirs, no overwrite |
 
 # DENY ACEs — Restricted Token Only
 
@@ -91,7 +95,7 @@ and auto-inheritance propagation.
 ## AppContainer Mode
 
 Deny is **not supported**. The kernel ignores `DENY_ACCESS` ACEs for AppContainer
-SIDs (`S-1-15-2-*`). Config validation rejects `[deny]` for AC mode.
+SIDs (`S-1-15-2-*`). Config validation rejects `[deny.*]` for AC mode.
 
 # Regression Guards
 

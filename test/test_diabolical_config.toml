@@ -12,11 +12,10 @@
 [sandbox]
 token = 'appcontainer'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
 read = ['C:\Users\H\test_diabolical\scripts', 'C:\Users\H\test_diabolical\arena\readonly_zone']
 all = ['C:\Users\H\test_diabolical\arena\playground']
-peek = ['C:\Users\H\test_diabolical\arena']
 
 [privileges]
 child_processes = false

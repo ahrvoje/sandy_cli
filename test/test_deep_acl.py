@@ -7,7 +7,7 @@ only, read-only within an allow.all parent) are restructured: the parent loses
 its broad allow.all, and only the children that need access get explicit grants.
 
 Zone map (12 zones — AC mode):
-  app/src              L2  peek           → list only
+  app/src              L2  (no grant)     → blocked
   app/src/core         L3  read           → list+read, no write
   app/src/core/engine  L4  inherits read  → list+read, no write
   app/src/contrib      L3  (no grant)     → blocked
@@ -60,10 +60,10 @@ def p(*parts):
     return os.path.join(ROOT, *parts)
 
 # ================================================================
-# ZONE 1: app/src (L2) — peek only → list works, read/write blocked
+# ZONE 1: app/src (L2) — no grant → all access blocked
 # ================================================================
-print("--- Z1: app/src (L2, peek only) ---")
-test("src: list",   True,  lambda: os.listdir(p('app','src')))
+print("--- Z1: app/src (L2, no grant — blocked) ---")
+test("src: list",   False, lambda: os.listdir(p('app','src')))
 test("src: read (core/core.py — inside read zone)",
                     True,  lambda: open(p('app','src','core','core.py'),'r').read())
 test("src: write",  False, lambda: open(p('app','src','marker.tmp'),'w').write('ok'))

@@ -2,27 +2,27 @@
 #
 # FOLDER TREE:
 #   test_acl/
-#     workspace/          [allow] all
+#     workspace/          [allow.deep] all
 #       src/              (inherits all)
-#       build/            [deny] write → read OK, write blocked
-#       secrets/          [deny] all → everything blocked
-#     data/               [allow] read
+#       build/            [deny.deep] write → read OK, write blocked
+#       secrets/          [deny.deep] all → everything blocked
+#     data/               [allow.deep] read
 #       public/           (inherits read)
-#       private/          [deny] read → fully blocked (deny > allow)
-#     logs/               [allow] append
-#     tools/              [allow] execute → read+exec, no write
+#       private/          [deny.deep] read → fully blocked (deny > allow)
+#     logs/               [allow.deep] append
+#     tools/              [allow.deep] execute → read+exec, no write
 
 [sandbox]
 token = 'restricted'
 integrity = 'medium'
 
-[allow]
+[allow.deep]
 execute = ['C:\Users\H\test_acl\tools']
 read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data']
 append = ['C:\Users\H\test_acl\logs']
 all = ['C:\Users\H\test_acl\workspace']
 
-[deny]
+[deny.deep]
 read    = ['C:\Users\H\test_acl\data\private']
 write   = ['C:\Users\H\test_acl\workspace\build']
 all     = ['C:\Users\H\test_acl\workspace\secrets']
