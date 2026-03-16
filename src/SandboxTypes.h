@@ -228,6 +228,7 @@ namespace Sandbox {
     struct SandboxConfig {
         TokenMode tokenMode = TokenMode::AppContainer;  // [sandbox] token
         IntegrityLevel integrity = IntegrityLevel::Low;   // [sandbox] integrity (restricted only)
+        bool strict = false;                               // [sandbox] strict (restricted only)
         std::wstring workdir;                              // [sandbox] workdir (optional)
         std::vector<FolderEntry> folders;
         std::vector<FolderEntry> denyFolders;  // [deny.*] — DENY ACEs
@@ -401,6 +402,8 @@ namespace Sandbox {
 
             // --- Privileges ---
             fwprintf(logFile, L"[%s] PRIVILEGES:\n", ts.c_str());
+            if (config.strict)
+                fwprintf(logFile, L"[%s]     strict          = yes\n", ts.c_str());
             fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(), config.allowNamedPipes ? L"yes" : L"no");
             fwprintf(logFile, L"[%s]     stdin           = %s\n", ts.c_str(),
                      config.stdinMode.empty() ? L"inherit"

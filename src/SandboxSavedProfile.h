@@ -127,6 +127,7 @@ namespace Sandbox {
 
     //   _allow_named_pipes   REG_DWORD  0 | 1
     //   _allow_desktop       REG_DWORD  0 | 1
+    //   _strict              REG_DWORD  0 | 1
     //   _allow_clipboard_r   REG_DWORD  0 | 1
     //   _allow_clipboard_w   REG_DWORD  0 | 1
     //   _allow_child_procs   REG_DWORD  0 | 1
@@ -136,9 +137,9 @@ namespace Sandbox {
     //   _memory_limit_mb     REG_DWORD  MB (0 = none)
     //   _max_processes       REG_DWORD  count (0 = none)
     //   _allow_count         REG_DWORD  number of allow entries
-    //   _allow_0 .. _allow_N REG_SZ   "access|path"
+    //   _allow_0 .. _allow_N REG_SZ   "access.deep|path" or "access.this|path"
     //   _deny_count          REG_DWORD  number of deny entries
-    //   _deny_0  .. _deny_N  REG_SZ   "access|path"
+    //   _deny_0  .. _deny_N  REG_SZ   "access.deep|path" or "access.this|path"
     //   _reg_read_count      REG_DWORD  count
     //   _reg_read_0 ..       REG_SZ   registry path
     //   _reg_write_count     REG_DWORD  count
@@ -169,6 +170,7 @@ namespace Sandbox {
 
         ok &= TryWriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
+        ok &= TryWriteRegDword(hKey, L"_strict",              cfg.strict           ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_clipboard_r",   cfg.allowClipboardRead  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_clipboard_w",   cfg.allowClipboardWrite ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_child_procs",   cfg.allowChildProcesses ? 1 : 0);
@@ -180,12 +182,14 @@ namespace Sandbox {
         ok &= TryWriteRegDword(hKey, L"_max_processes",   cfg.maxProcesses);
 
         // --- Allow folders: _allow_count + _allow_0, _allow_1, ... ---
+        // Format: "access.deep|path" or "access.this|path"
         ok &= TryWriteRegDword(hKey, L"_allow_count", static_cast<DWORD>(cfg.folders.size()));
         for (DWORD i = 0; i < cfg.folders.size(); i++) {
             wchar_t name[32];
             swprintf(name, 32, L"_allow_%lu", i);
-            ok &= TryWriteRegSz(hKey, name,
-                std::wstring(AccessLevelName(cfg.folders[i].access)) + L"|" + cfg.folders[i].path);
+            std::wstring tag = std::wstring(AccessLevelName(cfg.folders[i].access))
+                + ((cfg.folders[i].scope == GrantScope::This) ? L".this" : L".deep");
+            ok &= TryWriteRegSz(hKey, name, tag + L"|" + cfg.folders[i].path);
         }
 
         // --- Deny folders: _deny_count + _deny_0, _deny_1, ... ---
@@ -193,8 +197,9 @@ namespace Sandbox {
         for (DWORD i = 0; i < cfg.denyFolders.size(); i++) {
             wchar_t name[32];
             swprintf(name, 32, L"_deny_%lu", i);
-            ok &= TryWriteRegSz(hKey, name,
-                std::wstring(AccessLevelName(cfg.denyFolders[i].access)) + L"|" + cfg.denyFolders[i].path);
+            std::wstring tag = std::wstring(AccessLevelName(cfg.denyFolders[i].access))
+                + ((cfg.denyFolders[i].scope == GrantScope::This) ? L".this" : L".deep");
+            ok &= TryWriteRegSz(hKey, name, tag + L"|" + cfg.denyFolders[i].path);
         }
 
         // --- Registry read keys ---
@@ -258,6 +263,7 @@ namespace Sandbox {
 
         cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
         cfg.allowDesktop        = ReadRegDword(hKey, L"_allow_desktop") != 0;
+        cfg.strict              = ReadRegDword(hKey, L"_strict") != 0;
         cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
         cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
         cfg.allowChildProcesses = ReadRegDword(hKey, L"_allow_child_procs") != 0;
@@ -269,16 +275,24 @@ namespace Sandbox {
         cfg.maxProcesses   = ReadRegDword(hKey, L"_max_processes");
 
         // --- Allow folders ---
+        // Format: "access.deep|path" or "access.this|path"
         DWORD allowCount = ReadRegDword(hKey, L"_allow_count");
         for (DWORD i = 0; i < allowCount; i++) {
             wchar_t name[32];
             swprintf(name, 32, L"_allow_%lu", i);
             std::wstring val = ReadRegSz(hKey, name);
-            // Format: "access|path"
             size_t sep = val.find(L'|');
             if (sep != std::wstring::npos) {
                 FolderEntry entry;
-                entry.access = ParseAccessTag(val.substr(0, sep));
+                std::wstring tag = val.substr(0, sep);
+                if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".this") {
+                    entry.scope = GrantScope::This;
+                    tag = tag.substr(0, tag.size() - 5);
+                } else if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".deep") {
+                    entry.scope = GrantScope::Deep;
+                    tag = tag.substr(0, tag.size() - 5);
+                }
+                entry.access = ParseAccessTag(tag);
                 entry.path = NormalizeFsPath(val.substr(sep + 1));
                 cfg.folders.push_back(std::move(entry));
             }
@@ -293,7 +307,15 @@ namespace Sandbox {
             size_t sep = val.find(L'|');
             if (sep != std::wstring::npos) {
                 FolderEntry entry;
-                entry.access = ParseAccessTag(val.substr(0, sep));
+                std::wstring tag = val.substr(0, sep);
+                if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".this") {
+                    entry.scope = GrantScope::This;
+                    tag = tag.substr(0, tag.size() - 5);
+                } else if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".deep") {
+                    entry.scope = GrantScope::Deep;
+                    tag = tag.substr(0, tag.size() - 5);
+                }
+                entry.access = ParseAccessTag(tag);
                 entry.path = NormalizeFsPath(val.substr(sep + 1));
                 cfg.denyFolders.push_back(std::move(entry));
             }
@@ -948,7 +970,7 @@ namespace Sandbox {
             }
             pSid = pGrantSid;
 
-            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
+            hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid, config.strict);
             if (!hRestrictedToken) {
                 g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)",
                                 GetLastError());

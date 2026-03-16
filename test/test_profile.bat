@@ -22,6 +22,9 @@ REM === Pre-clean ===
 "!SANDY!" --delete-profile test_ac >nul 2>nul
 "!SANDY!" --delete-profile test_rt >nul 2>nul
 "!SANDY!" --delete-profile dup_test >nul 2>nul
+"!SANDY!" --delete-profile scope_ac >nul 2>nul
+"!SANDY!" --delete-profile scope_rt >nul 2>nul
+"!SANDY!" --delete-profile strict_rt >nul 2>nul
 "!SANDY!" --cleanup >nul 2>nul
 if exist "!ROOT!" rmdir /s /q "!ROOT!"
 mkdir "!ROOT!\data"
@@ -716,6 +719,281 @@ if "!P17J_VAL!"=="0x0" (
     echo   [FAIL] P17j: _allow_network = !P17J_VAL! (expected 0x0^)
     set /a FAIL+=1
 )
+
+REM ===================================================================
+REM P18 — Grant Scope Round-Trip (.deep / .this)
+REM
+REM Verifies that GrantScope::Deep and GrantScope::This survive the
+REM registry serialization round-trip.  Tests both the stored format
+REM (registry values contain ".deep" or ".this" suffix) and the
+REM runtime behaviour (deep inherits to children, this does not).
+REM ===================================================================
+echo.
+echo --- P18: Grant Scope Round-Trip ---
+
+REM --- Setup: scope directory tree ---
+set SCOPE_ROOT=!ROOT!\scope
+if exist "!SCOPE_ROOT!" rmdir /s /q "!SCOPE_ROOT!"
+mkdir "!SCOPE_ROOT!\deep_dir\sub"
+mkdir "!SCOPE_ROOT!\this_dir\sub"
+mkdir "!SCOPE_ROOT!\deny_deep\sub"
+mkdir "!SCOPE_ROOT!\deny_this\sub"
+echo placeholder > "!SCOPE_ROOT!\deep_dir\sub\existing.txt"
+echo placeholder > "!SCOPE_ROOT!\this_dir\sub\existing.txt"
+echo placeholder > "!SCOPE_ROOT!\deny_deep\sub\existing.txt"
+echo placeholder > "!SCOPE_ROOT!\deny_this\sub\existing.txt"
+
+set SCOPE_AC_CONFIG=%~dp0test_profile_scope_ac.toml
+set SCOPE_RT_CONFIG=%~dp0test_profile_scope_rt.toml
+
+REM Pre-clean scope profiles
+"!SANDY!" --delete-profile scope_ac >nul 2>nul
+"!SANDY!" --delete-profile scope_rt >nul 2>nul
+
+REM --- P18a: Create AC scope profile ---
+"!SANDY!" --create-profile scope_ac -c "!SCOPE_AC_CONFIG!" >"%TEMP%\sandy_p18a.txt" 2>&1
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18a: scope_ac profile created
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18a: scope_ac creation failed
+    type "%TEMP%\sandy_p18a.txt"
+    set /a FAIL+=1
+)
+del "%TEMP%\sandy_p18a.txt" 2>nul
+
+REM --- P18b: Create RT scope profile ---
+"!SANDY!" --create-profile scope_rt -c "!SCOPE_RT_CONFIG!" >"%TEMP%\sandy_p18b.txt" 2>&1
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18b: scope_rt profile created
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18b: scope_rt creation failed
+    type "%TEMP%\sandy_p18b.txt"
+    set /a FAIL+=1
+)
+del "%TEMP%\sandy_p18b.txt" 2>nul
+
+REM --- P18c: Verify AC registry entries have .deep suffix ---
+reg query "HKCU\Software\Sandy\Profiles\scope_ac" /v _allow_0 2>nul | findstr /C:".deep|" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18c: AC _allow_0 has .deep suffix
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18c: AC _allow_0 missing .deep suffix
+    set /a FAIL+=1
+)
+
+REM --- P18d: Verify AC registry entries have .this suffix ---
+REM   Find any _allow_N containing ".this|"
+set P18D_FOUND=0
+for /f "tokens=1,2,*" %%a in ('reg query "HKCU\Software\Sandy\Profiles\scope_ac" 2^>nul ^| findstr /C:".this|"') do set P18D_FOUND=1
+if !P18D_FOUND! EQU 1 (
+    echo   [PASS] P18d: AC registry has .this scope entry
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18d: AC registry missing .this scope entry
+    set /a FAIL+=1
+)
+
+REM --- P18e: Verify RT registry entries have .deep suffix ---
+reg query "HKCU\Software\Sandy\Profiles\scope_rt" /v _allow_0 2>nul | findstr /C:".deep|" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18e: RT _allow_0 has .deep suffix
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18e: RT _allow_0 missing .deep suffix
+    set /a FAIL+=1
+)
+
+REM --- P18f: Verify RT deny entries have .deep and .this ---
+reg query "HKCU\Software\Sandy\Profiles\scope_rt" 2>nul | findstr _deny_ >"%TEMP%\sandy_p18f.txt" 2>nul
+findstr /C:".deep|" "%TEMP%\sandy_p18f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18f1: RT deny has .deep scope entry
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18f1: RT deny missing .deep scope entry
+    set /a FAIL+=1
+)
+findstr /C:".this|" "%TEMP%\sandy_p18f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18f2: RT deny has .this scope entry
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18f2: RT deny missing .this scope entry
+    set /a FAIL+=1
+)
+del "%TEMP%\sandy_p18f.txt" 2>nul
+
+REM --- P18g: AC scope enforcement via profile run ---
+copy /y "%~dp0profile_scope_test.py" "!SCOPE_ROOT!\profile_scope_test.py" >nul 2>nul
+"!SANDY!" -p scope_ac -x "!PYTHON!" "!SCOPE_ROOT!\profile_scope_test.py" "!SCOPE_ROOT!" >"%TEMP%\sandy_p18g.txt" 2>&1
+set P18G_EC=!ERRORLEVEL!
+
+if !P18G_EC! EQU 0 (
+    echo   [PASS] P18g1: AC scope run exits 0
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18g1: AC scope run exit code !P18G_EC!
+    type "%TEMP%\sandy_p18g.txt"
+    set /a FAIL+=1
+)
+
+REM Check that deep_dir write OK (inherits to child)
+findstr /C:"SCOPE_PASS: deep_dir " "%TEMP%\sandy_p18g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18g2: AC deep_dir write allowed
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18g2: AC deep_dir write denied
+    set /a FAIL+=1
+)
+
+findstr /C:"SCOPE_PASS: deep_dir\sub" "%TEMP%\sandy_p18g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18g3: AC deep_dir\sub write inherited
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18g3: AC deep_dir\sub write not inherited
+    set /a FAIL+=1
+)
+
+REM Check that this_dir write OK on directory itself
+findstr /C:"SCOPE_PASS: this_dir " "%TEMP%\sandy_p18g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18g4: AC this_dir write allowed
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18g4: AC this_dir write denied
+    set /a FAIL+=1
+)
+
+REM Check that this_dir child write DENIED
+findstr /C:"SCOPE_PASS: this_dir\sub" "%TEMP%\sandy_p18g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P18g5: AC this_dir\sub write correctly denied
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P18g5: AC this_dir\sub write should be denied
+    type "%TEMP%\sandy_p18g.txt"
+    set /a FAIL+=1
+)
+
+REM Check for unexpected SCOPE_FAIL lines (should be 0)
+findstr /C:"SCOPE_FAIL" "%TEMP%\sandy_p18g.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [FAIL] P18g6: AC scope test: unexpected SCOPE_FAIL found
+    findstr /C:"SCOPE_FAIL" "%TEMP%\sandy_p18g.txt"
+    set /a FAIL+=1
+) else (
+    echo   [PASS] P18g6: AC scope test: no unexpected failures
+    set /a PASS+=1
+)
+del "%TEMP%\sandy_p18g.txt" 2>nul
+
+REM --- P18h: RT scope enforcement via profile run ---
+REM   Use cmd.exe probes instead of Python — simpler, no traversal deps.
+REM P18h1: RT deep_dir write (deep grant — should work)
+"!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\deep_dir\rt_probe.txt" >nul 2>nul
+if exist "!SCOPE_ROOT!\deep_dir\rt_probe.txt" (
+    echo   [PASS] P18h1: RT deep_dir write allowed
+    set /a PASS+=1
+    del "!SCOPE_ROOT!\deep_dir\rt_probe.txt" 2>nul
+) else (
+    echo   [FAIL] P18h1: RT deep_dir write denied
+    set /a FAIL+=1
+)
+
+REM P18h2: RT deep_dir\sub write (deep grant inherits — should work)
+"!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" >nul 2>nul
+if exist "!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" (
+    echo   [PASS] P18h2: RT deep_dir\sub write inherited
+    set /a PASS+=1
+    del "!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" 2>nul
+) else (
+    echo   [FAIL] P18h2: RT deep_dir\sub write not inherited
+    set /a FAIL+=1
+)
+
+REM P18h3: RT this_dir write (this grant — should work on object)
+"!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\this_dir\rt_probe.txt" >nul 2>nul
+if exist "!SCOPE_ROOT!\this_dir\rt_probe.txt" (
+    echo   [PASS] P18h3: RT this_dir write allowed
+    set /a PASS+=1
+    del "!SCOPE_ROOT!\this_dir\rt_probe.txt" 2>nul
+) else (
+    echo   [FAIL] P18h3: RT this_dir write denied
+    set /a FAIL+=1
+)
+
+REM P18h4: RT this_dir\sub — NOT tested at runtime.
+REM   Under RT, the user's own SID has inherited full control in subdirs,
+REM   so the 'this' scope boundary cannot be enforced via DACL alone.
+REM   Scope correctness for RT is verified by registry format (P18e/f)
+REM   and by AC runtime enforcement (P18g5).
+
+REM --- P18 cleanup: delete scope profiles ---
+"!SANDY!" --delete-profile scope_ac >nul 2>nul
+"!SANDY!" --delete-profile scope_rt >nul 2>nul
+if exist "!SCOPE_ROOT!" rmdir /s /q "!SCOPE_ROOT!"
+
+REM ===================================================================
+REM P19 — Strict RT Mode (user SID excluded from restricting list)
+REM ===================================================================
+echo.
+echo --- P19: Strict RT Mode ---
+
+set STRICT_ROOT=!ROOT!\strict
+mkdir "!STRICT_ROOT!\granted" 2>nul
+mkdir "!STRICT_ROOT!\no_grant" 2>nul
+
+REM P19a: Create strict_rt profile
+set STRICT_CONFIG=%~dp0test_profile_strict_rt.toml
+"!SANDY!" --create-profile strict_rt -c "!STRICT_CONFIG!" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P19a: strict_rt profile created
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P19a: strict_rt profile creation failed
+    set /a FAIL+=1
+)
+
+REM P19b: Verify _strict=1 in registry
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\strict_rt" /v _strict 2^>nul ^| findstr _strict') do set STRICT_VAL=%%v
+if "!STRICT_VAL!"=="0x1" (
+    echo   [PASS] P19b: _strict registry value is 0x1
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P19b: _strict registry value expected 0x1, got !STRICT_VAL!
+    set /a FAIL+=1
+)
+
+REM P19c: Strict RT write to granted dir (should succeed)
+"!SANDY!" -p strict_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!STRICT_ROOT!\granted\strict_probe.txt" >nul 2>nul
+if exist "!STRICT_ROOT!\granted\strict_probe.txt" (
+    echo   [PASS] P19c: strict RT write to granted dir allowed
+    set /a PASS+=1
+    del "!STRICT_ROOT!\granted\strict_probe.txt" 2>nul
+) else (
+    echo   [FAIL] P19c: strict RT write to granted dir denied
+    set /a FAIL+=1
+)
+
+REM P19d: Strict RT write to non-granted dir (should be DENIED)
+"!SANDY!" -p strict_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!STRICT_ROOT!\no_grant\strict_probe.txt" >nul 2>nul
+if not exist "!STRICT_ROOT!\no_grant\strict_probe.txt" (
+    echo   [PASS] P19d: strict RT write to non-granted dir denied
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P19d: strict RT write to non-granted dir was allowed
+    del "!STRICT_ROOT!\no_grant\strict_probe.txt" 2>nul
+    set /a FAIL+=1
+)
+
+REM --- P19 cleanup ---
+"!SANDY!" --delete-profile strict_rt >nul 2>nul
+if exist "!STRICT_ROOT!" rmdir /s /q "!STRICT_ROOT!"
 
 REM ===================================================================
 REM P14 — Cleanup Does NOT Delete Profiles

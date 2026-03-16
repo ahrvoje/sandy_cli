@@ -93,6 +93,13 @@ namespace Sandbox {
                         fprintf(stderr, "Error: Unknown integrity level: %ls (expected 'low' or 'medium')\n", val.str.c_str());
                         config.parseError = true;
                     }
+                } else if (key == L"strict") {
+                    if (val.str == L"true") config.strict = true;
+                    else if (val.str == L"false") config.strict = false;
+                    else {
+                        fprintf(stderr, "Error: 'strict' must be true or false, got '%ls'\n", val.str.c_str());
+                        config.parseError = true;
+                    }
                 } else if (key == L"workdir") {
                     workdirSeen = true;
                     if (val.str == L"inherit")
@@ -343,6 +350,7 @@ namespace Sandbox {
                 if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer/lpac mode (named pipes are always blocked).\n"); config.parseError = true; }
                 if (privSeen.count(L"desktop"))     { fprintf(stderr, "Error: 'desktop' is not available in appcontainer/lpac mode (desktop access is inherited from creator token).\n"); config.parseError = true; }
                 if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer/lpac mode (always Low).\n"); config.parseError = true; }
+                if (config.strict)                   { fprintf(stderr, "Error: 'strict' is not available in appcontainer/lpac mode (use token = 'restricted' for strict mode).\n"); config.parseError = true; }
                 if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer/lpac mode.\n"); config.parseError = true; }
                 if (!config.denyFolders.empty()) {
                     fprintf(stderr, "Error: [deny.*] is not available in appcontainer mode.\n");

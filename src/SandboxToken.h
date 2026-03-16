@@ -18,7 +18,8 @@ namespace Sandbox {
     //               isolation.  Added to restricting SIDs so the dual
     //               access check requires ACEs for THIS instance's SID.
     inline HANDLE CreateRestrictedSandboxToken(IntegrityLevel il,
-                                                PSID pInstanceSid = nullptr)
+                                                PSID pInstanceSid = nullptr,
+                                                bool strict = false)
     {
         HANDLE hToken = nullptr;
         // R7: Minimum rights needed for CreateRestrictedToken + integrity setting
@@ -92,7 +93,11 @@ namespace Sandbox {
         }
 
         std::vector<SID_AND_ATTRIBUTES> restrictSids;
-        restrictSids.push_back({ pUser->User.Sid, 0 });
+        // User SID: included by default so the user's existing file access
+        // passes the restricting check.  In strict mode, excluded — forces
+        // explicit grants for user-owned resources.
+        if (!strict)
+            restrictSids.push_back({ pUser->User.Sid, 0 });
         restrictSids.push_back({ pRestrictedSid, 0 });
         restrictSids.push_back({ pUsersSid, 0 });
         if (pLogonSid) restrictSids.push_back({ pLogonSid, 0 });

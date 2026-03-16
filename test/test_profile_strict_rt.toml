@@ -1,0 +1,22 @@
+# Sandy profile test — Restricted Token with strict mode
+# Tests that strict=true excludes user SID from restricting list,
+# making allow grants the primary access gate for user directories.
+#
+# Structure under test_sandy_profile\strict:
+#   granted\        <- [allow.deep] write  (should succeed)
+#   no_grant\       <- no write grant      (should be denied under strict)
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+strict = true
+
+[allow.deep]
+read    = ['C:\Users\H\test_sandy_profile\strict']
+write   = ['C:\Users\H\test_sandy_profile\strict\granted']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

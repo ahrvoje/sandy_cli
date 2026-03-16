@@ -180,6 +180,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
         <tbody>
           <tr><td>token</td><td><code>'appcontainer'</code> / <code>'lpac'</code> / <code>'restricted'</code></td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td><td>Isolation model</td></tr>
           <tr><td>integrity</td><td><code>'low'</code> / <code>'medium'</code></td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td><td><code>low</code> = strongest; <code>medium</code> = wider compatibility</td></tr>
+          <tr><td>strict</td><td><code>true</code> / <code>false</code></td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Exclude user SID from restricting list. Forces explicit grants for user-owned resources. Default <code>false</code>.</td></tr>
           <tr><td>workdir</td><td>absolute path</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Child cwd. Default: inherited from Sandy's cwd</td></tr>
         </tbody>
       </table>
@@ -333,6 +334,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[sandbox]</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;token</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;integrity</td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td></tr>
+          <tr><td>&ensp;strict</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;workdir</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow.deep] / [allow.this]</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>

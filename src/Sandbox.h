@@ -298,7 +298,7 @@ namespace Sandbox {
         guard.Add([pGrantSid]() { FreeSid(pGrantSid); });
 
         // Create restricted token with per-instance SID
-        r.hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid);
+        r.hRestrictedToken = CreateRestrictedSandboxToken(config.integrity, pGrantSid, config.strict);
         if (!r.hRestrictedToken) {
             g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)", GetLastError());
             return r;

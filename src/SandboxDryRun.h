@@ -78,6 +78,8 @@ inline int HandleDryRun(const SandboxConfig& config,
     if (isRestricted)
         printf("Integrity: %ls\n",
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
+    if (isRestricted && config.strict)
+        printf("Strict: yes (user SID excluded from restricting list)\n");
     if (!exePath.empty()) printf("Executable: %ls\n", exePath.c_str());
     if (!exeArgs.empty()) printf("Arguments: %ls\n", exeArgs.c_str());
     if (config.workdir.empty())
@@ -230,6 +232,8 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     if (isRT)
         printf("integrity = '%ls'\n",
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
+    if (isRT && config.strict)
+        printf("strict = true\n");
     printf("workdir = '%ls'\n\n",
            config.workdir.empty() ? L"inherit" : config.workdir.c_str());
 

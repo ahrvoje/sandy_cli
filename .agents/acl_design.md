@@ -16,6 +16,10 @@ execution sessions** that may be either transient or profile-backed.
 
 - Always uses a unique run SID under `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-*`).
 - `S-1-5-12` remains a restricting SID for system-object behavior only; it is not a grant owner SID.
+- By default, the user's own SID is included in the restricting list so existing
+  file access passes the dual check. When `strict = true`, the user SID is
+  excluded — forcing explicit grants for user-owned resources and making
+  `.this`/`.deep` scope enforcement fully meaningful on the restricting side.
 
 **Never** collapse these back into a shared SID model. Cleanup and overlap safety
 rely on removing ACEs by the exact owning SID.

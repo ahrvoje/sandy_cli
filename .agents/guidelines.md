@@ -104,10 +104,11 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 
 | Section | Key | Default | Notes |
 |---------|-----|---------|-------|
+| `[sandbox]` | `strict` | `false` | RT only; excludes user SID from restricting list |
 | `[sandbox]` | `workdir` | `'inherit'` (exe folder) | |
 | `[allow.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive grants (OI\|CI) |
 | `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
-| `[deny.deep]` | same keys | `[]` | Recursive denies (RT only) |
+| `[deny.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive denies (RT only) |
 | `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
 | `[privileges]` | `network` | `false` | AC/LPAC only |
 | `[privileges]` | `localhost` | `false` | AC/LPAC only, needs admin |
@@ -208,7 +209,7 @@ Only the **delta** is applied.
 Rules:
 - Deny interactions must remain equivalent to a full pipeline run.
 - State is updated only after reload work actually succeeds.
-- Immutable after launch: `token`, `integrity`, `workdir`, `[privileges]`, `[environment]`, `[limit]`, network flags.
+- Immutable after launch: `token`, `integrity`, `strict`, `workdir`, `[privileges]`, `[environment]`, `[limit]`, network flags.
 - Dynamic-only sections: `[allow.deep]`, `[allow.this]`, `[deny.deep]`, `[deny.this]`, `[registry]`.
 - **Compatibility:** requires `-c <file>`. Incompatible with `-s`, `-p`, `--dry-run`, `--print-config`, `--create-profile`.
 

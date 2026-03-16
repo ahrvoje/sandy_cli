@@ -1,0 +1,34 @@
+# Sandy profile test — Restricted Token with mixed deep/this scopes + deny
+# Tests grant scope serialization round-trip through the registry.
+#
+# Structure under test_sandy_profile\scope:
+#   deep_dir\          <- [allow.deep] write  (recursive)
+#   deep_dir\sub\      <- child: must inherit write access
+#   this_dir\          <- [allow.this] write  (single object only)
+#   this_dir\sub\      <- child: must NOT inherit write access
+#   deny_deep\         <- [allow.deep] read + [deny.deep] write (recursive deny)
+#   deny_this\         <- [allow.deep] read + [deny.this] write (single-object deny)
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[allow.deep]
+read    = ['C:\Users\H\test_sandy_profile\scope']
+write   = ['C:\Users\H\test_sandy_profile\scope\deep_dir']
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+
+[allow.this]
+write   = ['C:\Users\H\test_sandy_profile\scope\this_dir']
+
+[deny.deep]
+write   = ['C:\Users\H\test_sandy_profile\scope\deny_deep']
+
+[deny.this]
+write   = ['C:\Users\H\test_sandy_profile\scope\deny_this']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

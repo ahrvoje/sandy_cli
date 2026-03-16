@@ -180,6 +180,8 @@ namespace Sandbox {
             for (const auto& k : config.registryWrite) fprintf(stderr, "  [W]  %ls\n", k.c_str());
         }
         fprintf(stderr, "---\n");
+        if (isRestricted && config.strict)
+            fprintf(stderr, "Strict:     YES (user SID excluded from restricting list)\n");
         if (isRestricted)
             fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
 

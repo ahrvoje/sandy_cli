@@ -1,0 +1,25 @@
+# Sandy profile test — AppContainer with mixed deep/this scopes
+# Tests grant scope serialization round-trip through the registry.
+#
+# Structure under test_sandy_profile\scope:
+#   deep_dir\          <- [allow.deep] write  (recursive)
+#   deep_dir\sub\      <- child: must inherit write access
+#   this_dir\          <- [allow.this] write  (single object only)
+#   this_dir\sub\      <- child: must NOT inherit write access
+
+[sandbox]
+token = 'appcontainer'
+
+[allow.deep]
+read    = ['C:\Users\H\test_sandy_profile\scope']
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+write   = ['C:\Users\H\test_sandy_profile\scope\deep_dir']
+
+[allow.this]
+write   = ['C:\Users\H\test_sandy_profile\scope\this_dir']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

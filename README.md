@@ -129,6 +129,7 @@ See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_c
 [sandbox]
 token = 'appcontainer'    # or 'lpac' or 'restricted'
 integrity = 'low'         # restricted only: 'low' or 'medium' (required)
+strict = false            # restricted only: exclude user SID from restricting list (default: false)
 workdir = 'C:\projects'   # child working directory (default: inherit Sandy current working directory)
 ```
 
@@ -136,6 +137,7 @@ workdir = 'C:\projects'   # child working directory (default: inherit Sandy curr
 |-----|--------|-------|-------------|
 | `token` | `'appcontainer'`, `'lpac'`, `'restricted'` | all | Sandbox isolation model *(required)* |
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
+| `strict` | `true`, `false` | restricted | Exclude user SID from restricting list · Default: `false`. When `true`, user-owned resources require explicit `[allow.*]` grants |
 | `workdir` | path | both | Child process working directory (default: `'inherit'`) |
 
 ### `[allow.deep]` / `[allow.this]` — File and folder grants
@@ -333,6 +335,7 @@ processes = 10      # max total active processes (default: 0)
 | **`[sandbox]`** | 🟢 required | 🟢 required | 🟢 required |
 | &ensp; `token` | 🟢 required | 🟢 required | 🟢 required |
 | &ensp; `integrity` | 🔴 n/a | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
+| &ensp; `strict` | 🔴 n/a | 🔴 n/a | 🔵 default: `false` |
 | &ensp; `workdir` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` |
 | **`[allow.deep]`** | 🔵 default: `[]` | 🔵 default: `[]` | 🔵 default: `[]` |
 | **`[allow.this]`** | 🔵 default: `[]` | 🔵 default: `[]` | 🔵 default: `[]` |
