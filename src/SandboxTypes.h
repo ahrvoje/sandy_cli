@@ -215,7 +215,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Sandbox token mode
     // -----------------------------------------------------------------------
-    enum class TokenMode { AppContainer, Restricted };
+    enum class TokenMode { AppContainer, LPAC, Restricted };
 
     // -----------------------------------------------------------------------
     // Integrity level for restricted token
@@ -236,8 +236,9 @@ namespace Sandbox {
         bool allowNetwork    = false;
         bool allowLocalhost  = false;
         bool allowLan        = false;
-        bool allowSystemDirs = true;   // default true: most programs need DLLs from system dirs
+
         bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
+        bool allowDesktop     = true;   // restricted mode: grant WinSta0 + Desktop access (default true)
 
         // stdin control: "NUL" = disabled, empty/true = inherit, path = file
         std::wstring stdinMode = L"NUL";
@@ -410,7 +411,7 @@ namespace Sandbox {
             fwprintf(logFile, L"[%s]     child_processes = %s\n", ts.c_str(), config.allowChildProcesses ? L"yes" : L"no");
             fwprintf(logFile, L"[%s]     environment     = %s\n", ts.c_str(),
                      config.envInherit ? L"inherit" : L"filtered");
-            if (config.allowSystemDirs) fwprintf(logFile, L"[%s]     system_dirs     = yes\n", ts.c_str());
+
             if (config.allowNetwork)    fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
             if (config.allowLocalhost)  fwprintf(logFile, L"[%s]     localhost       = yes\n", ts.c_str());
             if (config.allowLan)        fwprintf(logFile, L"[%s]     lan             = yes\n", ts.c_str());

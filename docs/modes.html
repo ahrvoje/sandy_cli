@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Sandy sandbox modes — detailed comparison of AppContainer and Restricted Token (low and medium integrity), with availability table for all sandbox aspects.">
+  <meta name="description" content="Sandy sandbox modes — detailed comparison of AppContainer (AC / LPAC) and Restricted Token (low and medium integrity), with availability table for all sandbox aspects.">
   <title>Sandy — Sandbox Modes</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -139,7 +139,7 @@
   <div class="container">
     <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>Sandbox Modes</span></div>
     <h1>Sandbox Modes</h1>
-    <p>Detailed comparison of AppContainer and Restricted Token — architecture, capabilities, constraints, and how to choose the right mode for your use case.</p>
+    <p>Detailed comparison of AppContainer (AC / LPAC) and Restricted Token — architecture, capabilities, constraints, and how to choose the right mode for your use case.</p>
   </div>
 </header>
 
@@ -163,7 +163,7 @@
           <li>Isolated object namespace — invisible to other processes</li>
           <li>Configurable network isolation (internet, LAN, localhost)</li>
           <li>Private registry hive — no host registry access</li>
-          <li><code>system_dirs</code> controls Windows/Program Files access</li>
+          <li>LPAC mode opts out of App. Packages — explicit grants only</li>
           <li>DENY implemented via allow-mask reduction (kernel ignores DENY ACEs for AC SIDs)</li>
           <li>Strongest isolation layer available to unprivileged users</li>
         </ul>
@@ -184,6 +184,7 @@
         <ul class="check-list">
           <li>Real <code>DENY_ACCESS</code> ACEs — kernel evaluates deny-before-allow</li>
           <li>Named pipe support (<code>named_pipes = true</code>)</li>
+          <li>Configurable desktop access (<code>desktop = true</code> by default)</li>
           <li>COM/RPC server access for complex applications</li>
           <li>Configurable registry grants (<code>[registry]</code> section)</li>
           <li>Medium integrity for wider app compatibility</li>
@@ -208,7 +209,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Aspect</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
+          <tr><th>Aspect</th><th class="col-ac">AC / LPAC</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
         </thead>
         <tbody>
           <tr><td class="td-aspect">SID authority</td><td class="col-ac"><code>S-1-15-2-*</code> (AppContainer)</td><td class="col-rtl"><code>S-1-9-*</code> (Resource Manager)</td><td class="col-rtm"><code>S-1-9-*</code> (Resource Manager)</td></tr>
@@ -249,7 +250,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Aspect</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
+          <tr><th>Aspect</th><th class="col-ac">AC / LPAC</th><th class="col-rtl">Restricted Low</th><th class="col-rtm">Restricted Medium</th></tr>
         </thead>
         <tbody>
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Identity &amp; Process</td></tr>
@@ -264,17 +265,18 @@
 
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">IPC &amp; Interop</td></tr>
           <tr><td class="td-aspect">Named pipes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>named_pipes</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>named_pipes</code></td></tr>
+          <tr><td class="td-aspect">Desktop access</td><td class="col-ac center"><span class="ok">✅</span> Inherited</td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>desktop</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>desktop</code></td></tr>
           <tr><td class="td-aspect">COM / RPC servers</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">Window messages (UIPI)</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">Scheduled tasks</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
 
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">File System</td></tr>
-          <tr><td class="td-aspect">System dir reads (Windows, PF)</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>system_dirs</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">System dir reads (Windows, PF)</td><td class="col-ac center"><span class="ok">✅</span> Via App. Packages ³</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">System dir writes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="no">❌</span> Blocked</td><td class="col-rtm center"><span class="no">❌</span> Blocked</td></tr>
           <tr><td class="td-aspect">User profile reads</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">User profile writes</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow.*]</code> ²</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">Custom file/folder grants</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>[allow.*]</code></td></tr>
-          <tr><td class="td-aspect">DLL/API set resolution</td><td class="col-ac center"><span class="ok">✅</span> Allowed</td><td class="col-rtl center"><span class="warn">⚠️</span> May break apps</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">DLL/API set resolution</td><td class="col-ac center"><span class="ok">✅</span> Allowed ³</td><td class="col-rtl center"><span class="warn">⚠️</span> May break apps</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
 
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Registry</td></tr>
           <tr><td class="td-aspect">Registry reads</td><td class="col-ac center"><span class="ok">✅</span> Private hive</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
@@ -295,7 +297,8 @@
 
     <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
       ¹ <code>localhost</code> (AppContainer) requires admin. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked).<br>
-      ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.
+      ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.<br>
+      ³ LPAC opts out of <code>ALL APPLICATION PACKAGES</code> (<code>S-1-15-2-1</code>). Windows system dirs (<code>C:\Windows</code>, <code>System32</code>, <code>Program Files</code>) carry <code>ALL RESTRICTED APPLICATION PACKAGES</code> (<code>S-1-15-2-2</code>) ACEs on Win10+ and are readable by LPAC. However, user-installed application dirs (e.g. Python under <code>AppData\Local\Programs</code>) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via <code>[allow.*]</code>. DLLs from those paths also need explicit execute grants.
     </p>
   </div>
 </section>
@@ -310,7 +313,7 @@
     <div class="card-grid cols-3">
       <div class="card">
         <span style="font-size:1.6rem;display:block;margin-bottom:12px;">🛡️</span>
-        <h3>Use AppContainer when…</h3>
+        <h3>Use AppContainer / LPAC when…</h3>
         <ul class="check-list">
           <li>You need network isolation (control internet/LAN separately)</li>
           <li>Maximum isolation is the priority</li>
@@ -360,13 +363,13 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Resource</th><th class="col-ac">AppContainer</th><th class="col-rtl">Restricted (any)</th></tr>
+          <tr><th>Resource</th><th class="col-ac">AC / LPAC</th><th class="col-rtl">Restricted (any)</th></tr>
         </thead>
         <tbody>
           <tr><td class="td-aspect">ACL grants</td><td class="col-ac">Remove ACEs for instance SID (<code>S-1-15-2-*</code>)</td><td class="col-rtl">Remove ACEs for instance SID (<code>S-1-9-*</code>)</td></tr>
           <tr><td class="td-aspect">AppContainer profile</td><td class="col-ac">Deleted: <code>Sandy_&lt;uuid&gt;</code></td><td class="col-rtl">N/A</td></tr>
           <tr><td class="td-aspect">Loopback exemption</td><td class="col-ac">Removed via <code>CheckNetIsolation.exe</code></td><td class="col-rtl">N/A</td></tr>
-          <tr><td class="td-aspect">Desktop / WinSta ACLs</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID (best-effort)</td></tr>
+          <tr><td class="td-aspect">Desktop / WinSta ACLs</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID (if <code>desktop = true</code>)</td></tr>
           <tr><td class="td-aspect">Registry grants</td><td class="col-ac">N/A</td><td class="col-rtl">ACEs removed by SID</td></tr>
           <tr><td class="td-aspect">Instance subkey</td><td class="col-ac" colspan="2">Deleted from <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code></td></tr>
           <tr><td class="td-aspect">Scheduled task</td><td class="col-ac" colspan="2">Deleted: <code>SandyCleanup_&lt;UUID&gt;</code></td></tr>

@@ -40,14 +40,15 @@ integrity = 'low'          # required: 'low' or 'medium'
 
 # [privileges]
 # named_pipes     = false   # default false: no named pipe creation
+# desktop         = true    # default true: grant WinSta0 + Desktop access
 # stdin           = false   # default false (NUL). true=inherit, path=file
 # clipboard_read  = false   # default false
 # clipboard_write = false   # default false
 # child_processes = true    # default true
 
-# NOTE: network, localhost, lan, system_dirs are not available in
-# restricted mode. Network is always unrestricted, system dirs are
-# always readable via BUILTIN\Users.
+# NOTE: network, localhost, lan are not available in restricted mode.
+# Network is always unrestricted, system dirs are always readable via
+# BUILTIN\Users. Desktop access is configurable (default: true).
 
 # ============================================================
 # REGISTRY — Registry key grants (optional, default: no grants)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Sandy TOML configuration reference — complete settings for AppContainer and Restricted Token modes.">
+  <meta name="description" content="Sandy TOML configuration reference — complete settings for AppContainer (AC / LPAC) and Restricted Token modes.">
   <title>Sandy — TOML Configuration Reference</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -123,7 +123,7 @@
   <div class="container">
     <div class="breadcrumb"><a href="index.html">Sandy</a> <span>›</span> <span>TOML Config Reference</span></div>
     <h1>TOML Configuration Reference</h1>
-    <p>Complete settings for AppContainer and Restricted Token modes — every key, its default, and whether it is mandatory, optional, or unavailable.</p>
+    <p>Complete settings for AppContainer (AC / LPAC) and Restricted Token modes — every key, its default, and whether it is mandatory, optional, or unavailable.</p>
   </div>
 </header>
 
@@ -154,7 +154,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
 
     <div class="callout warning">
       <div class="callout-title">⛔ Wrong-mode keys are rejected</div>
-      <p>Using an AC-only key (e.g. <code>network</code>, <code>system_dirs</code>) in an RT config, or an RT-only key (<code>named_pipes</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
+      <p>Using an AC-only key (e.g. <code>network</code>) in an RT config, or an RT-only key (<code>named_pipes</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
     </div>
   </div>
 </section>
@@ -176,9 +176,9 @@ token = <span class="code-string">'appcontainer'</span></pre>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Values</th><th>Default</th><th>AppContainer</th><th>Restricted</th><th>Notes</th></tr></thead>
+        <thead><tr><th>Key</th><th>Values</th><th>Default</th><th>AC / LPAC</th><th>Restricted</th><th>Notes</th></tr></thead>
         <tbody>
-          <tr><td>token</td><td><code>'appcontainer'</code> / <code>'restricted'</code></td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td><td>Isolation model</td></tr>
+          <tr><td>token</td><td><code>'appcontainer'</code> / <code>'lpac'</code> / <code>'restricted'</code></td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td><td>Isolation model</td></tr>
           <tr><td>integrity</td><td><code>'low'</code> / <code>'medium'</code></td><td>—</td><td><span class="status na">N/A</span></td><td><span class="status req">Required</span></td><td><code>low</code> = strongest; <code>medium</code> = wider compatibility</td></tr>
           <tr><td>workdir</td><td>absolute path</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Child cwd. Default: inherited from Sandy's cwd</td></tr>
         </tbody>
@@ -192,7 +192,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). Two scopes: <strong><code>[allow.deep]</code></strong> applies recursively (OI|CI inheritance); <strong><code>[allow.this]</code></strong> applies to the named object only (instant, no child walk). Same access keys in both scopes.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Default</th><th>AC</th><th>RT</th><th>Permission granted</th></tr></thead>
+        <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Permission granted</th></tr></thead>
         <tbody>
           <tr><td>read</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read files, list dirs. Does NOT grant execute.</td></tr>
           <tr><td>write</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create/modify files. Does NOT grant read.</td></tr>
@@ -216,7 +216,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     <div class="section-header">
       <h3><code>[deny.deep]</code> / <code>[deny.this]</code> — Block specific permissions</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). Same access keys and scope semantics as allow. <code>[deny.deep]</code> is recursive; <code>[deny.this]</code> applies to the single object only. Deny is surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer / LPAC mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). Same access keys and scope semantics as allow. <code>[deny.deep]</code> is recursive; <code>[deny.this]</code> applies to the single object only. Deny is surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>Mechanism (Restricted Token only)</th></tr></thead>
@@ -235,8 +235,8 @@ token = <span class="code-string">'appcontainer'</span></pre>
       </table>
     </div>
     <div class="callout warning">
-      <div class="callout-title">⚠️ AppContainer does not support deny rules</div>
-      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny.*]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
+      <div class="callout-title">⚠️ AppContainer / LPAC does not support deny rules</div>
+      <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny.*]</code> for AppContainer / LPAC mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
     </div>
 
     <!-- [privileges] -->
@@ -245,13 +245,13 @@ token = <span class="code-string">'appcontainer'</span></pre>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>system_dirs</td><td>bool</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Read access to C:\Windows, Program Files via ALL_APPLICATION_PACKAGES. Keep <code>true</code> for most apps.</td></tr>
           <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
           <tr><td>localhost</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Loopback TCP. Requires admin (uses CheckNetIsolation.exe).</td></tr>
           <tr><td>lan</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN access. RT mode: always allowed.</td></tr>
           <tr><td>named_pipes</td><td>bool</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Allow CreateNamedPipeW. Required for Flutter, Chromium, Bun/Node IPC.</td></tr>
+          <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; path=redirect from file</td></tr>
           <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow reading from the system clipboard</td></tr>
           <tr><td>clipboard_write</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow writing to the system clipboard</td></tr>
@@ -264,10 +264,10 @@ token = <span class="code-string">'appcontainer'</span></pre>
     <div class="section-header">
       <h3><code>[registry]</code> — Registry key grants</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Not available in AppContainer — AC uses a fixed private registry hive automatically. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Not available in AppContainer / LPAC mode — AC uses a fixed private registry hive automatically. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td>read</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant read access to specific registry keys</td></tr>
           <tr><td>write</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant write access to specific registry keys</td></tr>
@@ -281,7 +281,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td>inherit</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>true</code>: pass full parent env; <code>false</code>: clean env + essential Windows vars + <code>pass</code> list</td></tr>
           <tr><td>pass</td><td>string array</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Specific vars to include when <code>inherit = false</code></td></tr>
@@ -301,7 +301,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC</th><th>RT</th><th>Description</th></tr></thead>
+        <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Kill after N seconds. <code>0</code>=no limit. Sandy exits 130 on timeout.</td></tr>
           <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap. <code>0</code>=no limit. Enforced via job objects.</td></tr>
@@ -328,7 +328,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Section / Key</th><th>Default</th><th>AppContainer</th><th>Restricted</th></tr></thead>
+        <thead><tr><th>Section / Key</th><th>Default</th><th>AC / LPAC</th><th>Restricted</th></tr></thead>
         <tbody>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[sandbox]</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
           <tr><td>&ensp;token</td><td>—</td><td><span class="status req">Required</span></td><td><span class="status req">Required</span></td></tr>
@@ -337,11 +337,11 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow.deep] / [allow.this]</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
-          <tr><td>&ensp;system_dirs</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;localhost</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;named_pipes</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td>&ensp;desktop</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;stdin</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;clipboard_read</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;clipboard_write</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>

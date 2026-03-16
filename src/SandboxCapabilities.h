@@ -133,7 +133,7 @@ namespace Sandbox {
         static DWORD childProcessPolicy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
 
         if (!isRestricted) {
-            strictIsolation = !config.allowSystemDirs;
+            strictIsolation = (config.tokenMode == TokenMode::LPAC);
             attrCount = 1;  // SECURITY_CAPABILITIES
             if (strictIsolation) attrCount++;
             if (needChildAttr) attrCount++;

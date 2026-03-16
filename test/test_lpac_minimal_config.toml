@@ -1,0 +1,12 @@
+# LPAC token test — minimal config (no grants at all)
+# cmd.exe runs from System32 via ALL RESTRICTED APPLICATION PACKAGES DACL.
+# Tests what LPAC can and can't access with zero explicit grants.
+
+[sandbox]
+token = 'lpac'
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

@@ -165,7 +165,7 @@
 
     <div class="callout info">
       <div class="callout-title">💡 What this does</div>
-      <p>Runs <code>cmd.exe</code> in an AppContainer with <em>no file grants</em> — it can read from system directories (<code>system_dirs = true</code> is the default) but cannot touch any user files, network, or registry. Good starting point to add <code>[allow.*]</code> rules incrementally.</p>
+      <p>Runs <code>cmd.exe</code> in an AppContainer with <em>no file grants</em> — it can read from system directories via App. Packages membership but cannot touch any user files, network, or registry. Good starting point to add <code>[allow.*]</code> rules incrementally.</p>
     </div>
   </div>
 </section>
@@ -254,7 +254,7 @@ ROOT = pathlib.Path(<span class="code-string">"."</span>)          <span class="
 
     <div class="callout info">
       <div class="callout-title">💡 RT vs AC defaults</div>
-      <p>Unlike AppContainer, Restricted Token already inherits <code>BUILTIN\Users</code> read access to system dirs and most of <code>HKLM\Software</code> — so no <code>system_dirs</code> or base read grants are needed. Manual <code>[allow.*]</code> grants add <em>write</em> or <em>execute</em> permissions sandy doesn't have by default.</p>
+      <p>Unlike AppContainer, Restricted Token already inherits <code>BUILTIN\Users</code> read access to system dirs and most of <code>HKLM\Software</code> — no base read grants are needed. Manual <code>[allow.*]</code> grants add <em>write</em> or <em>execute</em> permissions sandy doesn't have by default.</p>
     </div>
   </div>
 </section>

@@ -163,7 +163,10 @@ namespace Sandbox {
     {
         if (config.quiet) return;
 
-        fprintf(stderr, "Sandy - %s Sandbox\n", isRestricted ? "Restricted Token" : "AppContainer");
+        const char* modeLabel = isRestricted ? "Restricted Token"
+                             : (config.tokenMode == TokenMode::LPAC) ? "LPAC Sandbox"
+                             : "AppContainer";
+        fprintf(stderr, "Sandy - %s\n", modeLabel);
         fprintf(stderr, "Executable: %ls\n", exePath.c_str());
         if (!exeArgs.empty())
             fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
@@ -179,8 +182,7 @@ namespace Sandbox {
         fprintf(stderr, "---\n");
         if (isRestricted)
             fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
-        if (!config.allowSystemDirs && !isRestricted)
-            fprintf(stderr, "System:     STRICT (system folders blocked)\n");
+
         fprintf(stderr, "Network:    %s\n", isRestricted ? "unrestricted (no capability model)" :
                                             config.allowNetwork ? "INTERNET" :
                                             config.allowLan     ? "LAN ONLY" : "BLOCKED");

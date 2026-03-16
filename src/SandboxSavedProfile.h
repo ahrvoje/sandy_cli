@@ -20,7 +20,7 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     struct SavedProfile {
         std::wstring name;
-        std::wstring type;         // "appcontainer" or "restricted"
+        std::wstring type;         // "appcontainer", "lpac", or "restricted"
         std::wstring integrity;    // "low" or "medium" (restricted only)
         std::wstring sidString;
         std::wstring containerName; // AC only: "Sandy_<name>"
@@ -118,14 +118,15 @@ namespace Sandbox {
     // depend on the TOML parser at load time.
     //
     // Layout:
-    //   _token_mode         REG_SZ   "appcontainer" | "restricted"
+    //   _token_mode         REG_SZ   "appcontainer" | "lpac" | "restricted"
     //   _cfg_integrity      REG_SZ   "low" | "medium"
     //   _workdir            REG_SZ   path (may be empty)
     //   _allow_network      REG_DWORD  0 | 1
     //   _allow_localhost     REG_DWORD  0 | 1
     //   _allow_lan           REG_DWORD  0 | 1
-    //   _allow_system_dirs   REG_DWORD  0 | 1
+
     //   _allow_named_pipes   REG_DWORD  0 | 1
+    //   _allow_desktop       REG_DWORD  0 | 1
     //   _allow_clipboard_r   REG_DWORD  0 | 1
     //   _allow_clipboard_w   REG_DWORD  0 | 1
     //   _allow_child_procs   REG_DWORD  0 | 1
@@ -151,7 +152,9 @@ namespace Sandbox {
 
         // --- Enums ---
         ok &= TryWriteRegSz(hKey, L"_token_mode",
-            (cfg.tokenMode == TokenMode::AppContainer) ? L"appcontainer" : L"restricted");
+            (cfg.tokenMode == TokenMode::Restricted) ? L"restricted"
+            : (cfg.tokenMode == TokenMode::LPAC) ? L"lpac"
+            : L"appcontainer");
         ok &= TryWriteRegSz(hKey, L"_cfg_integrity",
             (cfg.integrity == IntegrityLevel::Low) ? L"low" : L"medium");
 
@@ -163,8 +166,9 @@ namespace Sandbox {
         ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_localhost",     cfg.allowLocalhost   ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_lan",           cfg.allowLan         ? 1 : 0);
-        ok &= TryWriteRegDword(hKey, L"_allow_system_dirs",   cfg.allowSystemDirs  ? 1 : 0);
+
         ok &= TryWriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
+        ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_clipboard_r",   cfg.allowClipboardRead  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_clipboard_w",   cfg.allowClipboardWrite ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_child_procs",   cfg.allowChildProcesses ? 1 : 0);
@@ -230,7 +234,9 @@ namespace Sandbox {
 
         // --- Enums ---
         std::wstring mode = ReadRegSz(hKey, L"_token_mode");
-        cfg.tokenMode = (mode == L"restricted") ? TokenMode::Restricted : TokenMode::AppContainer;
+        cfg.tokenMode = (mode == L"restricted") ? TokenMode::Restricted
+                      : (mode == L"lpac") ? TokenMode::LPAC
+                      : TokenMode::AppContainer;
 
         std::wstring integ = ReadRegSz(hKey, L"_cfg_integrity");
         cfg.integrity = (integ == L"medium") ? IntegrityLevel::Medium : IntegrityLevel::Low;
@@ -249,8 +255,9 @@ namespace Sandbox {
         cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
         cfg.allowLocalhost      = ReadRegDword(hKey, L"_allow_localhost")  != 0;
         cfg.allowLan            = ReadRegDword(hKey, L"_allow_lan")        != 0;
-        cfg.allowSystemDirs     = ReadRegDword(hKey, L"_allow_system_dirs") != 0;
+
         cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
+        cfg.allowDesktop        = ReadRegDword(hKey, L"_allow_desktop") != 0;
         cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
         cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
         cfg.allowChildProcesses = ReadRegDword(hKey, L"_allow_child_procs") != 0;
@@ -363,10 +370,12 @@ namespace Sandbox {
             return SandyExit::ConfigError;
         }
 
-        bool isAppContainer = (config.tokenMode == TokenMode::AppContainer);
+        bool isAppContainer = (config.tokenMode != TokenMode::Restricted);
         std::wstring sidString;
         std::wstring containerName;
-        std::wstring typeStr = isAppContainer ? L"appcontainer" : L"restricted";
+        std::wstring typeStr = isAppContainer
+            ? ((config.tokenMode == TokenMode::LPAC) ? L"lpac" : L"appcontainer")
+            : L"restricted";
         std::wstring integrityStr = (config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
 
         // --- Generate SID ---
@@ -856,8 +865,7 @@ namespace Sandbox {
 
             // Privileges
             printf("  Privileges:\n");
-            if (prof.type == L"appcontainer") {
-                printf("    system_dirs     = %s\n", prof.config.allowSystemDirs ? "true" : "false");
+            if (prof.type == L"appcontainer" || prof.type == L"lpac") {
                 printf("    network         = %s\n", prof.config.allowNetwork ? "true" : "false");
                 printf("    localhost        = %s\n", prof.config.allowLocalhost ? "true" : "false");
                 printf("    lan             = %s\n", prof.config.allowLan ? "true" : "false");

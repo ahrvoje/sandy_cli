@@ -235,43 +235,6 @@ namespace Sandbox {
         return allOk;
     }
 
-    // -----------------------------------------------------------------------
-    // AutoGrantExeFolderAccess — grant read access to exe and target folders.
-    // -----------------------------------------------------------------------
-    inline bool AutoGrantExeFolderAccess(PSID pSid, const std::wstring& exeFolder,
-                                         const std::wstring& exePath)
-    {
-        bool ok = true;
-        DWORD rc = GrantObjectAccess(pSid, exeFolder, AccessLevel::Read, RecordGrantCallback);
-        if (rc == ERROR_SUCCESS) {
-            g_logger.Log((L"GRANT_AUTO: [R] " + exeFolder).c_str());
-        } else {
-            g_logger.LogFmt(L"GRANT_AUTO: [R] %s -> FAILED (0x%08X: %s)",
-                            exeFolder.c_str(), rc, GetSystemErrorMessage(rc).c_str());
-            ok = false;
-        }
-
-        wchar_t resolvedExe[MAX_PATH]{};
-        DWORD found = SearchPathW(nullptr, exePath.c_str(), L".exe",
-                                  MAX_PATH, resolvedExe, nullptr);
-        if (found) {
-            std::wstring targetFolder(resolvedExe);
-            auto slash = targetFolder.find_last_of(L"\\/");
-            if (slash != std::wstring::npos)
-                targetFolder.resize(slash);
-            if (_wcsicmp(targetFolder.c_str(), exeFolder.c_str()) != 0) {
-                rc = GrantObjectAccess(pSid, targetFolder, AccessLevel::Read, RecordGrantCallback);
-                if (rc == ERROR_SUCCESS) {
-                    g_logger.Log((L"GRANT_AUTO: [R] " + targetFolder).c_str());
-                } else {
-                    g_logger.LogFmt(L"GRANT_AUTO: [R] %s -> FAILED (0x%08X: %s)",
-                                    targetFolder.c_str(), rc, GetSystemErrorMessage(rc).c_str());
-                    ok = false;
-                }
-            }
-        }
-        return ok;
-    }
 
     // -----------------------------------------------------------------------
     // SetupResult — output of Phase 1 (token/SID setup)
@@ -861,10 +824,9 @@ namespace Sandbox {
             ResetGrantTrackingHealth();
             guard.Add([]() { RevokeAllGrants(); });
 
-            // Step 2a: Auto-grant read access to exe folders
-            bool grantFailed = !AutoGrantExeFolderAccess(pSid, exeFolder, exePath);
-
-            // Step 2b: Apply depth-sorted access pipeline (allow + deny, most specific wins)
+            // Apply depth-sorted access pipeline (allow + deny, most specific wins)
+            // TOML is the sole grant source — no implicit auto-grants.
+            bool grantFailed = false;
             if (!ApplyAccessPipeline(pSid, config, isAppContainer))
                 grantFailed = true;
 
@@ -888,12 +850,14 @@ namespace Sandbox {
 
         // Desktop and loopback are per-run (even in profile mode)
 
-        // [RT] Grant desktop access for the restricted token
-        if (isRestricted) {
+        // [RT] Grant desktop access for the restricted token (if enabled)
+        if (isRestricted && config.allowDesktop) {
             if (!GrantDesktopAccess(pSid))
                 return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (desktop grant failure)");
             g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
             guard.Add([]() { RevokeDesktopAccess(); });
+        } else if (isRestricted) {
+            g_logger.Log(L"DESKTOP: disabled (desktop = false)");
         }
 
         // [AC] Enable loopback if requested
@@ -1218,7 +1182,7 @@ namespace Sandbox {
         identity.containerName = ContainerNameFromId(g_instanceId);
         identity.persistentProfile = false;
         identity.grantsPreexisting = false;
-        identity.deleteContainerOnExit = (config.tokenMode == TokenMode::AppContainer);
+        identity.deleteContainerOnExit = (config.tokenMode != TokenMode::Restricted);
 
         int result = RunPipeline(config, exePath, exeArgs, exeFolder,
                                  identity, dynamic, configPath);

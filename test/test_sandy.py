@@ -49,10 +49,10 @@ def expect_blocked(label, fn):
 
 
 # ---------------------------------------------------------------------------
-# 1. APP FOLDER (read-only by default)
+# 1. APP FOLDER (no implicit grant — blocked since auto-grant was removed)
 # ---------------------------------------------------------------------------
 print("--- App folder (read-only) ---")
-expect_ok("List app folder",
+expect_blocked("List app folder",
     lambda: f"{len(os.listdir('.'))} items")
 expect_blocked("Create file in app folder",
     lambda: open("test.txt", "w").write("hello"))

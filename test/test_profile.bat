@@ -657,13 +657,13 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-REM P17e: _allow_system_dirs should be 1 for AC profile
-for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_system_dirs 2^>nul ^| findstr _allow_system_dirs') do set P17E_VAL=%%v
+REM P17e: _allow_desktop should be 1 for RT profile (default true)
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_rt" /v _allow_desktop 2^>nul ^| findstr _allow_desktop') do set P17E_VAL=%%v
 if "!P17E_VAL!"=="0x1" (
-    echo   [PASS] P17e: _allow_system_dirs = 1
+    echo   [PASS] P17e: _allow_desktop = 1
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P17e: _allow_system_dirs = !P17E_VAL! (expected 0x1^)
+    echo   [FAIL] P17e: _allow_desktop = !P17E_VAL! (expected 0x1^)
     set /a FAIL+=1
 )
 

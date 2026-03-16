@@ -799,7 +799,7 @@ timeout = 30
         <ul style="margin-top: 12px; padding-left: 20px; color: var(--text-secondary); font-size: 0.9rem;">
           <li>Isolated object namespace — invisible to other processes</li>
           <li>Configurable network isolation (internet, LAN, localhost)</li>
-          <li><code>system_dirs</code> controls access to Windows &amp; Program Files</li>
+          <li>LPAC mode opts out of App. Packages for stricter default access</li>
           <li>Private registry hive — no host registry access</li>
           <li>Deny rules not supported (kernel ignores DENY ACEs for AC SIDs)</li>
         </ul>
@@ -827,7 +827,7 @@ timeout = 30
     <div class="callout info" style="margin-top: 32px;">
       <div class="callout-title">💡 Choosing a mode</div>
       <p>
-        <strong>Use AppContainer</strong> when you need network isolation and don't require named pipes or COM.<br>
+        <strong>Use AppContainer / LPAC</strong> when you need network isolation and don't require named pipes or COM.<br>
         <strong>Use Restricted Token</strong> when the sandboxed app needs named pipes, COM/RPC, or medium integrity
         for broader compatibility.
       </p>
@@ -842,7 +842,7 @@ timeout = 30
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Aspect</th><th>AppContainer</th><th>Restricted Token</th></tr>
+          <tr><th>Aspect</th><th>AC / LPAC</th><th>Restricted Token</th></tr>
         </thead>
         <tbody>
           <tr>

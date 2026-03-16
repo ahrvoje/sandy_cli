@@ -45,8 +45,6 @@ namespace Sandbox {
             g_logger.Log(L"DYNAMIC: WARNING — 'localhost' change ignored (immutable after launch)");
         if (oldCfg.allowLan != newCfg.allowLan)
             g_logger.Log(L"DYNAMIC: WARNING — 'lan' change ignored (immutable after launch)");
-        if (oldCfg.allowSystemDirs != newCfg.allowSystemDirs)
-            g_logger.Log(L"DYNAMIC: WARNING — 'system_dirs' change ignored (immutable after launch)");
         if (oldCfg.allowNamedPipes != newCfg.allowNamedPipes)
             g_logger.Log(L"DYNAMIC: WARNING — 'named_pipes' change ignored (immutable after launch)");
         if (oldCfg.allowClipboardRead != newCfg.allowClipboardRead)

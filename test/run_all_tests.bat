@@ -15,6 +15,7 @@ for %%F in (
     test_acl_grants.bat
     test_acl_grants_rt.bat
     test_allow_limits.bat
+    test_lpac.bat
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
@@ -60,7 +61,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 32
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 33
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

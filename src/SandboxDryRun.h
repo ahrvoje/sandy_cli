@@ -71,7 +71,10 @@ inline int HandleDryRun(const SandboxConfig& config,
     bool isRestricted = (config.tokenMode == TokenMode::Restricted);
     printf("=== Sandy Dry Run ===\n\n");
 
-    printf("Mode: %ls\n", isRestricted ? L"restricted" : L"appcontainer");
+    const wchar_t* modeStr = isRestricted ? L"restricted"
+                           : (config.tokenMode == TokenMode::LPAC) ? L"lpac"
+                           : L"appcontainer";
+    printf("Mode: %ls\n", modeStr);
     if (isRestricted)
         printf("Integrity: %ls\n",
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
@@ -92,12 +95,12 @@ inline int HandleDryRun(const SandboxConfig& config,
 
     printf("\n[privileges]\n");
     if (!isRestricted) {
-        printf("  system_dirs:     %ls\n", config.allowSystemDirs ? L"true" : L"false");
         printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
         printf("  localhost:       %ls\n", config.allowLocalhost ? L"true" : L"false");
         printf("  lan:             %ls\n", config.allowLan ? L"true" : L"false");
     } else {
         printf("  named_pipes:     %ls\n", config.allowNamedPipes ? L"true" : L"false");
+        printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
     }
     printf("  stdin:           %ls\n", config.stdinMode.c_str());
     printf("  clipboard_read:  %ls\n", config.allowClipboardRead ? L"true" : L"false");
@@ -220,7 +223,10 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     bool isRT = (config.tokenMode == TokenMode::Restricted);
 
     printf("[sandbox]\n");
-    printf("token = '%ls'\n", isRT ? L"restricted" : L"appcontainer");
+    const wchar_t* tokenStr = isRT ? L"restricted"
+                            : (config.tokenMode == TokenMode::LPAC) ? L"lpac"
+                            : L"appcontainer";
+    printf("token = '%ls'\n", tokenStr);
     if (isRT)
         printf("integrity = '%ls'\n",
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
@@ -235,12 +241,12 @@ inline int HandlePrintConfig(const SandboxConfig& config)
 
     printf("\n[privileges]\n");
     if (!isRT) {
-        printf("system_dirs     = %ls\n", config.allowSystemDirs ? L"true" : L"false");
         printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
         printf("localhost       = %ls\n", config.allowLocalhost ? L"true" : L"false");
         printf("lan             = %ls\n", config.allowLan ? L"true" : L"false");
     } else {
         printf("named_pipes     = %ls\n", config.allowNamedPipes ? L"true" : L"false");
+        printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
     }
     printf("stdin           = %ls\n", config.stdinMode.c_str());
     printf("clipboard_read  = %ls\n", config.allowClipboardRead ? L"true" : L"false");

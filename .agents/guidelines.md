@@ -54,6 +54,8 @@ best-effort state), the design is probably wrong.
 
 These sandbox modes still have fundamentally different security models.
 Always know which mode you are changing before touching ACL or cleanup logic.
+AC and LPAC share the same AppContainer pipeline; LPAC opts out of
+App. Packages (`ALL APPLICATION PACKAGES`) for stricter default access.
 
 | Aspect | AppContainer | Restricted Token |
 |--------|-------------|-----------------|
@@ -95,7 +97,7 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | Field | When | Values |
 |-------|------|--------|
 | `[sandbox]` section | Always | Must be present |
-| `token` | Always | `'appcontainer'` or `'restricted'` |
+| `token` | Always | `'appcontainer'`, `'lpac'`, or `'restricted'` |
 | `integrity` | Restricted only | `'low'` or `'medium'` |
 
 ## Optional Fields and Defaults
@@ -107,11 +109,11 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
 | `[deny.deep]` | same keys | `[]` | Recursive denies (RT only) |
 | `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
-| `[privileges]` | `system_dirs` | `true` | AC only — false breaks most apps |
-| `[privileges]` | `network` | `false` | AC only |
-| `[privileges]` | `localhost` | `false` | AC only, needs admin |
-| `[privileges]` | `lan` | `false` | AC only |
+| `[privileges]` | `network` | `false` | AC/LPAC only |
+| `[privileges]` | `localhost` | `false` | AC/LPAC only, needs admin |
+| `[privileges]` | `lan` | `false` | AC/LPAC only |
 | `[privileges]` | `named_pipes` | `false` | RT only |
+| `[privileges]` | `desktop` | `true` | RT only, WinSta0 + Desktop |
 | `[privileges]` | `stdin` | `false` | `false` = NUL, `true` = inherit, path = file |
 | `[privileges]` | `clipboard_read` | `false` | |
 | `[privileges]` | `clipboard_write` | `false` | |

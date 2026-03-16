@@ -54,8 +54,8 @@ if !TIMEOUT_EXIT! NEQ 0 (
 )
 echo.
 
-REM --- Part 3: Strict mode (system_dirs disabled) ---
-echo --- Part 3: Strict mode (system_dirs disabled) ---
+REM --- Part 3: LPAC mode (App. Packages excluded) ---
+echo --- Part 3: LPAC mode (App. Packages excluded) ---
 echo.
 
 "%SANDY%" -c "%~dp0test_strict_config.toml" -x "%PYTHON%" -c "print('should not run')"
@@ -63,16 +63,16 @@ set STRICT_EXIT=!ERRORLEVEL!
 
 echo.
 if !STRICT_EXIT! NEQ 0 (
-    echo   [PASS] Strict mode: execution blocked
+    echo   [PASS] LPAC mode: execution blocked
 ) else (
-    echo   [FAIL] Strict mode: process ran - should have been blocked!
+    echo   [FAIL] LPAC mode: process ran - should have been blocked!
 )
 echo.
 
 echo === Summary ===
 echo   Part 1 (allow/limits): exit !PART1_EXIT!
 echo   Part 2 (timeout):      killed in ~!ELAPSED!s
-echo   Part 3 (strict mode):  blocked
+echo   Part 3 (LPAC mode):    blocked
 
 REM === Cleanup ===
 "%SANDY%" --cleanup >nul 2>nul

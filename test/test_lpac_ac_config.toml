@@ -1,0 +1,12 @@
+# AppContainer equivalent — same zero grants as minimal LPAC.
+# AC includes ALL APPLICATION PACKAGES so Program Files is accessible.
+# Comparing AC vs LPAC exits proves the opt-out works.
+
+[sandbox]
+token = 'appcontainer'
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

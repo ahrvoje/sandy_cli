@@ -1,0 +1,26 @@
+# LPAC token test — full config
+# Grants workspace (all), scripts (read).
+# No system dir grants needed — System32 DLLs are accessible via
+# ALL RESTRICTED APPLICATION PACKAGES DACL.
+# cmd.exe from System32 is used as the test executable.
+
+[sandbox]
+token = 'lpac'
+
+[allow.deep]
+read    = ['C:\Users\H\test_lpac\scripts']
+all     = ['C:\Users\H\test_lpac\workspace']
+
+[allow.this]
+stat    = ['C:\Users\H\test_lpac']
+
+[privileges]
+network   = false
+localhost = false
+lan       = false
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

@@ -31,7 +31,6 @@ token = 'appcontainer'
 # ============================================================
 
 # [privileges]
-# system_dirs     = true    # default true: read C:\Windows, Program Files
 # network         = false   # default false: no outbound internet
 # localhost       = false   # default false: no loopback (admin required)
 # lan             = false   # default false: no local network
@@ -40,7 +39,7 @@ token = 'appcontainer'
 # clipboard_write = false   # default false
 # child_processes = true    # default true
 
-# NOTE: named_pipes is not available in AppContainer mode.
+# NOTE: named_pipes, desktop are not available in AppContainer mode.
 # NOTE: [registry] section is not available in AppContainer mode.
 
 # ============================================================

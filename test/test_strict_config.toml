@@ -1,17 +1,16 @@
-# Sandy test configuration — strict mode test
-# system_dirs is false (strict), so no executable should be able to run.
-# Scripts folder is granted read but system dirs are blocked.
+# Sandy test configuration — LPAC mode test
+# Uses token = 'lpac' (opts out of ALL APPLICATION PACKAGES),
+# so no executable should be able to run without explicit grants.
+# Scripts folder is granted read but App. Packages access is excluded.
 
 [sandbox]
-token = 'appcontainer'
+token = 'lpac'
 
 [allow.deep]
 read = [
     'C:\Users\H\AppData\Local\Programs\Python\Python314',
     'C:\Users\H\test_limits\scripts',
 ]
-[privileges]
-system_dirs = false  # strict isolation — no system dir access
 
 [environment]
 inherit = true

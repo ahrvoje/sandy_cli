@@ -80,6 +80,7 @@ namespace Sandbox {
                     tokenSeen = true;
                     if (val.str == L"restricted") config.tokenMode = TokenMode::Restricted;
                     else if (val.str == L"appcontainer") config.tokenMode = TokenMode::AppContainer;
+                    else if (val.str == L"lpac") config.tokenMode = TokenMode::LPAC;
                     else {
                         fprintf(stderr, "Error: Unknown token mode: %ls\n", val.str.c_str());
                         config.parseError = true;
@@ -238,7 +239,7 @@ namespace Sandbox {
                             config.stdinMode = valStr;  // file path
                     }
                     else if (key == L"network" || key == L"localhost" || key == L"lan" ||
-                             key == L"system_dirs" || key == L"named_pipes" ||
+                             key == L"named_pipes" || key == L"desktop" ||
                              key == L"clipboard_read" || key == L"clipboard_write" ||
                              key == L"child_processes") {
                         if (requireBool(key, valStr)) {
@@ -246,8 +247,8 @@ namespace Sandbox {
                             if (key == L"network")           config.allowNetwork = enabled;
                             else if (key == L"localhost")     config.allowLocalhost = enabled;
                             else if (key == L"lan")           config.allowLan = enabled;
-                            else if (key == L"system_dirs")   config.allowSystemDirs = enabled;
                             else if (key == L"named_pipes")   config.allowNamedPipes = enabled;
+                            else if (key == L"desktop")       config.allowDesktop = enabled;
                             else if (key == L"clipboard_read")  config.allowClipboardRead = enabled;
                             else if (key == L"clipboard_write") config.allowClipboardWrite = enabled;
                             else if (key == L"child_processes")  config.allowChildProcesses = enabled;
@@ -326,7 +327,7 @@ namespace Sandbox {
 
         // --- Mode-specific validation ---
         if (!config.parseError) {
-            bool isAC = (config.tokenMode == TokenMode::AppContainer);
+            bool isAC = (config.tokenMode != TokenMode::Restricted);  // AC and LPAC share validation
             bool isRT = (config.tokenMode == TokenMode::Restricted);
 
             if (isRT) {
@@ -334,15 +335,15 @@ namespace Sandbox {
                 if (privSeen.count(L"network"))     { fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");   config.parseError = true; }
                 if (privSeen.count(L"localhost"))   { fprintf(stderr, "Error: 'localhost' is not available in restricted mode (network is always unrestricted).\n"); config.parseError = true; }
                 if (privSeen.count(L"lan"))         { fprintf(stderr, "Error: 'lan' is not available in restricted mode (network is always unrestricted).\n");       config.parseError = true; }
-                if (privSeen.count(L"system_dirs")) { fprintf(stderr, "Error: 'system_dirs' is not available in restricted mode (system dirs are always readable).\n"); config.parseError = true; }
                 if (!integritySeen)                  { fprintf(stderr, "Error: 'integrity' is required in [sandbox] for restricted mode ('low' or 'medium').\n"); config.parseError = true; }
             }
 
             if (isAC) {
                 // Reject wrong-mode keys by presence, not value
-                if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer mode (named pipes are always blocked).\n"); config.parseError = true; }
-                if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer mode (always Low).\n"); config.parseError = true; }
-                if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer mode.\n"); config.parseError = true; }
+                if (privSeen.count(L"named_pipes")) { fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer/lpac mode (named pipes are always blocked).\n"); config.parseError = true; }
+                if (privSeen.count(L"desktop"))     { fprintf(stderr, "Error: 'desktop' is not available in appcontainer/lpac mode (desktop access is inherited from creator token).\n"); config.parseError = true; }
+                if (integritySeen)                   { fprintf(stderr, "Error: 'integrity' is not available in appcontainer/lpac mode (always Low).\n"); config.parseError = true; }
+                if (registrySeen)                    { fprintf(stderr, "Error: [registry] section is not available in appcontainer/lpac mode.\n"); config.parseError = true; }
                 if (!config.denyFolders.empty()) {
                     fprintf(stderr, "Error: [deny.*] is not available in appcontainer mode.\n");
                     fprintf(stderr, "  The Windows kernel ignores DENY ACEs for AppContainer SIDs.\n");

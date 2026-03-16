@@ -10,7 +10,7 @@ marker   = sys.argv[3]  # output marker file
 
 results = []
 
-for cycle in range(8):
+for cycle in range(12):
     time.sleep(1.5)
     
     # Test read on folder A
