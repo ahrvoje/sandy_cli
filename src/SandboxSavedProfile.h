@@ -374,12 +374,6 @@ namespace Sandbox {
                 return SandyExit::ConfigError;
             }
         }
-        if (ProfileExists(name)) {
-            fprintf(stderr, "Error: profile '%ls' already exists. Use --delete-profile first.\n",
-                    name.c_str());
-            return SandyExit::ConfigError;
-        }
-
         // Read TOML file as raw text (for storage) and parse config
         std::wstring tomlText = ReadTomlFileText(configPath);
         if (tomlText.empty()) {
@@ -400,6 +394,47 @@ namespace Sandbox {
             : L"restricted";
         std::wstring integrityStr = (config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
 
+        // --- Stage 1: Create profile registry key FIRST ---
+        // Verify exclusive creation via REG_CREATED_NEW_KEY
+        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
+        HKEY hKey = nullptr;
+        DWORD disposition = 0;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
+                0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC, nullptr, &hKey, &disposition) != ERROR_SUCCESS) {
+            fprintf(stderr, "Error: cannot create registry key for profile.\n");
+            return SandyExit::InternalError;
+        }
+
+        if (disposition == REG_OPENED_EXISTING_KEY) {
+            RegCloseKey(hKey);
+            fprintf(stderr, "Error: profile '%ls' already exists or is being created. Use --delete-profile first.\n",
+                    name.c_str());
+            return SandyExit::ConfigError;
+        }
+
+        // Harden the new key immediately so that a sandboxed child cannot manipulate its own metadata
+        HardenRegistryKeyAgainstRestricted(hKey);
+
+        // Mark profile as staging — if Sandy crashes between here and
+        // the final commit, cleanup will detect this and roll back.
+        DWORD stagingFlag = 1;
+        bool stageOk = true;
+        stageOk &= TryWriteRegDword(hKey, L"_staging", stagingFlag);
+
+        // F1/R8: Persist creator identity so CleanStagingProfiles can
+        // distinguish a crashed create from an in-progress one.
+        DWORD creatorPid = GetCurrentProcessId();
+        stageOk &= TryWriteRegDword(hKey, L"_staging_pid", creatorPid);
+        ULONGLONG creatorCtime = GetCurrentProcessCreationTime();
+        stageOk &= TryWriteRegQword(hKey, L"_staging_ctime", creatorCtime);
+
+        if (!stageOk) {
+            fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
+            RegCloseKey(hKey);
+            DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
+            return SandyExit::InternalError;
+        }
+
         // --- Generate SID ---
         PSID pSid = nullptr;
         if (isAppContainer) {
@@ -418,6 +453,8 @@ namespace Sandbox {
             if (FAILED(hr) || !pContainerSid) {
                 fprintf(stderr, "Error: AppContainer profile creation failed (0x%08lX).\n",
                         (unsigned long)hr);
+                RegCloseKey(hKey);
+                DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
                 return SandyExit::SetupError;
             }
             pSid = pContainerSid;
@@ -426,6 +463,8 @@ namespace Sandbox {
             pSid = AllocateInstanceSid();
             if (!pSid) {
                 fprintf(stderr, "Error: SID allocation failed (error %lu).\n", GetLastError());
+                RegCloseKey(hKey);
+                DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
                 return SandyExit::SetupError;
             }
         }
@@ -438,37 +477,14 @@ namespace Sandbox {
         } else {
             fprintf(stderr, "Error: SID conversion failed.\n");
             FreeSid(pSid);
+            RegCloseKey(hKey);
+            if (isAppContainer) DeleteAppContainerProfile(containerName.c_str());
+            DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
             return SandyExit::SetupError;
         }
 
-        // --- Stage 1: Create profile registry key FIRST ---
-        // Validate we can commit metadata before modifying any filesystem ACLs.
-        // If this fails, no grants have been applied — nothing to roll back.
-        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
-        HKEY hKey = nullptr;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
-                0, KEY_SET_VALUE | KEY_QUERY_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS) {
-            fprintf(stderr, "Error: cannot create registry key for profile.\n");
-            if (isAppContainer)
-                DeleteAppContainerProfile(containerName.c_str());
-            FreeSid(pSid);
-            return SandyExit::InternalError;
-        }
-
-        // Mark profile as staging — if Sandy crashes between here and
-        // the final commit, cleanup will detect this and roll back.
-        DWORD stagingFlag = 1;
-        bool stageOk = true;
-        stageOk &= TryWriteRegDword(hKey, L"_staging", stagingFlag);
-
-        // F1/R8: Persist creator identity so CleanStagingProfiles can
-        // distinguish a crashed create from an in-progress one.
-        DWORD creatorPid = GetCurrentProcessId();
-        stageOk &= TryWriteRegDword(hKey, L"_staging_pid", creatorPid);
-        ULONGLONG creatorCtime = GetCurrentProcessCreationTime();
-        stageOk &= TryWriteRegQword(hKey, L"_staging_ctime", creatorCtime);
-
         // Persist SID now so cleanup can find it if we crash during grant application
+        stageOk = true;
         stageOk &= TryWriteRegSz(hKey, L"_sid", sidString);
         if (!containerName.empty())
             stageOk &= TryWriteRegSz(hKey, L"_container", containerName);

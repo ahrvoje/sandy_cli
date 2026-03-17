@@ -372,6 +372,45 @@ namespace Sandbox {
         }
     }
 
+    inline void InitializeRunLedger(const std::wstring& containerName)
+    {
+        if (!g_grantPersistence) return;
+
+        std::wstring regKey = GetGrantsRegKey();
+        HKEY hKey = nullptr;
+        DWORD disposition = 0;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
+                0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
+                nullptr, &hKey, &disposition) == ERROR_SUCCESS) {
+
+            // On first creation, store identity and protect the key
+            if (disposition == REG_CREATED_NEW_KEY) {
+                DWORD pid = GetCurrentProcessId();
+                if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
+                                   reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
+                    MarkGrantTrackingFailure(L"persist _pid", regKey);
+
+                ULONGLONG ct = GetCurrentProcessCreationTime();
+                if (RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
+                                   reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG)) != ERROR_SUCCESS)
+                    MarkGrantTrackingFailure(L"persist _ctime", regKey);
+
+                if (!containerName.empty()) {
+                    if (RegSetValueExW(hKey, L"_container", 0, REG_SZ,
+                                       reinterpret_cast<const BYTE*>(containerName.c_str()),
+                                       static_cast<DWORD>((containerName.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
+                        MarkGrantTrackingFailure(L"persist _container", regKey);
+                }
+
+                // F5/R11: Deny Restricted SID write access (shared helper)
+                HardenRegistryKeyAgainstRestricted(hKey);
+            }
+            RegCloseKey(hKey);
+        } else {
+            MarkGrantTrackingFailure(L"create grants key", regKey);
+        }
+    }
+
     inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
                             const std::wstring& sidString,
                             const std::wstring& trappedSids = L"",
@@ -387,32 +426,8 @@ namespace Sandbox {
         if (g_grantPersistence) {
             std::wstring regKey = GetGrantsRegKey();
             HKEY hKey = nullptr;
-            DWORD disposition = 0;
-            if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
-                    0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC,
-                    nullptr, &hKey, &disposition) == ERROR_SUCCESS) {
-
-                // On first creation, store identity and protect the key
-                if (disposition == REG_CREATED_NEW_KEY) {
-                    DWORD pid = GetCurrentProcessId();
-                    if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
-                                       reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
-                        MarkGrantTrackingFailure(L"persist _pid", regKey);
-
-                    ULONGLONG ct = GetCurrentProcessCreationTime();
-                    if (RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
-                                       reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG)) != ERROR_SUCCESS)
-                        MarkGrantTrackingFailure(L"persist _ctime", regKey);
-
-                    std::wstring containerName = ContainerNameFromId(g_instanceId);
-                    if (RegSetValueExW(hKey, L"_container", 0, REG_SZ,
-                                       reinterpret_cast<const BYTE*>(containerName.c_str()),
-                                       static_cast<DWORD>((containerName.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
-                        MarkGrantTrackingFailure(L"persist _container", regKey);
-
-                    // F5/R11: Deny Restricted SID write access (shared helper)
-                    HardenRegistryKeyAgainstRestricted(hKey);
-                }
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
+                    KEY_SET_VALUE | KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
 
                 // Get next index
                 DWORD nextIdx = 0;

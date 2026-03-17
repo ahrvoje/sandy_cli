@@ -820,6 +820,7 @@ namespace Sandbox {
         if (identity.grantsPreexisting) {
             g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
         } else {
+            InitializeRunLedger(containerName);
             ULONGLONG tGrantStart = GetTickCount64();
             ResetGrantTrackingHealth();
             guard.Add([]() { RevokeAllGrants(); });
