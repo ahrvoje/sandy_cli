@@ -105,7 +105,7 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | Section | Key | Default | Notes |
 |---------|-----|---------|-------|
 | `[sandbox]` | `strict` | `false` | RT only; excludes user SID from restricting list |
-| `[sandbox]` | `workdir` | `'inherit'` (exe folder) | |
+| `[sandbox]` | `workdir` | `'inherit'` (Sandy's CWD) | |
 | `[allow.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive grants (OI\|CI) |
 | `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
 | `[deny.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive denies (RT only) |

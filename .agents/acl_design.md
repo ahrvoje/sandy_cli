@@ -142,8 +142,15 @@ Do not let normal run cleanup delete profile-owned ACLs or containers.
 
 # Desktop and Window Station ACLs
 
-Restricted Token mode still requires granting the run SID access to the current
-window station and desktop. This cleanup must also stay ACE-level and owner-specific.
+Restricted Token mode requires granting the SID access to the current window
+station and desktop.
+
+- **Persistent profiles:** Desktop ACEs are granted at profile creation and
+  revoked at profile deletion.  Profile runs do no per-run desktop management.
+- **Transient runs:** Desktop ACEs are granted per-run and revoked on run exit
+  (including emergency cleanup).
+
+This cleanup must stay ACE-level and owner-specific.
 
 **Never** revert to snapshot-based desktop DACL restoration.
 

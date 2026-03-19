@@ -15,6 +15,26 @@
 namespace Sandbox {
 
 // -----------------------------------------------------------------------
+// TomlQuotedValue — emit a string as TOML, using double-quotes with
+// escaping when the value contains an apostrophe.
+// -----------------------------------------------------------------------
+inline void TomlQuotedValue(const std::wstring& val)
+{
+    if (val.find(L'\'') != std::wstring::npos) {
+        // Escape backslashes and double-quotes for a TOML basic string
+        std::wstring escaped;
+        for (auto ch : val) {
+            if (ch == L'\\') escaped += L"\\\\";
+            else if (ch == L'"') escaped += L"\\\"";
+            else escaped += ch;
+        }
+        printf("\"%ls\"", escaped.c_str());
+    } else {
+        printf("'%ls'", val.c_str());
+    }
+}
+
+// -----------------------------------------------------------------------
 // Print folder entries grouped by access level (for dry-run display)
 // -----------------------------------------------------------------------
 inline void PrintFolderEntries(const wchar_t* section,
@@ -55,7 +75,7 @@ inline void PrintFolderToml(const wchar_t* section,
             } else {
                 printf(", ");
             }
-            printf("'%ls'", e.path.c_str());
+            TomlQuotedValue(e.path);
         }
         if (!first) printf("]\n");
     }
@@ -83,7 +103,7 @@ inline int HandleDryRun(const SandboxConfig& config,
     if (!exePath.empty()) printf("Executable: %ls\n", exePath.c_str());
     if (!exeArgs.empty()) printf("Arguments: %ls\n", exeArgs.c_str());
     if (config.workdir.empty())
-        printf("Working dir: (inherited from Sandy current working directory)\n\n");
+        printf("Working dir: (inherited from Sandy's current working directory)\n\n");
     else
         printf("Working dir: %ls\n\n", config.workdir.c_str());
 
@@ -263,7 +283,7 @@ inline int HandlePrintConfig(const SandboxConfig& config)
             printf("%ls = [", k);
             for (size_t i = 0; i < v.size(); i++) {
                 if (i) printf(", ");
-                printf("'%ls'", v[i].c_str());
+                TomlQuotedValue(v[i]);
             }
             printf("]\n");
         };
@@ -276,7 +296,7 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     printf("pass = [");
     for (size_t i = 0; i < config.envPass.size(); i++) {
         if (i) printf(", ");
-        printf("'%ls'", config.envPass[i].c_str());
+        TomlQuotedValue(config.envPass[i]);
     }
     printf("]\n");
 

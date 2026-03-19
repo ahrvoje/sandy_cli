@@ -304,7 +304,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
       <table>
         <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Kill after N seconds. <code>0</code>=no limit. Sandy exits 130 on timeout.</td></tr>
+          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Kill root process after N seconds. <code>0</code>=no limit. After the root exits (or is killed on timeout), Sandy waits for all descendant processes in the job to finish before cleanup. Sandy exits 130 on timeout.</td></tr>
           <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap. <code>0</code>=no limit. Enforced via job objects.</td></tr>
           <tr><td>processes</td><td>count</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Max active process count. <code>0</code>=no limit.</td></tr>
         </tbody>

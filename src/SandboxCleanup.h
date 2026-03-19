@@ -38,30 +38,47 @@ namespace Sandbox {
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
             return false;
 
-        bool foundOther = false;
+        // P1: Snapshot subkey names first to avoid index-shift races
+        // when concurrent Sandy instances add/remove keys mid-walk.
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
                          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        for (DWORD idx = 0; idx < subKeyCount && !foundOther; idx++) {
+        std::vector<std::wstring> subKeys;
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
             wchar_t name[128];
             DWORD nameLen = 128;
             if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
+
+        bool foundOther = false;
+        for (const auto& subKey : subKeys) {
+            if (foundOther) break;
+            if (!excludeInstanceId.empty() && excludeInstanceId == subKey)
                 continue;
 
-            if (!excludeInstanceId.empty() && excludeInstanceId == name)
-                continue;
-
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
                 continue;
 
             DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (IsProcessAlive(pid, ctime)) {
+            bool ledgerComplete = ReadPidAndCtime(hKey, pid, ctime);
+            if (!ledgerComplete) {
+                // P1: Ledger commit in progress — _pid not yet written.
+                // Fail closed: treat as live to avoid removing shared loopback
+                // while a concurrent peer is still initializing.
+                std::wstring liveContainer = ReadRegSz(hKey, L"_container");
+                if (!liveContainer.empty() &&
+                    _wcsicmp(liveContainer.c_str(), containerName.c_str()) == 0) {
+                    g_logger.LogFmt(L"LOOPBACK_LIVENESS: treating incomplete ledger %s as live (fail closed)",
+                                    subKey.c_str());
+                    foundOther = true;
+                }
+            } else if (IsProcessAlive(pid, ctime)) {
                 std::wstring liveContainer = ReadRegSz(hKey, L"_container");
                 if (_wcsicmp(liveContainer.c_str(), containerName.c_str()) == 0)
                     foundOther = true;
@@ -69,7 +86,6 @@ namespace Sandbox {
             RegCloseKey(hKey);
         }
 
-        RegCloseKey(hParent);
         return foundOther;
     }
 
@@ -193,7 +209,7 @@ namespace Sandbox {
                                      bool trackRunState)
     {
         std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -a -n=" + containerName;
+        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -a -n=\"" + containerName + L"\"";
         DWORD exitCode = RunHiddenProcess(cmd, 5000, cniExe);
         bool ok = (exitCode == 0);
         if (ok && trackRunState) {
@@ -229,7 +245,7 @@ namespace Sandbox {
     {
         if (containerName.empty()) return true;
         std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + containerName;
+        std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + containerName + L"\"";
         return RunHiddenProcess(cmd, 5000, cniExe) == 0;
     }
 
@@ -256,6 +272,20 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // DisableLoopbackForContainer — remove loopback exemption for a specific
+    // container name.  Used by profile deletion to revoke profile-owned
+    // loopback state without relying on the in-memory g_loopbackGranted flag.
+    // -----------------------------------------------------------------------
+    inline void DisableLoopbackForContainer(const std::wstring& containerName)
+    {
+        if (containerName.empty()) return;
+        if (RemoveLoopbackExemption(containerName))
+            g_logger.LogFmt(L"LOOPBACK_PROFILE: %ls -> removed", containerName.c_str());
+        else
+            g_logger.LogFmt(L"LOOPBACK_PROFILE: %ls -> removal failed", containerName.c_str());
+    }
+
+    // -----------------------------------------------------------------------
     // ForceDisableLoopback — unconditional exemption removal for startup.
     //
     // Inputs:  containerName — the container name to remove (or empty to
@@ -267,10 +297,10 @@ namespace Sandbox {
     {
         std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
         // Remove legacy hardcoded moniker (from pre-fix builds)
-        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=SandySandbox", 5000, cniExe);
+        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"SandySandbox\"", 5000, cniExe);
         // Remove per-instance moniker if provided
         if (!containerName.empty()) {
-            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + containerName;
+            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + containerName + L"\"";
             RunHiddenProcess(cmd, 5000, cniExe);
         }
         g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
@@ -284,9 +314,9 @@ namespace Sandbox {
     inline void ForceDisableLoopback(const std::vector<std::wstring>& containerNames)
     {
         std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=SandySandbox", 5000, cniExe);
+        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"SandySandbox\"", 5000, cniExe);
         for (const auto& name : containerNames) {
-            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=" + name;
+            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + name + L"\"";
             RunHiddenProcess(cmd, 5000, cniExe);
             printf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
         }
@@ -313,17 +343,25 @@ namespace Sandbox {
                 KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hMap) != ERROR_SUCCESS)
             return profiles;
 
+        // P1: Snapshot subkey names first to avoid index-shift races.
         DWORD subCount = 0;
         RegQueryInfoKeyW(hMap, nullptr, nullptr, nullptr, &subCount,
             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        std::vector<std::wstring> sidKeys;
         for (DWORD i = 0; i < subCount; i++) {
             wchar_t sid[256];
             DWORD sidLen = 256;
             if (RegEnumKeyExW(hMap, i, sid, &sidLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
+                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                sidKeys.push_back(sid);
+        }
+        RegCloseKey(hMap);
+
+        for (const auto& sidKey : sidKeys) {
             HKEY hSub = nullptr;
-            if (RegOpenKeyExW(hMap, sid, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+            std::wstring fullSidKey = std::wstring(mapKey) + L"\\" + sidKey;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullSidKey.c_str(), 0,
+                              KEY_READ, &hSub) != ERROR_SUCCESS)
                 continue;
             wchar_t moniker[256] = {};
             DWORD mSize = sizeof(moniker);
@@ -334,7 +372,6 @@ namespace Sandbox {
             }
             RegCloseKey(hSub);
         }
-        RegCloseKey(hMap);
         return profiles;
     }
 

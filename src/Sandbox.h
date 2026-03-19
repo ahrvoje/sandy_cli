@@ -34,6 +34,7 @@ namespace Sandbox {
     struct EmergencyCleanupState {
         bool         deleteContainerOnExit = false;
         std::wstring containerName;
+        bool         persistentProfile = false;
     };
 
     inline EmergencyCleanupState g_emergencyCleanupState;
@@ -41,7 +42,8 @@ namespace Sandbox {
 
     inline void ResetEmergencyCleanupState();
     inline void ConfigureEmergencyCleanupState(const std::wstring& containerName,
-                                               bool deleteContainerOnExit);
+                                               bool deleteContainerOnExit,
+                                               bool persistentProfile = false);
     inline EmergencyCleanupState SnapshotEmergencyCleanupState();
 
     // -----------------------------------------------------------------------
@@ -80,6 +82,9 @@ namespace Sandbox {
         std::wstring normalized = NormalizeFsPath(p);
         int d = 0;
         for (auto c : normalized) if (c == L'\\') d++;
+        // Drive root "C:\" has a trailing backslash that doesn't count as a
+        // depth separator — it has zero meaningful path components.
+        if (!normalized.empty() && normalized.back() == L'\\') d--;
         return d;
     }
 
@@ -89,9 +94,13 @@ namespace Sandbox {
         std::wstring normalizedParent = NormalizeFsPath(parent);
         if (normalizedChild.size() < normalizedParent.size()) return false;
         if (_wcsnicmp(normalizedChild.c_str(), normalizedParent.c_str(), normalizedParent.size()) != 0) return false;
-        // Exact match or child continues with backslash
-        return normalizedChild.size() == normalizedParent.size() ||
-               normalizedChild[normalizedParent.size()] == L'\\';
+        // Exact match
+        if (normalizedChild.size() == normalizedParent.size()) return true;
+        // Parent ends with backslash (drive root like "C:\") — every prefix
+        // match is already a proper child because the separator is built in.
+        if (!normalizedParent.empty() && normalizedParent.back() == L'\\') return true;
+        // Normal case: child continues with a backslash boundary
+        return normalizedChild[normalizedParent.size()] == L'\\';
     }
 
     inline bool ApplyAccessPipeline(PSID pSid, const SandboxConfig& config, bool isAppContainer)
@@ -189,7 +198,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
                         e.path.c_str(), isThis ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
-                                     true, isThis, AceRemovalMode::DenyOnly);
+                                     DaclProtectionIntent::ForceProtected, isThis, AceRemovalMode::DenyOnly);
                 }
 
                 // Apply allow
@@ -352,11 +361,13 @@ namespace Sandbox {
     }
 
     inline void ConfigureEmergencyCleanupState(const std::wstring& containerName,
-                                               bool deleteContainerOnExit)
+                                               bool deleteContainerOnExit,
+                                               bool persistentProfile)
     {
         AcquireSRWLockExclusive(&g_emergencyCleanupStateLock);
         g_emergencyCleanupState.deleteContainerOnExit = deleteContainerOnExit;
         g_emergencyCleanupState.containerName = deleteContainerOnExit ? containerName : L"";
+        g_emergencyCleanupState.persistentProfile = persistentProfile;
         ReleaseSRWLockExclusive(&g_emergencyCleanupStateLock);
     }
 
@@ -407,7 +418,8 @@ namespace Sandbox {
             if (newWriteTime == 0 || newWriteTime == lastWriteTime)
                 continue;
 
-            lastWriteTime = newWriteTime;
+            // Do NOT advance lastWriteTime yet — only commit after success
+            // so failed reloads are retried on the next poll cycle.
             g_logger.Log(L"DYNAMIC: config file changed, reloading...");
 
             // Load and parse new config
@@ -485,7 +497,8 @@ namespace Sandbox {
                 for (const auto& entry : survivors) {
                     if (entry.isDeny) {
                         DWORD rc = DenyObjectAccess(ctx->pSid, entry.path, entry.access,
-                                                    RecordGrantCallback);
+                                                    RecordGrantCallback,
+                                                    SE_FILE_OBJECT, entry.scope);
                         if (rc == ERROR_SUCCESS) {
                             g_logger.LogFmt(L"DYNAMIC_REAPPLY: [deny] %s -> OK",
                                             entry.path.c_str());
@@ -504,7 +517,7 @@ namespace Sandbox {
                         g_logger.LogFmt(L"DYNAMIC_REAPPLY: strip deny [%s] %s",
                                         AccessTag(entry.access), entry.path.c_str());
                         RemoveSidFromDacl(entry.path, ctx->sidString, SE_FILE_OBJECT,
-                                          true, isThis, AceRemovalMode::DenyOnly);
+                                          DaclProtectionIntent::ForceProtected, isThis, AceRemovalMode::DenyOnly);
                     }
 
                     DWORD rc = GrantObjectAccess(ctx->pSid, entry.path, entry.access,
@@ -636,7 +649,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_FIXUP: strip deny + re-grant [%s] %s",
                                     AccessTag(existing.access), existing.path.c_str());
                     RemoveSidFromDacl(existing.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isThis, AceRemovalMode::DenyOnly);
+                                     DaclProtectionIntent::ForceProtected, isThis, AceRemovalMode::DenyOnly);
                     DWORD rc = GrantObjectAccess(ctx->pSid, existing.path, existing.access,
                                                  RecordGrantCallback,
                                                  SE_FILE_OBJECT, existing.scope);
@@ -664,7 +677,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"DYNAMIC_STRIP: %s (%s)",
                                     a.path.c_str(), isThis ? L"dir only" : L"subtree");
                     RemoveSidFromDacl(a.path, ctx->sidString, SE_FILE_OBJECT,
-                                     true, isThis, AceRemovalMode::DenyOnly);
+                                     DaclProtectionIntent::ForceProtected, isThis, AceRemovalMode::DenyOnly);
                 }
 
                 DWORD rc = GrantObjectAccess(ctx->pSid, a.path, a.access, RecordGrantCallback,
@@ -731,6 +744,7 @@ namespace Sandbox {
             // If any failed, keep the old baseline so failed changes are
             // retried on the next poll cycle.
             if (failCount == 0) {
+                lastWriteTime = newWriteTime;
                 currentKeys = newKeys;
                 currentRegKeys = newRegKeys;
                 ctx->currentConfig.folders = newConfig.folders;
@@ -798,7 +812,8 @@ namespace Sandbox {
             hRestrictedToken = setup.hRestrictedToken;
         }
 
-        ConfigureEmergencyCleanupState(containerName, identity.deleteContainerOnExit);
+        ConfigureEmergencyCleanupState(containerName, identity.deleteContainerOnExit,
+                                       identity.persistentProfile);
 
         g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
 
@@ -849,31 +864,34 @@ namespace Sandbox {
             g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
         }
 
-        // Desktop and loopback are per-run (even in profile mode)
+        // Desktop and loopback — profile-owned grants are set at creation,
+        // transient grants are managed per-run.
 
-        // [RT] Grant desktop access for the restricted token (if enabled)
+        // [RT] Desktop access
         if (isRestricted && config.allowDesktop) {
-            if (!GrantDesktopAccess(pSid))
-                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (desktop grant failure)");
-            g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
-            guard.Add([]() { RevokeDesktopAccess(); });
+            if (identity.persistentProfile) {
+                g_logger.Log(L"DESKTOP: using profile-owned ACEs (no per-run grant)");
+            } else {
+                if (!GrantDesktopAccess(pSid))
+                    return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (desktop grant failure)");
+                g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
+                guard.Add([]() { RevokeDesktopAccess(); });
+            }
         } else if (isRestricted) {
             g_logger.Log(L"DESKTOP: disabled (desktop = false)");
         }
 
-        // [AC] Enable loopback if requested
+        // [AC] Loopback
         if (isAppContainer && config.allowLocalhost) {
-            bool ok = identity.persistentProfile
-                ? EnsureProfileLoopback(containerName)
-                : EnableRunLoopback(containerName);
-            g_logger.Log(ok ? (identity.persistentProfile
-                               ? L"LOOPBACK: ensured (profile-owned)"
-                               : L"LOOPBACK: enabled")
-                            : L"LOOPBACK: FAILED (need Administrator)");
-            if (!ok)
-                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (loopback setup failure)");
-            if (!identity.persistentProfile)
+            if (identity.persistentProfile) {
+                g_logger.Log(L"LOOPBACK: using profile-owned exemption (no per-run check)");
+            } else {
+                bool ok = EnableRunLoopback(containerName);
+                g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
+                if (!ok)
+                    return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (loopback setup failure)");
                 guard.Add([]() { DisableLoopback(); });
+            }
         }
 
         // =================================================================
@@ -1071,7 +1089,7 @@ namespace Sandbox {
         // Stop dynamic watcher
         if (hDynamicThread) {
             SetEvent(hStopEvent);
-            WaitForSingleObject(hDynamicThread, 5000);
+            WaitForSingleObject(hDynamicThread, INFINITE);
             CloseHandle(hDynamicThread);
             CloseHandle(hStopEvent);
         }
@@ -1172,6 +1190,10 @@ namespace Sandbox {
     {
         ResetEmergencyCleanupState();
         g_instanceId = GenerateInstanceId();
+        if (g_instanceId.empty()) {
+            fprintf(stderr, "Error: failed to generate instance ID (CoCreateGuid failed).\n");
+            return SandyExit::SetupError;
+        }
 
         std::wstring exeFolder = config.workdir.empty() ? GetInheritedWorkdir() : config.workdir;
         if (exeFolder.empty())
@@ -1232,17 +1254,21 @@ namespace Sandbox {
             g_logger.Log(L"EMERGENCY_CLEANUP: child terminated");
         }
 
-        RevokeDesktopAccess();
-        RevokeAllGrants();
-        DisableLoopback();
+        // Profile-owned state (desktop, grants, loopback) is not revoked here —
+        // it belongs to the profile lifecycle (create/delete), not the run.
+        if (!cleanupState.persistentProfile) {
+            RevokeDesktopAccess();
+            RevokeAllGrants();
+            DisableLoopback();
+        } else {
+            g_logger.Log(L"EMERGENCY_CLEANUP: skipping grant/desktop/loopback (profile-owned)");
+        }
         if (cleanupState.deleteContainerOnExit && !cleanupState.containerName.empty())
             TeardownTransientContainerForCurrentRun(cleanupState.containerName, L"EMERGENCY_CLEANUP");
         // Cleanup-task retention is ledger-driven: if any retry metadata
         // survived emergency cleanup, FinalizeCleanupTaskForCurrentRun keeps it.
         if (!g_instanceId.empty())
             FinalizeCleanupTaskForCurrentRun();
-        RestoreStaleGrants();
-        DeleteStaleCleanupTasks();
         ResetEmergencyCleanupState();
         g_logger.Log(L"EMERGENCY_CLEANUP: complete");
         g_logger.Stop();

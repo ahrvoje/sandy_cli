@@ -46,7 +46,8 @@ namespace Sandbox {
     inline std::wstring GenerateInstanceId()
     {
         GUID guid{};
-        CoCreateGuid(&guid);
+        if (FAILED(CoCreateGuid(&guid)))
+            return {};
         wchar_t buf[40];
         swprintf(buf, 40, L"%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
                  guid.Data1, guid.Data2, guid.Data3,
@@ -80,11 +81,30 @@ namespace Sandbox {
     // Normalize filesystem paths to Sandy's canonical separator style.
     // This keeps config/profile input, grant persistence, overlap checks,
     // and stale cleanup operating on one consistent path representation.
+    //
+    // P2: Resolves . and .. segments via GetFullPathNameW for absolute
+    // filesystem paths.  Without this, PathDepth/IsPathUnder miscalculate
+    // depth and ancestry for paths like C:\base\. or C:\base\..\other.
     inline std::wstring NormalizeFsPath(std::wstring path)
     {
         for (auto& ch : path) {
             if (ch == L'/') ch = L'\\';
         }
+        // Canonicalize absolute filesystem paths (drive letter or UNC)
+        // to resolve . and .. segments.  GetFullPathNameW is purely lexical
+        // for absolute paths — no filesystem I/O occurs.
+        bool isAbsFs = (path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
+                       (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\');
+        if (isAbsFs) {
+            wchar_t resolved[MAX_PATH];
+            DWORD len = GetFullPathNameW(path.c_str(), MAX_PATH, resolved, nullptr);
+            if (len > 0 && len < MAX_PATH)
+                path = resolved;
+        }
+        // Strip trailing backslashes — they break IsPathUnder prefix matching.
+        // Preserve root paths like "C:\" (3 chars: drive letter + colon + backslash).
+        while (path.size() > 3 && path.back() == L'\\')
+            path.pop_back();
         return path;
     }
 
@@ -100,7 +120,9 @@ namespace Sandbox {
     inline bool IsCrashExitCode(DWORD exitCode)
     {
         if ((exitCode & 0xF0000000) == 0xC0000000) return true;
-        if (exitCode == 3) return true;
+        if (exitCode == 0x80000003) return true;  // STATUS_BREAKPOINT
+        // Software exception codes (0xE0*): CLR (.NET) and MSVC C++ unhandled exceptions
+        if ((exitCode & 0xF0000000) == 0xE0000000) return true;
         return false;
     }
 
@@ -144,19 +166,20 @@ namespace Sandbox {
         }
     }
 
-    // Parse access level from string (case-insensitive, reverse of AccessTag)
-    inline AccessLevel ParseAccessTag(const std::wstring& s) {
-        if (_wcsicmp(s.c_str(), L"read")    == 0) return AccessLevel::Read;
-        if (_wcsicmp(s.c_str(), L"write")   == 0) return AccessLevel::Write;
-        if (_wcsicmp(s.c_str(), L"execute") == 0) return AccessLevel::Execute;
-        if (_wcsicmp(s.c_str(), L"append")  == 0) return AccessLevel::Append;
-        if (_wcsicmp(s.c_str(), L"delete")  == 0) return AccessLevel::Delete;
-        if (_wcsicmp(s.c_str(), L"all")     == 0) return AccessLevel::All;
-        if (_wcsicmp(s.c_str(), L"run")     == 0) return AccessLevel::Run;
-        if (_wcsicmp(s.c_str(), L"stat")    == 0) return AccessLevel::Stat;
-        if (_wcsicmp(s.c_str(), L"touch")   == 0) return AccessLevel::Touch;
-        if (_wcsicmp(s.c_str(), L"create")  == 0) return AccessLevel::Create;
-        return AccessLevel::Read;  // safe fallback
+    // Parse access level from string (case-insensitive, reverse of AccessTag).
+    // Returns false if the tag is unrecognized (callers must handle the error).
+    inline bool ParseAccessTag(const std::wstring& s, AccessLevel& out) {
+        if (_wcsicmp(s.c_str(), L"read")    == 0) { out = AccessLevel::Read;    return true; }
+        if (_wcsicmp(s.c_str(), L"write")   == 0) { out = AccessLevel::Write;   return true; }
+        if (_wcsicmp(s.c_str(), L"execute") == 0) { out = AccessLevel::Execute; return true; }
+        if (_wcsicmp(s.c_str(), L"append")  == 0) { out = AccessLevel::Append;  return true; }
+        if (_wcsicmp(s.c_str(), L"delete")  == 0) { out = AccessLevel::Delete;  return true; }
+        if (_wcsicmp(s.c_str(), L"all")     == 0) { out = AccessLevel::All;     return true; }
+        if (_wcsicmp(s.c_str(), L"run")     == 0) { out = AccessLevel::Run;     return true; }
+        if (_wcsicmp(s.c_str(), L"stat")    == 0) { out = AccessLevel::Stat;    return true; }
+        if (_wcsicmp(s.c_str(), L"touch")   == 0) { out = AccessLevel::Touch;   return true; }
+        if (_wcsicmp(s.c_str(), L"create")  == 0) { out = AccessLevel::Create;  return true; }
+        return false;  // unknown tag — fail closed
     }
 
     // -----------------------------------------------------------------------
@@ -170,7 +193,8 @@ namespace Sandbox {
     inline PSID AllocateInstanceSid()
     {
         GUID sidGuid{};
-        CoCreateGuid(&sidGuid);
+        if (FAILED(CoCreateGuid(&sidGuid)))
+            return nullptr;
         SID_IDENTIFIER_AUTHORITY rmAuth = { {0, 0, 0, 0, 0, 9} };
         PSID pSid = nullptr;
         if (!AllocateAndInitializeSid(&rmAuth, 4,
@@ -364,8 +388,8 @@ namespace Sandbox {
 
         void LogConfig(const SandboxConfig& config, const std::wstring& exe,
                        const std::wstring& args) {
-            if (!active) return;
             AcquireSRWLockExclusive(&lock);
+            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
 
             // --- Header ---
@@ -434,8 +458,8 @@ namespace Sandbox {
         // (LogOutput removed — console passthrough: no pipe to capture from)
 
         void Log(const wchar_t* msg) {
-            if (!active) return;
             AcquireSRWLockExclusive(&lock);
+            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
             fwprintf(logFile, L"[%s] %s\n", Timestamp().c_str(), msg);
             _commit(_fileno(logFile));
             ReleaseSRWLockExclusive(&lock);
@@ -445,7 +469,10 @@ namespace Sandbox {
         // Falls back to a fixed stack buffer for the common case, but avoids
         // silent detail loss for larger diagnostics.
         void LogFmt(const wchar_t* fmt, ...) {
-            if (!active) return;
+
+            AcquireSRWLockExclusive(&lock);
+            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
+            ReleaseSRWLockExclusive(&lock);
 
             wchar_t stackBuf[1024];
             va_list args;
@@ -485,8 +512,8 @@ namespace Sandbox {
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {
-            if (!active) return;
             AcquireSRWLockExclusive(&lock);
+            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
             fwprintf(logFile, L"[%s] --- Process Exit ---\n", ts.c_str());
             if (timedOut)

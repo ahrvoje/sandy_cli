@@ -26,11 +26,14 @@ namespace Sandbox {
 
     inline void CloseHandleIfValid(HANDLE& h)
     {
-        if (h) {
+        if (h && h != INVALID_HANDLE_VALUE) {
             CloseHandle(h);
             h = nullptr;
         }
     }
+
+    // Forward declaration — defined below, after WaitForSingleObject helpers
+    inline bool WaitForJobTreeExit(HANDLE hJob, DWORD timeoutMs);
 
     inline void AbortLaunchedChild(PROCESS_INFORMATION& pi, HANDLE& hJob,
                                    DWORD terminateCode, DWORD waitMs = 5000)
@@ -42,6 +45,11 @@ namespace Sandbox {
 
         if (pi.hProcess)
             WaitForSingleObject(pi.hProcess, waitMs);
+
+        // Wait for the entire job tree to finish dying, not just the root.
+        // TerminateJobObject is asynchronous; descendants may still be exiting.
+        if (hJob)
+            WaitForJobTreeExit(hJob, waitMs);
 
         CloseHandleIfValid(pi.hThread);
         CloseHandleIfValid(pi.hProcess);
@@ -263,7 +271,9 @@ namespace Sandbox {
     {
         auto* ctx = static_cast<TimeoutContext*>(param);
         ctx->timedOut = false;
-        if (WaitForSingleObject(ctx->hProcess, ctx->seconds * 1000) == WAIT_TIMEOUT) {
+        ULONGLONG ms64 = static_cast<ULONGLONG>(ctx->seconds) * 1000;
+        DWORD waitMs = (ms64 > INFINITE - 1) ? (INFINITE - 1) : static_cast<DWORD>(ms64);
+        if (WaitForSingleObject(ctx->hProcess, waitMs) == WAIT_TIMEOUT) {
             ctx->timedOut = true;
             if (ctx->hJob)
                 TerminateJobObject(ctx->hJob, 1);

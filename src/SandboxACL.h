@@ -17,6 +17,16 @@ namespace Sandbox {
         DenyOnly,
     };
 
+    // DACL protection intent for RemoveSidFromDaclDetailed.
+    //   PreserveExisting — keep whatever protection the DACL already has
+    //   ForceUnprotected — set UNPROTECTED_DACL (cleanup: resume inheritance)
+    //   ForceProtected   — set PROTECTED_DACL   (carve-out: block parent deny re-inheritance)
+    enum class DaclProtectionIntent {
+        PreserveExisting,
+        ForceUnprotected,
+        ForceProtected,
+    };
+
     struct AceRemovalResult {
         int   removed = 0;
         DWORD error = ERROR_SUCCESS;
@@ -40,27 +50,21 @@ namespace Sandbox {
     // single named mutex for Desktop/WinSta objects.  Mutex is auto-released
     // by the OS if the holder crashes (WAIT_ABANDONED is treated as acquired).
     // -----------------------------------------------------------------------
-    inline uint32_t Crc32Path(const std::wstring& path)
-    {
-        uint32_t crc = 0xFFFFFFFF;
-        for (wchar_t ch : path) {
-            wchar_t lc = (ch >= L'A' && ch <= L'Z') ? (ch + 32) : ch;
-            crc ^= static_cast<uint32_t>(lc);
-            for (int b = 0; b < 16; b++)
-                crc = (crc >> 1) ^ (0xEDB88320 & (~(crc & 1) + 1));
-        }
-        return ~crc;
-    }
+    // Global mutex name — one mutex serializes all Sandy DACL operations.
+    // Per-path mutexes cannot protect against SetNamedSecurityInfoW inheritance
+    // propagation (parent deep grant rewrites child DACLs under a different
+    // mutex).  A single global mutex is correct and the performance cost only
+    // affects concurrent Sandy instances, which is the exact case that needs
+    // serialization.
+    constexpr const wchar_t* kAclGlobalMutex = L"Local\\Sandy_ACL";
 
     struct AclMutexGuard
     {
         HANDLE hMutex = nullptr;
 
-        explicit AclMutexGuard(const std::wstring& path)
+        explicit AclMutexGuard(const std::wstring& /*path*/)
         {
-            wchar_t name[64];
-            swprintf_s(name, L"Local\\Sandy_FS_%08X", Crc32Path(path));
-            Acquire(name);
+            Acquire(kAclGlobalMutex);
         }
 
         explicit AclMutexGuard(const wchar_t* fixedName)
@@ -84,9 +88,9 @@ namespace Sandbox {
         {
             hMutex = CreateMutexW(nullptr, FALSE, name);
             if (hMutex) {
-                DWORD wait = WaitForSingleObject(hMutex, 5000);
+                DWORD wait = WaitForSingleObject(hMutex, INFINITE);
                 if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
-                    g_logger.LogFmt(L"ACL_MUTEX: timeout acquiring %ls", name);
+                    g_logger.LogFmt(L"ACL_MUTEX: wait failed acquiring %ls (result %lu)", name, wait);
                     CloseHandle(hMutex);
                     hMutex = nullptr;
                 }
@@ -107,7 +111,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Map access level to Win32 permission mask
+    // Map access level to Win32 file permission mask
     // -----------------------------------------------------------------------
     inline DWORD AccessMask(AccessLevel level) {
         switch (level) {
@@ -132,6 +136,23 @@ namespace Sandbox {
         case AccessLevel::Create:  return FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY |
                                           FILE_READ_ATTRIBUTES | SYNCHRONIZE;
         default:                   return 0;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Map access level to Win32 registry permission mask
+    //
+    // Registry and file permission bits are disjoint namespaces.
+    // FILE_GENERIC_READ (0x00120089) != KEY_READ (0x00020019) — using file
+    // masks for registry grants silently grants wrong bits and misses
+    // KEY_NOTIFY (0x10), causing KEY_READ opens to fail.
+    // -----------------------------------------------------------------------
+    inline DWORD RegistryAccessMask(AccessLevel level) {
+        switch (level) {
+        case AccessLevel::Read:    return KEY_READ;
+        case AccessLevel::Write:   return KEY_READ | KEY_WRITE;
+        case AccessLevel::All:     return KEY_ALL_ACCESS & ~(WRITE_DAC | WRITE_OWNER);
+        default:                   return KEY_READ;  // safe fallback
         }
     }
 
@@ -165,7 +186,9 @@ namespace Sandbox {
                                   GrantScope scope = GrantScope::Deep)
     {
         AclMutexGuard aclLock(path);
-        DWORD permissions = AccessMask(level);
+        DWORD permissions = (objType == SE_REGISTRY_KEY)
+                          ? RegistryAccessMask(level)
+                          : AccessMask(level);
 
         EXPLICIT_ACCESSW ea{};
         ea.grfAccessPermissions = permissions;
@@ -363,7 +386,7 @@ namespace Sandbox {
     inline AceRemovalResult RemoveSidFromDaclDetailed(const std::wstring& path,
                                                      const std::wstring& sidString,
                                                      SE_OBJECT_TYPE objType,
-                                                     bool wasDenied = false,
+                                                     DaclProtectionIntent protection = DaclProtectionIntent::PreserveExisting,
                                                      bool skipTreeSet = false,
                                                      AceRemovalMode removalMode = AceRemovalMode::AllForSid)
     {
@@ -477,13 +500,22 @@ namespace Sandbox {
             AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
         }
 
+        SECURITY_DESCRIPTOR_CONTROL control = 0;
+        DWORD revision = 0;
+        GetSecurityDescriptorControl(pSD, &control, &revision);
+
         LocalFree(pSD);
         LocalFree(pTargetSid);
         
         // Apply cleaned DACL
-        // If this was a deny entry, re-enable inheritance with UNPROTECTED_DACL
         DWORD siFlags = DACL_SECURITY_INFORMATION;
-        if (wasDenied) siFlags |= UNPROTECTED_DACL_SECURITY_INFORMATION;
+        if (protection == DaclProtectionIntent::ForceProtected) {
+            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
+        } else if (protection == DaclProtectionIntent::ForceUnprotected) {
+            siFlags |= UNPROTECTED_DACL_SECURITY_INFORMATION;
+        } else if (control & SE_DACL_PROTECTED) {
+            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
+        }
 
         DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
         bool isDir = (objType == SE_FILE_OBJECT)
@@ -507,6 +539,8 @@ namespace Sandbox {
                 SECURITY_DESCRIPTOR sd;
                 InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
                 SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
+                if (control & SE_DACL_PROTECTED)
+                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
                 rc = SetKernelObjectSecurity(hDir, siFlags, &sd)
                      ? ERROR_SUCCESS : GetLastError();
                 CloseHandle(hDir);
@@ -536,12 +570,12 @@ namespace Sandbox {
     inline int RemoveSidFromDacl(const std::wstring& path,
                                  const std::wstring& sidString,
                                  SE_OBJECT_TYPE objType,
-                                 bool wasDenied = false,
+                                 DaclProtectionIntent protection = DaclProtectionIntent::PreserveExisting,
                                  bool skipTreeSet = false,
                                  AceRemovalMode removalMode = AceRemovalMode::AllForSid)
     {
         return RemoveSidFromDaclDetailed(path, sidString, objType,
-                                         wasDenied, skipTreeSet, removalMode).removed;
+                                         protection, skipTreeSet, removalMode).removed;
     }
 
 } // namespace Sandbox

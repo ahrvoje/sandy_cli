@@ -27,25 +27,29 @@ inline int HandleStatus(bool json = false)
     std::vector<std::wstring> profiles;
     int staleInstances = 0;
 
-    // Grants registry
+    // Grants registry -- P1: snapshot subkey names first to avoid index-shift races.
     HKEY hGrants = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
                       KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
         DWORD n = 0;
         RegQueryInfoKeyW(hGrants, 0, 0, 0, &n, 0, 0, 0, 0, 0, 0, 0);
+        std::vector<std::wstring> grantKeys;
         for (DWORD i = 0; i < n; i++) {
             wchar_t nm[128]; DWORD nl = 128;
-            if (RegEnumKeyExW(hGrants, i, nm, &nl, 0, 0, 0, 0) != ERROR_SUCCESS) continue;
-            std::wstring fk = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + nm;
+            if (RegEnumKeyExW(hGrants, i, nm, &nl, 0, 0, 0, 0) == ERROR_SUCCESS)
+                grantKeys.push_back(nm);
+        }
+        RegCloseKey(hGrants);
+        for (const auto& gk : grantKeys) {
+            std::wstring fk = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + gk;
             HKEY hS = nullptr; DWORD pid = 0; ULONGLONG ct = 0;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fk.c_str(), 0, KEY_READ, &hS) == ERROR_SUCCESS) {
                 Sandbox::ReadPidAndCtime(hS, pid, ct); RegCloseKey(hS);
             }
             bool alive = Sandbox::IsProcessAlive(pid, ct);
             if (!alive) staleInstances++;
-            insts.push_back({ nm, pid, alive });
+            insts.push_back({ gk, pid, alive });
         }
-        RegCloseKey(hGrants);
     }
 
     tasks = ListCleanupTasks();
@@ -208,6 +212,8 @@ inline int HandleExplain(const wchar_t* codeStr)
         { 0xC0000135, "STATUS_DLL_NOT_FOUND" },
         { 0xC0000142, "STATUS_DLL_INIT_FAILED" },
         { 0x40010004, "STATUS_DEBUGGER_INACTIVE" },
+        { 0xE0434352, "CLR unhandled exception (.NET)" },
+        { 0xE06D7363, "MSVC C++ unhandled exception (throw without catch)" },
     };
     for (auto& c : crashCodes) {
         if (c.code == dw) {
@@ -247,7 +253,7 @@ inline int HandleExplain(const wchar_t* codeStr)
 
     // Additional context for NTSTATUS range
     if (dw >= 0x80000000)
-        printf("  (NTSTATUS range: 0x8* = warning, 0xC* = error/crash)\n");
+        printf("  (NTSTATUS range: 0x8* = warning, 0xC* = error/crash, 0xE* = software exception)\n");
     else if (code >= 1 && code <= 124)
         printf("  (In Sandy: this would be the child process's own exit code)\n");
 

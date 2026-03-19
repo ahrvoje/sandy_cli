@@ -1,0 +1,9 @@
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+
+[allow.deep]
+read = ['C:\\repos\\sandy_cli\\scratch_acl_test']
+
+[environment]
+inherit = true

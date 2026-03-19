@@ -495,9 +495,33 @@ namespace Sandbox {
         }
         CloseHandle(hFile);
 
-        int wideLen = MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
+        // Reject files with a BOM — Sandy requires clean UTF-8 (no BOM).
+        // UTF-8 BOM (EF BB BF) passes through MultiByteToWideChar as U+FEFF,
+        // invisibly corrupting the first token and causing cryptic parse errors.
+        if (bytesRead >= 3 &&
+            static_cast<unsigned char>(buf[0]) == 0xEF &&
+            static_cast<unsigned char>(buf[1]) == 0xBB &&
+            static_cast<unsigned char>(buf[2]) == 0xBF) {
+            fprintf(stderr, "Error: Config file starts with a UTF-8 BOM (byte order mark).\n");
+            fprintf(stderr, "  Sandy requires clean UTF-8 without a BOM. Re-save the file as 'UTF-8' (not 'UTF-8 with BOM').\n");
+            SandboxConfig cfg; cfg.parseError = true; return cfg;
+        }
+        // UTF-16 LE (FF FE) or UTF-16 BE (FE FF) — wrong encoding entirely.
+        if (bytesRead >= 2 &&
+            ((static_cast<unsigned char>(buf[0]) == 0xFF && static_cast<unsigned char>(buf[1]) == 0xFE) ||
+             (static_cast<unsigned char>(buf[0]) == 0xFE && static_cast<unsigned char>(buf[1]) == 0xFF))) {
+            fprintf(stderr, "Error: Config file appears to be UTF-16 encoded.\n");
+            fprintf(stderr, "  Sandy requires plain UTF-8. Re-save the file as 'UTF-8' (not 'Unicode' or 'UTF-16').\n");
+            SandboxConfig cfg; cfg.parseError = true; return cfg;
+        }
+
+        int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
+        if (wideLen == 0) {
+            fprintf(stderr, "Error: Config file contains invalid UTF-8 byte sequences.\n");
+            SandboxConfig cfg; cfg.parseError = true; return cfg;
+        }
         std::wstring content(wideLen, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
 
         return ParseConfig(content);
     }

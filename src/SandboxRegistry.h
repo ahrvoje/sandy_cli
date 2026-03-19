@@ -31,12 +31,17 @@ namespace Sandbox {
 
     inline std::wstring ReadRegSz(HKEY hKey, const wchar_t* name)
     {
-        DWORD size = 0;
-        if (RegQueryValueExW(hKey, name, nullptr, nullptr, nullptr, &size) != ERROR_SUCCESS)
+        DWORD size = 0, type = 0;
+        if (RegQueryValueExW(hKey, name, nullptr, &type, nullptr, &size) != ERROR_SUCCESS)
+            return {};
+        if (type != REG_SZ && type != REG_EXPAND_SZ)
+            return {};
+        if (size < sizeof(wchar_t))
             return {};
         std::wstring val(size / sizeof(wchar_t), L'\0');
-        RegQueryValueExW(hKey, name, nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&val[0]), &size);
+        if (RegQueryValueExW(hKey, name, nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&val[0]), &size) != ERROR_SUCCESS)
+            return {};
         while (!val.empty() && val.back() == L'\0') val.pop_back();
         return val;
     }
@@ -64,9 +69,11 @@ namespace Sandbox {
 
     inline DWORD ReadRegDword(HKEY hKey, const wchar_t* name, DWORD defaultVal = 0)
     {
-        DWORD val = 0, size = sizeof(val);
-        if (RegQueryValueExW(hKey, name, nullptr, nullptr,
+        DWORD val = 0, size = sizeof(val), type = 0;
+        if (RegQueryValueExW(hKey, name, nullptr, &type,
                              reinterpret_cast<BYTE*>(&val), &size) != ERROR_SUCCESS)
+            return defaultVal;
+        if (type != REG_DWORD)
             return defaultVal;
         return val;
     }

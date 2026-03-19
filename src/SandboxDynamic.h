@@ -175,7 +175,10 @@ namespace Sandbox {
             : path;
 
         // Remove ACEs from the object DACL
-        int removed = RemoveSidFromDacl(normalizedPath, sidStr, objType, hadDeny, peekOnly);
+        int removed = RemoveSidFromDacl(normalizedPath, sidStr, objType,
+                                         hadDeny ? DaclProtectionIntent::ForceUnprotected
+                                                 : DaclProtectionIntent::PreserveExisting,
+                                         peekOnly);
         bool targetExists = false;
         if (objType == SE_FILE_OBJECT) {
             DWORD attrs = GetFileAttributesW(normalizedPath.c_str());

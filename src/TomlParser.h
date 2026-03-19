@@ -81,15 +81,31 @@ inline std::wstring StripQuotes(const std::wstring& val, bool& error) {
         }
         return val;
     }
-    if ((val.front() == L'"'  && val.back() == L'"') ||
-        (val.front() == L'\'' && val.back() == L'\''))
-    {
-        bool isDQ = (val.front() == L'"');
-        std::wstring inner = val.substr(1, val.size() - 2);
-        return isDQ ? UnescapeDQ(inner) : inner;
-    }
     if (val.front() == L'"' || val.front() == L'\'') {
-        error = true;
+        bool isDQ = (val.front() == L'"');
+        // Find real closing quote (respecting escape sequences in DQ strings)
+        size_t closePos = std::wstring::npos;
+        if (isDQ) {
+            for (size_t i = 1; i < val.size(); i++) {
+                if (val[i] == L'\\') { i++; continue; }
+                if (val[i] == L'"') { closePos = i; break; }
+            }
+        } else {
+            closePos = val.find(L'\'', 1);
+        }
+        if (closePos == std::wstring::npos) {
+            error = true;
+            return val;
+        }
+        // P2: Reject trailing garbage after closing quote
+        for (size_t i = closePos + 1; i < val.size(); i++) {
+            if (val[i] != L' ' && val[i] != L'\t') {
+                error = true;
+                return val;
+            }
+        }
+        std::wstring inner = val.substr(1, closePos - 1);
+        return isDQ ? UnescapeDQ(inner) : inner;
     }
     return val;
 }
@@ -97,10 +113,17 @@ inline std::wstring StripQuotes(const std::wstring& val, bool& error) {
 // -----------------------------------------------------------------------
 // Extract all quoted strings from text (for array parsing).
 // Handles both 'literal' and "basic" TOML strings.
+// P1: Validates comma separators between elements — adjacent quoted
+// strings without a comma (e.g. ['a' 'b']) are rejected.
 // -----------------------------------------------------------------------
-inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text) {
+inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text,
+                                                      bool* unterminated = nullptr,
+                                                      bool* missingComma = nullptr) {
     std::vector<std::wstring> result;
+    if (unterminated) *unterminated = false;
+    if (missingComma) *missingComma = false;
     size_t pos = 0;
+    size_t prevQend = std::wstring::npos;  // end of previous quoted string
     while (pos < text.size()) {
         auto sq = text.find(L'\'', pos);
         auto dq = text.find(L'"', pos);
@@ -108,6 +131,18 @@ inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text) 
 
         bool isSingle = (sq != std::wstring::npos && (dq == std::wstring::npos || sq < dq));
         size_t qstart = isSingle ? sq : dq;
+
+        // P1: Validate comma between previous element and this one
+        if (prevQend != std::wstring::npos) {
+            bool foundComma = false;
+            for (size_t i = prevQend + 1; i < qstart; i++) {
+                if (text[i] == L',') { foundComma = true; break; }
+            }
+            if (!foundComma) {
+                if (missingComma) *missingComma = true;
+                break;
+            }
+        }
 
         // Find closing quote — for DQ strings, skip escaped quotes (\")
         size_t qend = std::wstring::npos;
@@ -119,11 +154,16 @@ inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text) 
         } else {
             qend = text.find(L'\'', qstart + 1);
         }
-        if (qend == std::wstring::npos) break;
+        if (qend == std::wstring::npos) {
+            // Unterminated string element — flag the error
+            if (unterminated) *unterminated = true;
+            break;
+        }
 
         std::wstring s = text.substr(qstart + 1, qend - qstart - 1);
         if (!isSingle) s = UnescapeDQ(s);
         result.push_back(s);
+        prevQend = qend;
         pos = qend + 1;
     }
     return result;
@@ -144,13 +184,19 @@ inline std::wstring Trim(const std::wstring& s) {
 // -----------------------------------------------------------------------
 inline std::wstring StripInlineComment(const std::wstring& line) {
     if (line.empty()) return line;
-    if (line.front() == L'"' || line.front() == L'\'') return line;
+    // P2: removed early-return for quote-leading lines — the quote-tracking
+    // loop below already handles them correctly and the early-return caused
+    // multi-line array continuation lines ('path', # comment) to keep the
+    // # comment text, which later aborted parsing.
     bool inQuote = false;
     wchar_t quoteChar = 0;
     for (size_t i = 0; i < line.size(); i++) {
         if (!inQuote && (line[i] == L'\'' || line[i] == L'"')) {
             inQuote = true;
             quoteChar = line[i];
+        } else if (inQuote && quoteChar == L'"' && line[i] == L'\\') {
+            // P2: skip escaped character in DQ strings so \" doesn't toggle state
+            i++;
         } else if (inQuote && line[i] == quoteChar) {
             inQuote = false;
         } else if (!inQuote && line[i] == L'#') {
@@ -169,7 +215,15 @@ inline std::wstring ConvertLiteralNewlines(const std::wstring& s) {
     bool inSQ = false, inDQ = false;
     for (size_t i = 0; i < s.size(); i++) {
         if (!inDQ && s[i] == L'\'')  { inSQ = !inSQ; out += s[i]; }
-        else if (!inSQ && s[i] == L'"') { inDQ = !inDQ; out += s[i]; }
+        else if (!inSQ && s[i] == L'"') {
+            // Count consecutive backslashes before this quote.
+            // Odd count = escaped quote (\"); even count = real quote (\\").
+            size_t bsCount = 0;
+            size_t j = i;
+            while (j > 0 && s[j - 1] == L'\\') { bsCount++; j--; }
+            if (bsCount % 2 == 0) inDQ = !inDQ;
+            out += s[i];
+        }
         else if (!inSQ && !inDQ &&
                  s[i] == L'\\' && i + 1 < s.size() && s[i + 1] == L'n') {
             out += L'\n';
@@ -239,11 +293,62 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
                 if (!contLine.empty() && contLine.back() == L'\r') contLine.pop_back();
                 contLine = Trim(contLine);
                 if (contLine.empty() || contLine[0] == L'#') continue;
+                contLine = StripInlineComment(contLine);
+                if (contLine.empty()) continue;
                 arrayText += L' ' + contLine;
                 if (contLine.find(L']') != std::wstring::npos) closed = true;
             }
 
-            tv.arr = ExtractQuotedStrings(arrayText);
+            if (!closed) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Unterminated array for key '%ls' (missing ']')", key.c_str());
+                result.errors.push_back(buf);
+            }
+
+            bool unterminatedStr = false;
+            bool missingComma = false;
+            tv.arr = ExtractQuotedStrings(arrayText, &unterminatedStr, &missingComma);
+            if (unterminatedStr) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Unterminated string in array for key '%ls' (missing closing quote)", key.c_str());
+                result.errors.push_back(buf);
+            }
+            if (missingComma) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Missing comma between array elements for key '%ls'", key.c_str());
+                result.errors.push_back(buf);
+            }
+
+            // P2: Validate array syntax — reject unquoted stray tokens
+            {
+                size_t vp = 0;
+                while (vp < arrayText.size()) {
+                    wchar_t ch = arrayText[vp];
+                    if (ch == L'\'' || ch == L'"') {
+                        // Skip quoted string
+                        size_t qend = std::wstring::npos;
+                        if (ch == L'"') {
+                            for (size_t j = vp + 1; j < arrayText.size(); j++) {
+                                if (arrayText[j] == L'\\') { j++; continue; }
+                                if (arrayText[j] == L'"') { qend = j; break; }
+                            }
+                        } else {
+                            qend = arrayText.find(L'\'', vp + 1);
+                        }
+                        if (qend == std::wstring::npos) break; // unterminated already reported
+                        vp = qend + 1;
+                    } else if (ch == L'[' || ch == L']' || ch == L',' ||
+                               ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r') {
+                        vp++;
+                    } else {
+                        wchar_t buf[256];
+                        swprintf(buf, 256, L"Unexpected unquoted token in array for key '%ls'", key.c_str());
+                        result.errors.push_back(buf);
+                        break;
+                    }
+                }
+            }
+
             result.doc[currentSection][key] = tv;
         }
         else {

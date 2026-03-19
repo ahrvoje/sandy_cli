@@ -82,6 +82,12 @@ namespace Sandbox {
             });
 
         // Serialize: hidden vars first, then KEY=VALUE\0...\0
+        if (hiddenVars.empty() && env.empty()) {
+            // Empty block must still be double-NUL terminated for CreateProcess
+            block.push_back(L'\0');
+            block.push_back(L'\0');
+            return block;
+        }
         for (const auto& h : hiddenVars) {
             block.insert(block.end(), h.begin(), h.end());
             block.push_back(L'\0');
@@ -170,9 +176,14 @@ namespace Sandbox {
         fprintf(stderr, "Executable: %ls\n", exePath.c_str());
         if (!exeArgs.empty())
             fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
-        fprintf(stderr, "Folders:    %zu configured\n", config.folders.size());
+        fprintf(stderr, "Folders:    %zu configured\n", config.folders.size() + config.denyFolders.size());
         for (const auto& e : config.folders) {
             fprintf(stderr, "  [%ls] %ls\n", AccessTag(e.access), e.path.c_str());
+        }
+        if (!config.denyFolders.empty()) {
+            for (const auto& e : config.denyFolders) {
+                fprintf(stderr, "  [DENY %ls] %ls\n", AccessTag(e.access), e.path.c_str());
+            }
         }
         if (isRestricted && (!config.registryRead.empty() || !config.registryWrite.empty())) {
             fprintf(stderr, "Registry:   %zu keys\n", config.registryRead.size() + config.registryWrite.size());

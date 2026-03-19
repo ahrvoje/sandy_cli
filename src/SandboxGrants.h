@@ -204,7 +204,7 @@ namespace Sandbox {
         if (out.type == L"FILE")
             out.path = NormalizeFsPath(out.path);
         // Require absolute path (drive letter, UNC, or HKEY for registry)
-        bool isAbsolute = (out.path.size() >= 2 && iswalpha(out.path[0]) && out.path[1] == L':') ||
+        bool isAbsolute = (out.path.size() >= 3 && iswalpha(out.path[0]) && out.path[1] == L':' && out.path[2] == L'\\') ||
                           (out.path.size() >= 2 && out.path[0] == L'\\' && out.path[1] == L'\\') ||
                           (out.path.compare(0, 4, L"HKEY") == 0) ||
                           (out.path.compare(0, 13, L"CURRENT_USER\\") == 0) ||
@@ -292,6 +292,9 @@ namespace Sandbox {
     inline bool IsProcessAlive(DWORD pid, ULONGLONG storedCreationTime)
     {
         if (!pid) return false;
+        // Creation time is mandatory for identity validation (resilience.md §Liveness).
+        // Without it we cannot distinguish a reused PID from the original process.
+        if (storedCreationTime == 0) return false;
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
         if (!h) return false;
 
@@ -301,30 +304,45 @@ namespace Sandbox {
             return false;
         }
 
-        bool alive = true;
-        if (storedCreationTime != 0) {
-            FILETIME ftCreate{}, ftExit{}, ftKernel{}, ftUser{};
-            if (GetProcessTimes(h, &ftCreate, &ftExit, &ftKernel, &ftUser)) {
-                ULARGE_INTEGER li;
-                li.LowPart = ftCreate.dwLowDateTime;
-                li.HighPart = ftCreate.dwHighDateTime;
-                alive = (li.QuadPart == storedCreationTime);
-            }
+        // Creation-time match — fail closed on GetProcessTimes failure
+        FILETIME ftCreate{}, ftExit{}, ftKernel{}, ftUser{};
+        if (!GetProcessTimes(h, &ftCreate, &ftExit, &ftKernel, &ftUser)) {
+            CloseHandle(h);
+            return false;
         }
+        ULARGE_INTEGER li;
+        li.LowPart = ftCreate.dwLowDateTime;
+        li.HighPart = ftCreate.dwHighDateTime;
+        bool alive = (li.QuadPart == storedCreationTime);
         CloseHandle(h);
         return alive;
     }
 
     inline bool ReadPidAndCtime(HKEY hKey, DWORD& pid, ULONGLONG& ctime)
     {
-        pid = 0; ctime = 0;
+        // P1/R5: Check return codes — a concurrent instance may have written
+        // _pid but not yet _ctime.  Returning partial data (pid set, ctime 0)
+        // causes IsProcessAlive to reject the entry as dead, triggering
+        // false stale recovery that destroys the live instance's key.
+        DWORD tempPid = 0;
         DWORD size = sizeof(DWORD);
-        RegQueryValueExW(hKey, L"_pid", nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&pid), &size);
+        LSTATUS pidStatus = RegQueryValueExW(hKey, L"_pid", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&tempPid), &size);
+        if (pidStatus != ERROR_SUCCESS) {
+            pid = 0; ctime = 0;
+            return false;
+        }
+        ULONGLONG tempCtime = 0;
         size = sizeof(ULONGLONG);
-        RegQueryValueExW(hKey, L"_ctime", nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&ctime), &size);
-        return pid != 0;
+        LSTATUS ctimeStatus = RegQueryValueExW(hKey, L"_ctime", nullptr, nullptr,
+                         reinterpret_cast<BYTE*>(&tempCtime), &size);
+        if (ctimeStatus != ERROR_SUCCESS) {
+            pid = 0; ctime = 0;
+            return false;
+        }
+        pid = tempPid;
+        ctime = tempCtime;
+        return pid != 0 && ctime != 0;
     }
 
     // -----------------------------------------------------------------------
@@ -343,33 +361,52 @@ namespace Sandbox {
     // PersistLiveState — both paths create coordination metadata that
     // must be protected uniformly.
     // -----------------------------------------------------------------------
-    inline void HardenRegistryKeyAgainstRestricted(HKEY hKey)
+    inline bool HardenRegistryKeyAgainstRestricted(HKEY hKey)
     {
         SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
         PSID pRestricted = nullptr;
-        if (AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
+        if (!AllocateAndInitializeSid(&ntAuth, 1, SECURITY_RESTRICTED_CODE_RID,
                 0, 0, 0, 0, 0, 0, 0, &pRestricted)) {
-            EXPLICIT_ACCESSW deny{};
-            deny.grfAccessPermissions = KEY_ALL_ACCESS;
-            deny.grfAccessMode = DENY_ACCESS;
-            deny.grfInheritance = NO_INHERITANCE;
-            deny.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-            deny.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pRestricted);
-
-            PACL pOldDacl = nullptr;
-            PSECURITY_DESCRIPTOR pKeySD = nullptr;
-            if (GetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
-                    nullptr, nullptr, &pOldDacl, nullptr, &pKeySD) == ERROR_SUCCESS) {
-                PACL pNewDacl = nullptr;
-                if (SetEntriesInAclW(1, &deny, pOldDacl, &pNewDacl) == ERROR_SUCCESS) {
-                    SetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
-                        nullptr, nullptr, pNewDacl, nullptr);
-                    LocalFree(pNewDacl);
-                }
-                LocalFree(pKeySD);
-            }
-            FreeSid(pRestricted);
+            g_logger.Log(L"HARDEN_KEY: AllocateAndInitializeSid FAILED");
+            return false;
         }
+
+        EXPLICIT_ACCESSW deny{};
+        deny.grfAccessPermissions = KEY_ALL_ACCESS;
+        deny.grfAccessMode = DENY_ACCESS;
+        deny.grfInheritance = NO_INHERITANCE;
+        deny.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        deny.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pRestricted);
+
+        PACL pOldDacl = nullptr;
+        PSECURITY_DESCRIPTOR pKeySD = nullptr;
+        DWORD gsErr = GetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
+                nullptr, nullptr, &pOldDacl, nullptr, &pKeySD);
+        if (gsErr != ERROR_SUCCESS) {
+            g_logger.LogFmt(L"HARDEN_KEY: GetSecurityInfo FAILED (0x%08X)", gsErr);
+            FreeSid(pRestricted);
+            return false;
+        }
+
+        PACL pNewDacl = nullptr;
+        DWORD seErr = SetEntriesInAclW(1, &deny, pOldDacl, &pNewDacl);
+        if (seErr != ERROR_SUCCESS) {
+            g_logger.LogFmt(L"HARDEN_KEY: SetEntriesInAclW FAILED (0x%08X)", seErr);
+            LocalFree(pKeySD);
+            FreeSid(pRestricted);
+            return false;
+        }
+
+        DWORD siErr = SetSecurityInfo(hKey, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, pNewDacl, nullptr);
+        LocalFree(pNewDacl);
+        LocalFree(pKeySD);
+        FreeSid(pRestricted);
+        if (siErr != ERROR_SUCCESS) {
+            g_logger.LogFmt(L"HARDEN_KEY: SetSecurityInfo FAILED (0x%08X)", siErr);
+            return false;
+        }
+        return true;
     }
 
     inline void InitializeRunLedger(const std::wstring& containerName)
@@ -385,11 +422,10 @@ namespace Sandbox {
 
             // On first creation, store identity and protect the key
             if (disposition == REG_CREATED_NEW_KEY) {
-                DWORD pid = GetCurrentProcessId();
-                if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
-                                   reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
-                    MarkGrantTrackingFailure(L"persist _pid", regKey);
-
+                // P1/liveness: Write _ctime and _container BEFORE _pid.
+                // _pid is the commit marker — ReadPidAndCtime reads _pid
+                // first, so once _pid is visible ALL other metadata fields
+                // (_ctime, _container) are guaranteed already present.
                 ULONGLONG ct = GetCurrentProcessCreationTime();
                 if (RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
                                    reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG)) != ERROR_SUCCESS)
@@ -402,8 +438,15 @@ namespace Sandbox {
                         MarkGrantTrackingFailure(L"persist _container", regKey);
                 }
 
+                // _pid LAST — this is the commit marker.
+                DWORD pid = GetCurrentProcessId();
+                if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
+                                   reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
+                    MarkGrantTrackingFailure(L"persist _pid", regKey);
+
                 // F5/R11: Deny Restricted SID write access (shared helper)
-                HardenRegistryKeyAgainstRestricted(hKey);
+                if (!HardenRegistryKeyAgainstRestricted(hKey))
+                    MarkGrantTrackingFailure(L"harden grants key", regKey);
             }
             RegCloseKey(hKey);
         } else {
@@ -420,6 +463,16 @@ namespace Sandbox {
         std::wstring normalizedPath = (objType == SE_FILE_OBJECT)
             ? NormalizeFsPath(path)
             : path;
+
+        // P1: Registry paths containing '|' would produce malformed grant records
+        // (TYPE|PATH|SID splits fail). Fail closed: skip the record so stale
+        // cleanup doesn't silently leave an ACE behind.
+        if (objType == SE_REGISTRY_KEY && normalizedPath.find(L'|') != std::wstring::npos) {
+            g_logger.LogFmt(L"GRANT_RECORD: REJECTED registry path containing pipe: %ls", normalizedPath.c_str());
+            MarkGrantTrackingFailure(L"registry path contains pipe", normalizedPath);
+            return;
+        }
+
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
         // --- Persist to registry (live instance crash recovery) ---
@@ -518,11 +571,14 @@ namespace Sandbox {
             return false;
 
         bool ok = true;
-        DWORD pid = GetCurrentProcessId();
-        ok &= TryWriteRegDword(hKey, L"_pid", pid);
+        // P1/liveness: Write _ctime and _container BEFORE _pid.
+        // _pid is the commit marker — once visible, all metadata is present.
         ok &= TryWriteRegQword(hKey, L"_ctime", GetCurrentProcessCreationTime());
         ok &= TryWriteRegSz(hKey, L"_container", containerName);
-        HardenRegistryKeyAgainstRestricted(hKey);
+        DWORD pid = GetCurrentProcessId();
+        ok &= TryWriteRegDword(hKey, L"_pid", pid);
+        if (!HardenRegistryKeyAgainstRestricted(hKey))
+            g_logger.Log(L"TRANSIENT_CONTAINER: WARN — key hardening failed (best-effort)");
         RegCloseKey(hKey);
 
         if (ok)
@@ -559,19 +615,23 @@ namespace Sandbox {
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
             return instanceIds;
 
+        // P1: Snapshot subkey names first to avoid index-shift races.
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
                          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        std::wstring lookup = NormalizeLookupKey(containerName);
+        std::vector<std::wstring> subKeys;
         for (DWORD idx = 0; idx < subKeyCount; idx++) {
             wchar_t name[128];
             DWORD nameLen = 128;
             if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
+                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
 
-            std::wstring fullKey = GetTransientContainerRegKey(name);
+        std::wstring lookup = NormalizeLookupKey(containerName);
+        for (const auto& subKey : subKeys) {
+            std::wstring fullKey = GetTransientContainerRegKey(subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
@@ -580,9 +640,8 @@ namespace Sandbox {
             std::wstring recordedContainer = ReadRegSz(hKey, L"_container");
             RegCloseKey(hKey);
             if (NormalizeLookupKey(recordedContainer) == lookup)
-                instanceIds.push_back(name);
+                instanceIds.push_back(subKey);
         }
-        RegCloseKey(hParent);
         return instanceIds;
     }
 
@@ -702,12 +761,10 @@ namespace Sandbox {
                 0, KEY_SET_VALUE | WRITE_DAC, nullptr, &hKey, &disposition) != ERROR_SUCCESS)
             return false;
 
-        DWORD pid = GetCurrentProcessId();
         bool ok = true;
-        if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
-                           reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
-            ok = false;
-
+        // P1/liveness: Write _ctime, _container, _profile_name, and
+        // _profile_mode BEFORE _pid.  _pid is the commit marker — once
+        // visible, all metadata fields are guaranteed present.
         ULONGLONG ct = GetCurrentProcessCreationTime();
         if (RegSetValueExW(hKey, L"_ctime", 0, REG_QWORD,
                            reinterpret_cast<const BYTE*>(&ct), sizeof(ULONGLONG)) != ERROR_SUCCESS)
@@ -732,9 +789,16 @@ namespace Sandbox {
                            reinterpret_cast<const BYTE*>(&profileFlag), sizeof(DWORD)) != ERROR_SUCCESS)
             ok = false;
 
+        // _pid LAST — this is the commit marker.
+        DWORD pid = GetCurrentProcessId();
+        if (RegSetValueExW(hKey, L"_pid", 0, REG_DWORD,
+                           reinterpret_cast<const BYTE*>(&pid), sizeof(DWORD)) != ERROR_SUCCESS)
+            ok = false;
+
         // F5/R11: Harden live-state key against restricted-token tampering
         // (same protection applied to normal live grant keys in RecordGrant)
-        HardenRegistryKeyAgainstRestricted(hKey);
+        if (!HardenRegistryKeyAgainstRestricted(hKey))
+            ok = false;
 
         RegCloseKey(hKey);
         if (ok)
@@ -773,33 +837,41 @@ namespace Sandbox {
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
             return live;
 
+        // P1: Snapshot subkey names first to avoid index-shift races.
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
                          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
+        std::vector<std::wstring> subKeys;
         for (DWORD idx = 0; idx < subKeyCount; idx++) {
             wchar_t name[128];
             DWORD nameLen = 128;
             if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
+                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
 
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
+        for (const auto& subKey : subKeys) {
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
                 continue;
 
             DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (IsProcessAlive(pid, ctime)) {
+            if (!ReadPidAndCtime(hKey, pid, ctime)) {
+                // P1: Ledger commit in progress — _pid not yet written.
+                // Treat as live (fail closed) to prevent false stale recovery.
+                std::wstring container = ReadRegSz(hKey, L"_container");
+                if (!container.empty())
+                    live.insert(NormalizeLookupKey(container));
+            } else if (IsProcessAlive(pid, ctime)) {
                 std::wstring container = ReadRegSz(hKey, L"_container");
                 if (!container.empty())
                     live.insert(NormalizeLookupKey(container));
             }
             RegCloseKey(hKey);
         }
-        RegCloseKey(hParent);
         return live;
     }
 
@@ -818,35 +890,43 @@ namespace Sandbox {
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
             return live;
 
+        // P1: Snapshot subkey names first to avoid index-shift races.
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
                          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
+        std::vector<std::wstring> subKeys;
         for (DWORD idx = 0; idx < subKeyCount; idx++) {
             wchar_t name[128];
             DWORD nameLen = 128;
             if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
+                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
 
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, name);
+        for (const auto& subKey : subKeys) {
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
                 continue;
 
             DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (IsProcessAlive(pid, ctime)) {
+            if (!ReadPidAndCtime(hKey, pid, ctime)) {
+                // P1: Ledger commit in progress — treat as live (fail closed).
+                std::wstring profName = ReadRegSz(hKey, L"_profile_name");
+                if (!profName.empty())
+                    live.insert(NormalizeLookupKey(profName));
+            } else if (IsProcessAlive(pid, ctime)) {
                 std::wstring profName = ReadRegSz(hKey, L"_profile_name");
                 if (!profName.empty())
                     live.insert(NormalizeLookupKey(profName));
             }
             RegCloseKey(hKey);
         }
-        RegCloseKey(hParent);
         return live;
     }
+
 
     // -----------------------------------------------------------------------
     // GetSavedProfileContainerNames — enumerate container names from saved
@@ -865,18 +945,22 @@ namespace Sandbox {
                           KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
             return names;
 
+        // P1: Snapshot subkey names first to avoid index-shift races.
         DWORD subKeyCount = 0;
         RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
                          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
+        std::vector<std::wstring> subKeys;
         for (DWORD idx = 0; idx < subKeyCount; idx++) {
             wchar_t name[256];
             DWORD nameLen = 256;
             if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
-                continue;
+                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
 
-            std::wstring fullKey = std::wstring(profilesKey) + L"\\" + name;
+        for (const auto& subKey : subKeys) {
+            std::wstring fullKey = std::wstring(profilesKey) + L"\\" + subKey;
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) != ERROR_SUCCESS)
@@ -887,7 +971,6 @@ namespace Sandbox {
                 names.insert(NormalizeLookupKey(container));
             RegCloseKey(hKey);
         }
-        RegCloseKey(hParent);
         return names;
     }
 
@@ -927,7 +1010,9 @@ namespace Sandbox {
             // If any entry is deep, must use SetNamedSecurityInfoW to cascade.
             bool skipTree = it->wasThis && !pathsNeedingTreeSet.count(dedupKey);
             int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
-                                   it->wasDenied, skipTree);
+                                   it->wasDenied ? DaclProtectionIntent::ForceUnprotected
+                                                 : DaclProtectionIntent::PreserveExisting,
+                                   skipTree);
             removed += n;
         }
         g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed", removed);
@@ -990,7 +1075,9 @@ namespace Sandbox {
 
             bool skipTree = rec.wasThis && !deepPaths.count(dedupKey);
             AceRemovalResult removal = RemoveSidFromDaclDetailed(rec.path, rec.sidString, objType,
-                                                                 rec.wasDenied, skipTree);
+                                                                 rec.wasDenied ? DaclProtectionIntent::ForceUnprotected
+                                                                               : DaclProtectionIntent::PreserveExisting,
+                                                                 skipTree);
             if (removal.removed > 0) {
                 printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
                 continue;
@@ -1042,9 +1129,15 @@ namespace Sandbox {
         for (const auto& subKey : subKeys) {
             std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS) {
-                staleKeys.push_back({ subKey, 0 });
+            LSTATUS openResult = RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey);
+            if (openResult != ERROR_SUCCESS) {
+                if (openResult == ERROR_FILE_NOT_FOUND || openResult == ERROR_PATH_NOT_FOUND) {
+                    staleKeys.push_back({ subKey, 0 });
+                } else {
+                    g_logger.LogFmt(L"STALE_CHECK: %ls -> INACCESSIBLE (error %lu), treating as LIVE",
+                                    subKey.c_str(), (unsigned long)openResult);
+                }
                 continue;
             }
 

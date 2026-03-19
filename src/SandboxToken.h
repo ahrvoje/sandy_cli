@@ -453,4 +453,72 @@ namespace Sandbox {
         return allOk;
     }
 
+    // -----------------------------------------------------------------------
+    // RevokeDesktopAccessForSid — remove desktop/WinSta ACEs for a specific
+    // SID string.  Used by profile deletion to revoke profile-owned desktop
+    // grants without requiring the in-memory g_desktopGrants list.
+    // -----------------------------------------------------------------------
+    inline bool RevokeDesktopAccessForSid(const std::wstring& sidString)
+    {
+        if (sidString.empty()) return true;
+
+        auto removeSidAces = [](HANDLE hObj, const std::wstring& sid,
+                                const wchar_t* objName) -> bool {
+            AclMutexGuard aclLock(L"Local\\\\Sandy_Desktop");
+            PSID pTargetSid = nullptr;
+            if (!ConvertStringSidToSidW(sid.c_str(), &pTargetSid))
+                return false;
+
+            PACL pOldDacl = nullptr;
+            PSECURITY_DESCRIPTOR pSD = nullptr;
+            if (GetSecurityInfo(hObj, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                    nullptr, nullptr, &pOldDacl, nullptr, &pSD) != ERROR_SUCCESS) {
+                LocalFree(pTargetSid);
+                return false;
+            }
+
+            PACL pNewDacl = nullptr;
+            int removeCount = 0;
+            bool built = BuildAclWithoutSidAces(pOldDacl, pTargetSid, objName, pNewDacl, removeCount);
+            if (!built) {
+                LocalFree(pSD);
+                LocalFree(pTargetSid);
+                return false;
+            }
+
+            if (removeCount == 0) {
+                LocalFree(pSD);
+                LocalFree(pTargetSid);
+                return true;
+            }
+
+            DWORD rc = SetSecurityInfo(hObj, SE_WINDOW_OBJECT, DACL_SECURITY_INFORMATION,
+                          nullptr, nullptr, pNewDacl, nullptr);
+            if (rc == ERROR_SUCCESS)
+                g_logger.LogFmt(L"DESKTOP_REVOKE_PROFILE: %ls -> OK (%d ACEs removed, SID=%ls)",
+                                objName, removeCount, sid.c_str());
+            else
+                g_logger.LogFmt(L"DESKTOP_REVOKE_PROFILE: %ls -> FAILED (error %lu, SID=%ls)",
+                                objName, rc, sid.c_str());
+            LocalFree(pNewDacl);
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            return rc == ERROR_SUCCESS;
+        };
+
+        bool allOk = true;
+        HWINSTA hWinSta = GetProcessWindowStation();
+        if (hWinSta) {
+            if (!removeSidAces(hWinSta, sidString, L"WinSta0"))
+                allOk = false;
+        }
+        HDESK hDesktop = OpenDesktopW(L"Default", 0, FALSE, READ_CONTROL | WRITE_DAC);
+        if (hDesktop) {
+            if (!removeSidAces(hDesktop, sidString, L"Default"))
+                allOk = false;
+            CloseDesktop(hDesktop);
+        }
+        return allOk;
+    }
+
 } // namespace Sandbox
