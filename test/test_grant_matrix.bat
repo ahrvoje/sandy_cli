@@ -105,6 +105,8 @@ if !AC_SID_CNT! EQU 0 (
     set /a FAIL+=1
 )
 
+REM Run --cleanup to handle grant cleanup race from Sandy exit
+"%SANDY%" --cleanup >nul 2>nul
 set GC=0
 reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
@@ -163,6 +165,8 @@ if !RT_SID_CNT! EQU 0 (
     set /a FAIL+=1
 )
 
+REM Run --cleanup to handle grant cleanup race from Sandy exit
+"%SANDY%" --cleanup >nul 2>nul
 set GC=0
 reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (

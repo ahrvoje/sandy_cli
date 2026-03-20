@@ -424,33 +424,33 @@ del "%TEMP%\dr11.toml" 2>nul
 del "%TEMP%\sandy_dr11.txt" 2>nul
 
 REM ===================================================================
-REM DR12 — lan = true backward compat (maps to 'without localhost')
+REM DR12 — lan = true must be rejected (no longer accepted)
 REM ===================================================================
 echo.
-echo --- DR12: lan = true backward compat ---
+echo --- DR12: lan = true rejected ---
 
 echo [sandbox]>"%TEMP%\dr12.toml"
 echo token = 'appcontainer'>>"%TEMP%\dr12.toml"
 echo [privileges]>>"%TEMP%\dr12.toml"
 echo lan = true>>"%TEMP%\dr12.toml"
 
-"!SANDY!" --dry-run -c "%TEMP%\dr12.toml" >"%TEMP%\sandy_dr12.txt" 2>&1
+"!SANDY!" --dry-run -c "%TEMP%\dr12.toml" >nul 2>"%TEMP%\sandy_dr12.txt"
 set DR12_EC=!ERRORLEVEL!
 
-if !DR12_EC! EQU 0 (
-    echo   [PASS] DR12a: exit 0 for lan = true
+if !DR12_EC! EQU 128 (
+    echo   [PASS] DR12a: exit 128 for lan = true
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR12a: exit code !DR12_EC!
+    echo   [FAIL] DR12a: exit code !DR12_EC! (expected 128^)
     set /a FAIL+=1
 )
 
-findstr /C:"'without localhost'" "%TEMP%\sandy_dr12.txt" >nul 2>nul
+findstr /C:"Invalid value" "%TEMP%\sandy_dr12.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] DR12b: lan=true maps to 'without localhost'
+    echo   [PASS] DR12b: lan=true rejected with invalid value error
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR12b: lan=true did not map to 'without localhost'
+    echo   [FAIL] DR12b: Missing invalid value error message
     set /a FAIL+=1
 )
 

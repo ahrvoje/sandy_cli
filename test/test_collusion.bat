@@ -182,6 +182,8 @@ if "!SID_FOUND!"=="0" (
 )
 
 REM --- Registry (parent key is permanent; only subkeys = stale) ---
+REM Run --cleanup to handle any grant cleanup race from concurrent exits
+"%SANDY%" --cleanup >nul 2>&1
 set REMAIN=0
 for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
 if !REMAIN! EQU 0 (

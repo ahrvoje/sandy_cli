@@ -54,7 +54,11 @@ REM Test 3: Stale Grants entry detected by --status
 REM ===================================================================
 echo.
 echo --- Test 3: Stale grant detection ---
-reg add "HKCU\Software\Sandy\Grants\99999" /v 0 /t REG_SZ /d "FILE|C:\fake|S-1-5-21-0-0-0-99999" /f >nul 2>nul
+REM Inject stale entry in new format with _pid, _ctime, _container metadata
+reg add "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /v _pid /t REG_DWORD /d 99999 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /v _container /t REG_SZ /d "Sandy_dead-test" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /v 0 /t REG_SZ /d "FILE|C:\fake|D:(A;;FA;;;WD)" /f >nul 2>nul
 "!SANDY!" --status >"%TEMP%\sandy_status_warn.txt" 2>nul
 
 findstr /C:"STALE" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
@@ -66,7 +70,7 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-findstr /C:"99999" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
+findstr /C:"dead-test" "%TEMP%\sandy_status_warn.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Status identifies stale instance ID
     set /a PASS+=1
@@ -81,7 +85,7 @@ REM Test 4: --cleanup clears stale Grants
 REM ===================================================================
 echo.
 echo --- Test 4: --cleanup clears stale grants ---
-reg query "HKCU\Software\Sandy\Grants\99999" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale grants key exists before cleanup
     set /a PASS+=1
@@ -92,7 +96,7 @@ if !ERRORLEVEL! EQU 0 (
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Grants\99999" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Grants key removed after --cleanup
     set /a PASS+=1
@@ -100,6 +104,9 @@ if !ERRORLEVEL! NEQ 0 (
     echo   [FAIL] Grants key still exists after --cleanup
     set /a FAIL+=1
 )
+
+REM Force-delete so it does not leak into later tests
+reg delete "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /f >nul 2>nul
 
 REM ===================================================================
 REM Test 6: --cleanup is idempotent (running twice is safe)

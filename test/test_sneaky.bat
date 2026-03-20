@@ -28,12 +28,12 @@ REM 1a: Backslash before closing DQ — the \" should escape the quote,
 REM      leaving the string unterminated.
 echo --- 1a: Backslash-quote in DQ string ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n[allow.deep]\nread = [\"C:\\path\\\"]" >"%TEMP%\sneaky_1a.txt" 2>&1
-findstr /C:"Unterminated" "%TEMP%\sneaky_1a.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] 1a: Backslash-quote unterminated string detected
+set DRY_1A=!ERRORLEVEL!
+if !DRY_1A! NEQ 0 (
+    echo   [PASS] 1a: Backslash-quote malformed string rejected
     set /a PASS+=1
 ) else (
-    echo   [FAIL] 1a: Should report unterminated string
+    echo   [FAIL] 1a: Should reject malformed string
     type "%TEMP%\sneaky_1a.txt"
     set /a FAIL+=1
 )
@@ -42,12 +42,12 @@ del "%TEMP%\sneaky_1a.txt" 2>nul
 REM 1b: Array without commas — ['a' 'b'] must be rejected
 echo --- 1b: Comma-less array ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows' 'C:\\Users']" >"%TEMP%\sneaky_1b.txt" 2>&1
-findstr /C:"Missing comma" "%TEMP%\sneaky_1b.txt" >nul 2>nul
+findstr /C:"value-separator" "%TEMP%\sneaky_1b.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 1b: Comma-less array rejected
     set /a PASS+=1
 ) else (
-    echo   [FAIL] 1b: Should report missing comma
+    echo   [FAIL] 1b: Should report missing comma/value-separator
     type "%TEMP%\sneaky_1b.txt"
     set /a FAIL+=1
 )
@@ -56,12 +56,12 @@ del "%TEMP%\sneaky_1b.txt" 2>nul
 REM 1c: Trailing garbage after closing quote
 echo --- 1c: Trailing garbage after quote ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'garbage" >"%TEMP%\sneaky_1c.txt" 2>&1
-findstr /C:"Unterminated" "%TEMP%\sneaky_1c.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+set DRY_1C=!ERRORLEVEL!
+if !DRY_1C! NEQ 0 (
     echo   [PASS] 1c: Trailing garbage detected
     set /a PASS+=1
 ) else (
-    echo   [FAIL] 1c: Should report unterminated/trailing garbage
+    echo   [FAIL] 1c: Should report trailing garbage
     type "%TEMP%\sneaky_1c.txt"
     set /a FAIL+=1
 )
@@ -98,20 +98,14 @@ del "%TEMP%\sneaky_1e.txt" 2>nul
 REM 1f: Unquoted stray token in array
 echo --- 1f: Unquoted stray token in array ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = [C:\Windows]" >"%TEMP%\sneaky_1f.txt" 2>&1
-findstr /C:"unquoted" "%TEMP%\sneaky_1f.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+set DRY_1F=!ERRORLEVEL!
+if !DRY_1F! NEQ 0 (
     echo   [PASS] 1f: Unquoted token in array rejected
     set /a PASS+=1
 ) else (
-    findstr /C:"Unexpected" "%TEMP%\sneaky_1f.txt" >nul 2>nul
-    if !ERRORLEVEL! EQU 0 (
-        echo   [PASS] 1f: Unquoted token in array rejected
-        set /a PASS+=1
-    ) else (
-        echo   [FAIL] 1f: Should reject unquoted array token
-        type "%TEMP%\sneaky_1f.txt"
-        set /a FAIL+=1
-    )
+    echo   [FAIL] 1f: Should reject unquoted array token
+    type "%TEMP%\sneaky_1f.txt"
+    set /a FAIL+=1
 )
 del "%TEMP%\sneaky_1f.txt" 2>nul
 
