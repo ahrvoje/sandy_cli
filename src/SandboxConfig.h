@@ -2,12 +2,13 @@
 // SandboxConfig.h — Configuration loading and validation
 //
 // Maps TOML documents to SandboxConfig, loads config from files/strings.
+// TOML parsing is handled by toml11 via TomlAdapter.h.
 // Also provides utility function: GetInheritedWorkdir.
 // =========================================================================
 #pragma once
 
 #include "SandboxTypes.h"
-#include "TomlParser.h"
+#include "TomlAdapter.h"
 #include <set>
 
 namespace Sandbox {
@@ -552,9 +553,10 @@ namespace Sandbox {
             SandboxConfig cfg; cfg.parseError = true; return cfg;
         }
         CloseHandle(hFile);
+        buf.resize(bytesRead);
 
         // Reject files with a BOM — Sandy requires clean UTF-8 (no BOM).
-        // UTF-8 BOM (EF BB BF) passes through MultiByteToWideChar as U+FEFF,
+        // UTF-8 BOM (EF BB BF) passes through to toml11 as U+FEFF,
         // invisibly corrupting the first token and causing cryptic parse errors.
         if (bytesRead >= 3 &&
             static_cast<unsigned char>(buf[0]) == 0xEF &&
@@ -573,15 +575,15 @@ namespace Sandbox {
             SandboxConfig cfg; cfg.parseError = true; return cfg;
         }
 
+        // Validate UTF-8 integrity before passing to toml11
         int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), static_cast<int>(bytesRead), nullptr, 0);
         if (wideLen == 0) {
             fprintf(stderr, "Error: Config file contains invalid UTF-8 byte sequences.\n");
             SandboxConfig cfg; cfg.parseError = true; return cfg;
         }
-        std::wstring content(wideLen, L'\0');
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), static_cast<int>(bytesRead), &content[0], wideLen);
 
-        return ParseConfig(content);
+        // Pass UTF-8 bytes directly to toml11 — no wstring round-trip needed
+        return MapConfig(Toml::ParseUtf8(buf));
     }
 
 } // namespace Sandbox

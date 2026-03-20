@@ -35,6 +35,24 @@ documented there are **settled facts, not suggestions**. If a design here says
 - This is non-negotiable: UTF-16 files break `findstr`, `type`, `cat`, `grep`,
   and every standard text-processing tool.
 
+# Dependencies
+
+| Dependency | Version | Type | Path | License |
+|------------|---------|------|------|---------|
+| **toml11** | 4.4.0 | Header-only (C++11+) | `../toml11/include` | MIT |
+
+toml11 is Sandy's **only external dependency**.  It provides spec-compliant
+TOML 1.0 parsing, replacing the former hand-rolled subset parser.
+
+- Included via `AdditionalIncludeDirectories` in `sandy.vcxproj`.
+- The adapter layer (`TomlAdapter.h`) translates between toml11's
+  `std::string` (UTF-8) types and Sandy's `std::wstring` types.
+- toml11 creates nested tables for dotted section headers like `[allow.deep]`.
+  The adapter flattens them back into dotted names so the config mapper is
+  unchanged.
+- `ConvertLiteralNewlines()` (for `-s` mode) is preserved in the adapter
+  because it is non-standard TOML behavior.
+
 # Ownership Model — Profile First
 
 Sandy has **two ownership scopes**, and code must keep them separate:
@@ -88,6 +106,10 @@ App. Packages (`ALL APPLICATION PACKAGES`) for stricter default access.
   references, and “future work” sections that still describe it as active.
 
 # TOML Configuration — Optional Defaults
+
+TOML parsing is handled by **toml11** (spec-compliant TOML 1.0) via
+`TomlAdapter.h`.  The adapter preserves the same `Toml::` types consumed by
+`MapConfig()` in `SandboxConfig.h`.
 
 Most TOML settings are **optional** with restrictive defaults. Only `[sandbox]`
 and `token` are always mandatory. Omitting a field **never grants more access**.
@@ -236,3 +258,6 @@ The only reliable build command is:
 - Output: `x64\Release\sandy.exe`.
 - **Do not** use `devenv`, `cl.exe`, `cmake`, or bare `msbuild`.
 - **Do not** wrap the build in `cmd /c`.
+- **Include path:** `../toml11/include` is set in `sandy.vcxproj` via
+  `AdditionalIncludeDirectories`.  The toml11 repo must be a sibling of
+  `sandy_cli` in the filesystem.
