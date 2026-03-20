@@ -184,3 +184,37 @@ Any change touching recovery or durable ownership should be reasoned about under
 - startup recovery after previous partial failure
 
 If the change only works for the happy path, it is not finished.
+
+---
+
+## Console Handler Cleanup Strategy
+
+Windows console close, logoff, and shutdown handlers are deadline-limited
+(~5 seconds before the OS terminates the process). Sandy's full cleanup
+(child termination wait + ACL revocation + loopback removal + container
+teardown) can exceed this window.
+
+Additionally, once `user32.dll` or `gdi32.dll` is loaded, Windows does
+**not** call `SetConsoleCtrlHandler` for `CTRL_LOGOFF_EVENT` or
+`CTRL_SHUTDOWN_EVENT`.  Sandy loads `user32` implicitly via desktop ACL
+APIs (`GetProcessWindowStation`, `OpenDesktopW`) during restricted-token
+runs.
+
+| Signal | Cleanup | Rationale |
+|--------|---------|-----------|
+| `CTRL_C_EVENT` | Full `CleanupSandbox()` | No OS deadline |
+| `CTRL_BREAK_EVENT` | Full `CleanupSandbox()` | No OS deadline |
+| `CTRL_CLOSE_EVENT` | Terminate child only | Deadline-limited; defer rest to recovery |
+| `CTRL_LOGOFF_EVENT` | Log only | Handler may not fire; deadline applies if it does |
+| `CTRL_SHUTDOWN_EVENT` | Log only | Same as logoff |
+
+Stale-state recovery on the next Sandy invocation (`BeginRunSession`)
+handles everything that was deferred: stale grants, orphaned containers,
+leftover cleanup tasks, and incomplete staging profiles.
+
+The per-instance ONLOGON cleanup task (`SandyCleanup_<uuid>`) is
+**intentionally retained** for deadline-limited and unreliable signals.
+It fires on next logon and runs `sandy.exe --cleanup`, ensuring deferred
+state is cleaned even if the user never manually runs Sandy again.
+
+**Do not** add full synchronous cleanup to deadline-limited signal paths.

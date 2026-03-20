@@ -14,7 +14,25 @@ constexpr const char* kVersion = "0.997";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
-// Console control handler — cleanup on Ctrl+C, Ctrl+Break, window close
+// Console control handler — signal-aware cleanup strategy.
+//
+// CTRL_C / CTRL_BREAK: no OS-imposed deadline → full CleanupSandbox().
+//
+// CTRL_CLOSE_EVENT: Windows imposes a short timeout (~5 s) before
+//   killing the process.  Sandy's full cleanup (child-kill wait + ACL
+//   revocation + loopback + container teardown) can exceed this
+//   deadline.  We terminate the child process/job (fast, security-
+//   critical) but skip the rest.  The per-instance ONLOGON cleanup
+//   task (SandyCleanup_<uuid>) is intentionally left in place so it
+//   fires on next logon and completes deferred cleanup via --cleanup.
+//
+// CTRL_LOGOFF / CTRL_SHUTDOWN: unreliable once user32.dll is loaded
+//   (MSDN: SetConsoleCtrlHandler is not called for logoff/shutdown
+//   after user32 or gdi32 are in the process).  Sandy loads user32
+//   implicitly via desktop ACL APIs (GetProcessWindowStation,
+//   OpenDesktopW) during restricted-token runs.  If the handler does
+//   fire, the same deadline constraint as CTRL_CLOSE applies, so we
+//   log only and defer entirely to recovery.
 // -----------------------------------------------------------------------
 static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
 {
@@ -24,7 +42,38 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
                            ctrlType == CTRL_LOGOFF_EVENT ? L"CTRL_LOGOFF" :
                            ctrlType == CTRL_SHUTDOWN_EVENT ? L"CTRL_SHUTDOWN" : L"UNKNOWN";
     g_logger.LogFmt(L"SIGNAL: %s (code=%lu)", name, ctrlType);
-    CleanupSandbox();
+
+    switch (ctrlType) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+        // No OS deadline — full synchronous cleanup is safe.
+        CleanupSandbox();
+        break;
+
+    case CTRL_CLOSE_EVENT:
+        // Deadline-limited: terminate child (fast), defer rest to recovery.
+        // Cleanup task intentionally retained — fires on next logon.
+        g_logger.Log(L"SIGNAL: deadline-limited close — terminating child, deferring cleanup to recovery");
+        if (HANDLE hJob = g_childJob) {
+            TerminateJobObject(hJob, 1);
+        } else if (HANDLE hChild = g_childProcess) {
+            TerminateProcess(hChild, 1);
+        }
+        g_logger.Stop();
+        break;
+
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        // May not fire at all (user32 loaded); if it does, deadline applies.
+        // Log only — cleanup task stays, stale recovery handles everything.
+        g_logger.Log(L"SIGNAL: logoff/shutdown — deferring cleanup to recovery");
+        g_logger.Stop();
+        break;
+
+    default:
+        break;
+    }
+
     return FALSE;  // let default handler terminate the process
 }
 
