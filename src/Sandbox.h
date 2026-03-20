@@ -432,6 +432,22 @@ namespace Sandbox {
             // Warn about immutable setting changes
             WarnImmutableChanges(ctx->currentConfig, newConfig);
 
+            // P1: Sanitize reloaded config — force immutable fields back to
+            // the original values.  Without this, changing token from
+            // 'appcontainer' to 'restricted' in the config file would cause
+            // BuildGrantKeySet to include deny entries, which DenyObjectAccess
+            // then stamps onto the DACL with D:PAI — a real host-state
+            // regression even though the kernel ignores the DENY ACEs.
+            newConfig.tokenMode  = ctx->currentConfig.tokenMode;
+            newConfig.integrity  = ctx->currentConfig.integrity;
+            newConfig.strict     = ctx->currentConfig.strict;
+            if (ctx->isAppContainer) {
+                // AC mode: deny and registry are invalid — strip them
+                newConfig.denyFolders.clear();
+                newConfig.registryRead.clear();
+                newConfig.registryWrite.clear();
+            }
+
             // ---- File/folder grant delta ----
             std::set<GrantKey> newKeys = BuildGrantKeySet(newConfig);
 
@@ -836,6 +852,9 @@ namespace Sandbox {
             g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
         } else {
             InitializeRunLedger(containerName);
+            // P2: Create cleanup task AFTER the ledger exists so concurrent
+            // DeleteStaleCleanupTasks won't discard our freshly created task.
+            CreateCleanupTask(g_instanceId);
             ULONGLONG tGrantStart = GetTickCount64();
             ResetGrantTrackingHealth();
             guard.Add([]() { RevokeAllGrants(); });
@@ -882,7 +901,7 @@ namespace Sandbox {
         }
 
         // [AC] Loopback
-        if (isAppContainer && config.allowLocalhost) {
+        if (isAppContainer && config.lanMode == LanMode::WithLocalhost) {
             if (identity.persistentProfile) {
                 g_logger.Log(L"LOOPBACK: using profile-owned exemption (no per-run check)");
             } else {
@@ -903,6 +922,12 @@ namespace Sandbox {
         SECURITY_CAPABILITIES sc{};
         if (isAppContainer) {
             caps = BuildCapabilities(config);
+            // P3: Abort if any requested capability SID failed to allocate.
+            if (caps.failed) {
+                g_logger.Log(L"ERROR: capability SID allocation failed — aborting before launch");
+                FreeCapabilities(caps);
+                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (capability failure)");
+            }
             sc.AppContainerSid = pSid;
             sc.Capabilities = caps.capCount > 0 ? caps.caps : nullptr;
             sc.CapabilityCount = caps.capCount;
@@ -1165,7 +1190,8 @@ namespace Sandbox {
         RestoreStaleGrants();
         DeleteStaleCleanupTasks();
         WarnStaleRegistryEntries();
-        CreateCleanupTask(g_instanceId);
+        // P2: CreateCleanupTask moved to after ledger is established
+        // (InitializeRunLedger for transient, PersistLiveState for profile)
         LogSandyIdentity();
         g_logger.Log((L"INSTANCE: " + g_instanceId).c_str());
         if (!profileName.empty())

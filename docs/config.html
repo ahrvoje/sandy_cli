@@ -249,8 +249,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
         <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
-          <tr><td>localhost</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Loopback TCP. Requires admin (uses CheckNetIsolation.exe).</td></tr>
-          <tr><td>lan</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN access. RT mode: always allowed.</td></tr>
+          <tr><td>lan</td><td>bool / string</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN + loopback. <code>false</code> · <code>true</code> (LAN only) · <code>'with localhost'</code> · <code>'without localhost'</code>. Requires admin for loopback.</td></tr>
           <tr><td>named_pipes</td><td>bool</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Allow CreateNamedPipeW. Required for Flutter, Chromium, Bun/Node IPC.</td></tr>
           <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; path=redirect from file</td></tr>
@@ -340,7 +339,6 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
-          <tr><td>&ensp;localhost</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;named_pipes</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;desktop</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>

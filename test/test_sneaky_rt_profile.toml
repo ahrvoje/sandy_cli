@@ -1,0 +1,45 @@
+# Sneaky RT profile config — exercises all 10 access levels in mixed scopes,
+# registry, environment, all privilege booleans, and strict mode.
+# NO deny entries since profile creation applies ACL grants and DENY ACE
+# application may fail depending on the SID state during --create-profile.
+# Uses TEMP paths that don't require admin privileges to grant ACLs on.
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+strict = true
+
+[allow.deep]
+read = ['%SNEAKY_PROFILE_DIR%\deep_read']
+write = ['%SNEAKY_PROFILE_DIR%\deep_write']
+execute = ['%SNEAKY_PROFILE_DIR%\deep_exec']
+all = ['%SNEAKY_PROFILE_DIR%\deep_all']
+
+[allow.this]
+stat = ['%SNEAKY_PROFILE_DIR%\this_stat']
+touch = ['%SNEAKY_PROFILE_DIR%\this_touch']
+run = ['%SNEAKY_PROFILE_DIR%\this_run']
+create = ['%SNEAKY_PROFILE_DIR%\this_create']
+append = ['%SNEAKY_PROFILE_DIR%\this_append']
+delete = ['%SNEAKY_PROFILE_DIR%\this_delete']
+
+[registry]
+read = ['HKCU\Software\Sandy\Test']
+write = ['HKCU\Software\Sandy\Test']
+
+[privileges]
+named_pipes = false
+desktop = true
+stdin = false
+clipboard_read = true
+clipboard_write = false
+child_processes = true
+
+[environment]
+inherit = true
+pass = ['PATH', 'TEMP', 'USERPROFILE']
+
+[limit]
+timeout = 60
+memory = 512
+processes = 10

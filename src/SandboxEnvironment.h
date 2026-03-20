@@ -198,9 +198,7 @@ namespace Sandbox {
 
         fprintf(stderr, "Network:    %s\n", isRestricted ? "unrestricted (no capability model)" :
                                             config.allowNetwork ? "INTERNET" :
-                                            config.allowLan     ? "LAN ONLY" : "BLOCKED");
-        if (config.allowLocalhost && !isRestricted)
-            fprintf(stderr, "Localhost:  ALLOWED\n");
+                                            config.lanMode != LanMode::Off ? (config.lanMode == LanMode::WithLocalhost ? "LAN + LOCALHOST" : "LAN") : "BLOCKED");
         if (!config.stdinMode.empty())
             fprintf(stderr, "Stdin:      %s\n",
                     _wcsicmp(config.stdinMode.c_str(), L"NUL") == 0 ? "DISABLED" : "FILE");

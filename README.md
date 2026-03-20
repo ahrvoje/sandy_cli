@@ -35,7 +35,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 
 - 🔒 **Three sandbox modes** — AppContainer, LPAC, or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
-- 🌐 **Network control** — internet, LAN, and localhost independently configurable (AppContainer)
+- 🌐 **Network control** — internet and LAN/localhost configurable via unified `lan` key (AppContainer)
 - 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
 - 💾 **Profile-first design** — persistent sandbox identities with reusable grants and config
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
@@ -238,13 +238,12 @@ All keys are optional with safe defaults (shown below). Wrong-mode keys are reje
 ```toml
 # AppContainer / LPAC mode — defaults shown:
 [privileges]
-network         = false   # default: false
-localhost       = false   # default: false
-lan             = false   # default: false
-stdin           = false   # default: false (NUL)
-clipboard_read  = false   # default: false
-clipboard_write = false   # default: false
-child_processes = true    # default: true
+network         = false              # default: false
+lan             = false              # false | true | 'with localhost' | 'without localhost'
+stdin           = false              # default: false (NUL)
+clipboard_read  = false              # default: false
+clipboard_write = false              # default: false
+child_processes = true               # default: true
 
 # Restricted mode — defaults shown:
 [privileges]
@@ -259,14 +258,25 @@ child_processes = true    # default: true
 | Key | Available in | Default | Description |
 |-----|-------------|---------|-------------|
 | `network` | appcontainer / lpac | `false` | Outbound internet access |
-| `localhost` | appcontainer / lpac | `false` | Loopback connections (requires admin) |
-| `lan` | appcontainer / lpac | `false` | Local network access |
+| `lan` | appcontainer / lpac | `false` | `false` • `true`/`'without localhost'` • `'with localhost'` — LAN and loopback control (see below) |
 | `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
 | `desktop` | restricted | `true` | Grant WinSta0 + Desktop access for interactive use |
 | `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or a file path |
 | `clipboard_read` | all | `false` | Allow reading from the clipboard |
 | `clipboard_write` | all | `false` | Allow writing to the clipboard |
 | `child_processes` | all | `true` | Allow spawning child processes (kernel-enforced) |
+
+**`lan` key values:**
+
+| Value | LAN | Localhost | Notes |
+|-------|:---:|:---------:|-------|
+| `false` | ❌ | ❌ | Default — no private network |
+| `true` | ✅ | ❌ | LAN only (backward compat alias for `'without localhost'`) |
+| `'without localhost'` | ✅ | ❌ | LAN access, loopback blocked |
+| `'with localhost'` | ✅ | ✅ | LAN + loopback (requires admin for `CheckNetIsolation`) |
+
+> [!NOTE]
+> Loopback always implies LAN. Windows does not offer a localhost-only capability — the `privateNetworkClientServer` capability required for loopback also grants LAN. Sandy makes this explicit by combining both into one key.
 
 #### AppContainer vs LPAC — App. Packages access
 
@@ -343,7 +353,6 @@ processes = 10      # max total active processes (default: 0)
 | **`[deny.this]`** | 🔴 n/a | 🔴 n/a | 🔵 default: `[]` |
 | **`[privileges]`** | 🔵 optional | 🔵 optional | 🔵 optional |
 | &ensp; `network` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `localhost` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
 | &ensp; `lan` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
 | &ensp; `named_pipes` | 🔴 n/a | 🔴 n/a | 🔵 default: `false` |
 | &ensp; `desktop` | 🔴 n/a | 🔴 n/a | 🔵 default: `true` |
@@ -375,7 +384,7 @@ Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integr
 | **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
 | **Named pipes** | ❌ Blocked | ❌ Blocked | ⚙️ `named_pipes` | ⚙️ `named_pipes` |
 | **Desktop access** | ✅ Inherited | ✅ Inherited | ⚙️ `desktop` | ⚙️ `desktop` |
-| **Network** | ⚙️ `network` `lan` `localhost` | ⚙️ `network` `lan` `localhost` | ✅ Allowed | ✅ Allowed |
+| **Network** | ⚙️ `network` `lan` | ⚙️ `network` `lan` | ✅ Allowed | ✅ Allowed |
 | **App. Packages access** | ✅ Included | ❌ Excluded ¹ | n/a | n/a |
 | **System dir reads** | ✅ Via App. Packages | ✅ Via Restricted App. Packages ¹ | ✅ Allowed | ✅ Allowed |
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
@@ -422,7 +431,6 @@ all = ['C:\workspace']
 
 [privileges]
 network = true
-localhost = false
 lan = false
 stdin = false
 clipboard_read = false
@@ -546,7 +554,7 @@ Sandy treats **persistent named profiles** as a first-class execution model. A p
 > **AppContainer vs LPAC isolation.** AppContainer mode includes the `ALL APPLICATION PACKAGES` SID, giving read access to system directories and resources whose DACLs allow App. Packages. LPAC mode opts out — access is limited to `ALL RESTRICTED APPLICATION PACKAGES` resources and explicit `[allow.*]` grants. Most executables need system DLLs, so use `token = 'appcontainer'` unless you need strict isolation. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
-> **Localhost access** (AppContainer only) requires administrator privileges. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). If running without elevation, Sandy prints a warning and continues (localhost will remain blocked).
+> **Localhost access** (AppContainer only) requires administrator privileges and is enabled by setting `lan = 'with localhost'`. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). If running without elevation, Sandy prints a warning and continues (localhost will remain blocked). Loopback always implies LAN access — there is no localhost-only capability in the Windows AppContainer model.
 
 > [!NOTE]
 > **Sandy stderr banner.** Sandy prints a config summary to stderr before running. Use `-q` to suppress it in automation pipelines where stderr is captured.
@@ -564,7 +572,7 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 |----------|-----------|-------------|
 | **ACL grants** | `[allow.*]` / `[deny.*]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
-| **Loopback exemption** | `localhost = true` | In-memory flag + `CheckNetIsolation.exe` |
+| **Loopback exemption** | `lan = 'with localhost'` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
 | **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup_<UUID>`) — one per instance |
 

@@ -46,7 +46,7 @@ integrity = 'low'          # required: 'low' or 'medium'
 # clipboard_write = false   # default false
 # child_processes = true    # default true
 
-# NOTE: network, localhost, lan are not available in restricted mode.
+# NOTE: network, lan are not available in restricted mode.
 # Network is always unrestricted, system dirs are always readable via
 # BUILTIN\Users. Desktop access is configurable (default: true).
 

@@ -313,6 +313,192 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_dr8.txt" 2>nul
 
 REM ===================================================================
+REM DR9 — Old 'localhost' key must be rejected
+REM ===================================================================
+echo.
+echo --- DR9: Old 'localhost' key rejected ---
+
+echo [sandbox]>"%TEMP%\dr9.toml"
+echo token = 'appcontainer'>>"%TEMP%\dr9.toml"
+echo [privileges]>>"%TEMP%\dr9.toml"
+echo localhost = true>>"%TEMP%\dr9.toml"
+
+"!SANDY!" --dry-run -c "%TEMP%\dr9.toml" >nul 2>"%TEMP%\sandy_dr9.txt"
+set DR9_EC=!ERRORLEVEL!
+
+if !DR9_EC! EQU 128 (
+    echo   [PASS] DR9a: exit 128 for old 'localhost' key
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR9a: exit code !DR9_EC! (expected 128^)
+    set /a FAIL+=1
+)
+
+findstr /C:"removed" "%TEMP%\sandy_dr9.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR9b: Error message mentions key removal
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR9b: Missing removal guidance message
+    set /a FAIL+=1
+)
+
+findstr /C:"with localhost" "%TEMP%\sandy_dr9.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR9c: Error suggests 'with localhost' replacement
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR9c: Missing replacement suggestion
+    set /a FAIL+=1
+)
+
+del "%TEMP%\dr9.toml" 2>nul
+del "%TEMP%\sandy_dr9.txt" 2>nul
+
+REM ===================================================================
+REM DR10 — lan = 'with localhost' accepted
+REM ===================================================================
+echo.
+echo --- DR10: lan = 'with localhost' accepted ---
+
+echo [sandbox]>"%TEMP%\dr10.toml"
+echo token = 'appcontainer'>>"%TEMP%\dr10.toml"
+echo [privileges]>>"%TEMP%\dr10.toml"
+echo lan = 'with localhost'>>"%TEMP%\dr10.toml"
+
+"!SANDY!" --dry-run -c "%TEMP%\dr10.toml" >"%TEMP%\sandy_dr10.txt" 2>&1
+set DR10_EC=!ERRORLEVEL!
+
+if !DR10_EC! EQU 0 (
+    echo   [PASS] DR10a: exit 0 for lan = 'with localhost'
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR10a: exit code !DR10_EC!
+    set /a FAIL+=1
+)
+
+findstr /C:"'with localhost'" "%TEMP%\sandy_dr10.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR10b: Dry-run output shows 'with localhost'
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR10b: Missing 'with localhost' in output
+    set /a FAIL+=1
+)
+
+del "%TEMP%\dr10.toml" 2>nul
+del "%TEMP%\sandy_dr10.txt" 2>nul
+
+REM ===================================================================
+REM DR11 — lan = 'without localhost' accepted
+REM ===================================================================
+echo.
+echo --- DR11: lan = 'without localhost' accepted ---
+
+echo [sandbox]>"%TEMP%\dr11.toml"
+echo token = 'appcontainer'>>"%TEMP%\dr11.toml"
+echo [privileges]>>"%TEMP%\dr11.toml"
+echo lan = 'without localhost'>>"%TEMP%\dr11.toml"
+
+"!SANDY!" --dry-run -c "%TEMP%\dr11.toml" >"%TEMP%\sandy_dr11.txt" 2>&1
+set DR11_EC=!ERRORLEVEL!
+
+if !DR11_EC! EQU 0 (
+    echo   [PASS] DR11a: exit 0 for lan = 'without localhost'
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11a: exit code !DR11_EC!
+    set /a FAIL+=1
+)
+
+findstr /C:"'without localhost'" "%TEMP%\sandy_dr11.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR11b: Dry-run output shows 'without localhost'
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11b: Missing 'without localhost' in output
+    set /a FAIL+=1
+)
+
+del "%TEMP%\dr11.toml" 2>nul
+del "%TEMP%\sandy_dr11.txt" 2>nul
+
+REM ===================================================================
+REM DR12 — lan = true backward compat (maps to 'without localhost')
+REM ===================================================================
+echo.
+echo --- DR12: lan = true backward compat ---
+
+echo [sandbox]>"%TEMP%\dr12.toml"
+echo token = 'appcontainer'>>"%TEMP%\dr12.toml"
+echo [privileges]>>"%TEMP%\dr12.toml"
+echo lan = true>>"%TEMP%\dr12.toml"
+
+"!SANDY!" --dry-run -c "%TEMP%\dr12.toml" >"%TEMP%\sandy_dr12.txt" 2>&1
+set DR12_EC=!ERRORLEVEL!
+
+if !DR12_EC! EQU 0 (
+    echo   [PASS] DR12a: exit 0 for lan = true
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR12a: exit code !DR12_EC!
+    set /a FAIL+=1
+)
+
+findstr /C:"'without localhost'" "%TEMP%\sandy_dr12.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR12b: lan=true maps to 'without localhost'
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR12b: lan=true did not map to 'without localhost'
+    set /a FAIL+=1
+)
+
+del "%TEMP%\dr12.toml" 2>nul
+del "%TEMP%\sandy_dr12.txt" 2>nul
+
+REM ===================================================================
+REM DR13 — --print-config roundtrip preserves lan value
+REM ===================================================================
+echo.
+echo --- DR13: --print-config roundtrip for lan ---
+
+echo [sandbox]>"%TEMP%\dr13.toml"
+echo token = 'appcontainer'>>"%TEMP%\dr13.toml"
+echo [privileges]>>"%TEMP%\dr13.toml"
+echo lan = 'with localhost'>>"%TEMP%\dr13.toml"
+
+"!SANDY!" --print-config -c "%TEMP%\dr13.toml" >"%TEMP%\sandy_dr13.txt" 2>&1
+set DR13_EC=!ERRORLEVEL!
+
+if !DR13_EC! EQU 0 (
+    echo   [PASS] DR13a: exit 0 for print-config
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR13a: exit code !DR13_EC!
+    set /a FAIL+=1
+)
+
+findstr /C:"lan" "%TEMP%\sandy_dr13.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    findstr /C:"'with localhost'" "%TEMP%\sandy_dr13.txt" >nul 2>nul
+    if !ERRORLEVEL! EQU 0 (
+        echo   [PASS] DR13b: print-config shows lan = 'with localhost'
+        set /a PASS+=1
+    ) else (
+        echo   [FAIL] DR13b: print-config missing 'with localhost' value
+        set /a FAIL+=1
+    )
+) else (
+    echo   [FAIL] DR13b: print-config missing lan key
+    set /a FAIL+=1
+)
+
+del "%TEMP%\dr13.toml" 2>nul
+del "%TEMP%\sandy_dr13.txt" 2>nul
+
+
+REM ===================================================================
 REM Summary
 REM ===================================================================
 echo.

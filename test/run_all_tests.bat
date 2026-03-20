@@ -43,6 +43,7 @@ for %%F in (
     test_clean.bat
     test_dryrun.bat
     test_fixes_p1.bat
+    test_sneaky.bat
     test_collude4.bat
     test_collusion.bat
 ) do (
@@ -62,7 +63,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 34
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 35
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

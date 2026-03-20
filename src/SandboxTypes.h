@@ -247,6 +247,16 @@ namespace Sandbox {
     enum class IntegrityLevel { Low, Medium };
 
     // -----------------------------------------------------------------------
+    // LAN mode — three valid states for private-network + loopback access.
+    //
+    // Windows AppContainer requires PRIVATE_NETWORK_CLIENT_SERVER capability
+    // for both LAN and loopback.  Loopback additionally requires a
+    // CheckNetIsolation exemption.  There is no localhost-only capability
+    // SID — loopback always implies LAN access.
+    // -----------------------------------------------------------------------
+    enum class LanMode { Off, WithoutLocalhost, WithLocalhost };
+
+    // -----------------------------------------------------------------------
     // Full sandbox configuration (parsed from TOML)
     // -----------------------------------------------------------------------
     struct SandboxConfig {
@@ -259,8 +269,7 @@ namespace Sandbox {
 
         // [privileges] — sandbox capabilities (optional, defaults shown)
         bool allowNetwork    = false;
-        bool allowLocalhost  = false;
-        bool allowLan        = false;
+        LanMode lanMode      = LanMode::Off;
 
         bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
         bool allowDesktop     = true;   // restricted mode: grant WinSta0 + Desktop access (default true)
@@ -440,8 +449,10 @@ namespace Sandbox {
                      config.envInherit ? L"inherit" : L"filtered");
 
             if (config.allowNetwork)    fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
-            if (config.allowLocalhost)  fwprintf(logFile, L"[%s]     localhost       = yes\n", ts.c_str());
-            if (config.allowLan)        fwprintf(logFile, L"[%s]     lan             = yes\n", ts.c_str());
+            if (config.lanMode == LanMode::WithLocalhost)
+                fwprintf(logFile, L"[%s]     lan             = with localhost\n", ts.c_str());
+            else if (config.lanMode == LanMode::WithoutLocalhost)
+                fwprintf(logFile, L"[%s]     lan             = without localhost\n", ts.c_str());
 
             // --- Limits ---
             if (config.timeoutSeconds || config.memoryLimitMB || config.maxProcesses) {

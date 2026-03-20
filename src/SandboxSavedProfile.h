@@ -174,8 +174,7 @@ namespace Sandbox {
     //   _cfg_integrity      REG_SZ   "low" | "medium"
     //   _workdir            REG_SZ   path (may be empty)
     //   _allow_network      REG_DWORD  0 | 1
-    //   _allow_localhost     REG_DWORD  0 | 1
-    //   _allow_lan           REG_DWORD  0 | 1
+    //   _lan_mode           REG_SZ     "off" | "with_localhost" | "without_localhost"
 
     //   _allow_named_pipes   REG_DWORD  0 | 1
     //   _allow_desktop       REG_DWORD  0 | 1
@@ -217,8 +216,9 @@ namespace Sandbox {
 
         // --- Booleans (REG_DWORD 0/1) ---
         ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
-        ok &= TryWriteRegDword(hKey, L"_allow_localhost",     cfg.allowLocalhost   ? 1 : 0);
-        ok &= TryWriteRegDword(hKey, L"_allow_lan",           cfg.allowLan         ? 1 : 0);
+        ok &= TryWriteRegSz(hKey, L"_lan_mode",
+            cfg.lanMode == LanMode::WithLocalhost ? L"with_localhost" :
+            cfg.lanMode == LanMode::WithoutLocalhost ? L"without_localhost" : L"off");
 
         ok &= TryWriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
@@ -302,8 +302,15 @@ namespace Sandbox {
             cfg.parseError = true;
         }
 
+        // P1a: Fail closed on missing/unrecognized integrity for restricted mode.
         std::wstring integ = ReadRegSz(hKey, L"_cfg_integrity");
-        cfg.integrity = (integ == L"medium") ? IntegrityLevel::Medium : IntegrityLevel::Low;
+        if (integ == L"medium") cfg.integrity = IntegrityLevel::Medium;
+        else if (integ == L"low") cfg.integrity = IntegrityLevel::Low;
+        else if (cfg.tokenMode == TokenMode::Restricted) {
+            g_logger.LogFmt(L"PROFILE_LOAD: _cfg_integrity missing or unrecognized ('%s') for restricted mode — rejecting profile",
+                            integ.c_str());
+            cfg.parseError = true;
+        }
 
         // --- Strings ---
         cfg.workdir   = NormalizeFsPath(ReadRegSz(hKey, L"_workdir"));
@@ -316,16 +323,44 @@ namespace Sandbox {
             cfg.stdinMode = NormalizeFsPath(cfg.stdinMode);
 
         // --- Booleans ---
+        // P1a: _allow_desktop and _allow_child_procs must exist in the registry.
+        // Missing values previously defaulted to 1 (enabled), silently granting
+        // permissions the user never configured.  Now fail closed.
         cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
-        cfg.allowLocalhost      = ReadRegDword(hKey, L"_allow_localhost")  != 0;
-        cfg.allowLan            = ReadRegDword(hKey, L"_allow_lan")        != 0;
+        std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
+        if (lanModeStr == L"with_localhost")
+            cfg.lanMode = LanMode::WithLocalhost;
+        else if (lanModeStr == L"without_localhost")
+            cfg.lanMode = LanMode::WithoutLocalhost;
+        else
+            cfg.lanMode = LanMode::Off;
 
         cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
-        cfg.allowDesktop        = ReadRegDword(hKey, L"_allow_desktop", 1) != 0;
+        {
+            DWORD desktopVal = 0, desktopSz = sizeof(desktopVal), desktopType = 0;
+            if (RegQueryValueExW(hKey, L"_allow_desktop", nullptr, &desktopType,
+                                 reinterpret_cast<BYTE*>(&desktopVal), &desktopSz) != ERROR_SUCCESS
+                || desktopType != REG_DWORD) {
+                g_logger.Log(L"PROFILE_LOAD: _allow_desktop missing — rejecting profile");
+                cfg.parseError = true;
+            } else {
+                cfg.allowDesktop = desktopVal != 0;
+            }
+        }
         cfg.strict              = ReadRegDword(hKey, L"_strict") != 0;
         cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
         cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
-        cfg.allowChildProcesses = ReadRegDword(hKey, L"_allow_child_procs", 1) != 0;
+        {
+            DWORD childVal = 0, childSz = sizeof(childVal), childType = 0;
+            if (RegQueryValueExW(hKey, L"_allow_child_procs", nullptr, &childType,
+                                 reinterpret_cast<BYTE*>(&childVal), &childSz) != ERROR_SUCCESS
+                || childType != REG_DWORD) {
+                g_logger.Log(L"PROFILE_LOAD: _allow_child_procs missing — rejecting profile");
+                cfg.parseError = true;
+            } else {
+                cfg.allowChildProcesses = childVal != 0;
+            }
+        }
         cfg.envInherit          = ReadRegDword(hKey, L"_env_inherit")       != 0;
 
         // --- Integers ---
@@ -582,7 +617,7 @@ namespace Sandbox {
         // AppContainer localhost is durable profile-owned state and must be
         // established with the profile rather than treated as a transient run
         // side effect.
-        if (isAppContainer && config.allowLocalhost) {
+        if (isAppContainer && config.lanMode == LanMode::WithLocalhost) {
             if (!EnsureProfileLoopback(containerName)) {
                 g_logger.Log(L"CREATE_PROFILE: profile-owned loopback enable FAILED");
                 grantOk = false;
@@ -830,6 +865,18 @@ namespace Sandbox {
                           KEY_READ, &hKey) != ERROR_SUCCESS)
             return false;
 
+        // P1c: Reject profiles still in staging state — they were never
+        // fully committed and may contain incomplete/corrupt config.
+        DWORD staging = 0, stagingSz = sizeof(staging);
+        if (RegQueryValueExW(hKey, L"_staging", nullptr, nullptr,
+                             reinterpret_cast<BYTE*>(&staging), &stagingSz) == ERROR_SUCCESS
+            && staging == 1) {
+            g_logger.LogFmt(L"PROFILE_LOAD: profile '%s' is still in staging — rejecting",
+                            name.c_str());
+            RegCloseKey(hKey);
+            return false;
+        }
+
         out.name = name;
         out.type = ReadRegSz(hKey, L"_type");
         out.integrity = ReadRegSz(hKey, L"_integrity");
@@ -841,8 +888,8 @@ namespace Sandbox {
         // Read config from discrete registry values (no TOML parsing)
         out.config = ReadConfigFromRegistry(hKey);
         RegCloseKey(hKey);
-        // Reject profiles with missing mandatory fields (incomplete commit)
-        if (out.sidString.empty() || out.type.empty())
+        // Reject profiles with missing mandatory fields or corrupt config
+        if (out.sidString.empty() || out.type.empty() || out.config.parseError)
             return false;
         return true;
     }
@@ -917,7 +964,8 @@ namespace Sandbox {
         std::wstring profileType = ReadRegSz(hKey, L"_type");
         std::wstring profileSid = ReadRegSz(hKey, L"_sid");
         bool hadDesktop = (ReadRegDword(hKey, L"_allow_desktop") != 0);
-        bool hadLocalhost = (ReadRegDword(hKey, L"_allow_localhost") != 0);
+        std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
+        bool hadLoopback = (lanModeStr == L"with_localhost");
 
         // Revoke profile-owned desktop ACEs (RT profiles with desktop = true)
         // Done before filesystem ACL rollback — desktop/loopback cleanup is
@@ -931,8 +979,8 @@ namespace Sandbox {
             }
         }
 
-        // Revoke profile-owned loopback exemption (AC profiles with localhost = true)
-        if (!containerName.empty() && hadLocalhost) {
+        // Revoke profile-owned loopback exemption (AC profiles with loopback)
+        if (!containerName.empty() && hadLoopback) {
             DisableLoopbackForContainer(containerName);
         }
 
@@ -1022,6 +1070,10 @@ namespace Sandbox {
                 ps.created = ReadRegSz(hSub, L"_created");
                 ps.type = ReadRegSz(hSub, L"_type");
                 RegCloseKey(hSub);
+                // P2a: Skip entries with missing _type — ghost profiles from a
+                // crash between RegCreateKeyExW and _type write in Stage 3.
+                if (ps.type.empty())
+                    continue;
             }
             result.push_back(std::move(ps));
         }
@@ -1066,8 +1118,9 @@ namespace Sandbox {
             printf("  Privileges:\n");
             if (prof.type == L"appcontainer" || prof.type == L"lpac") {
                 printf("    network         = %s\n", prof.config.allowNetwork ? "true" : "false");
-                printf("    localhost        = %s\n", prof.config.allowLocalhost ? "true" : "false");
-                printf("    lan             = %s\n", prof.config.allowLan ? "true" : "false");
+                printf("    lan             = %s\n",
+                    prof.config.lanMode == LanMode::WithLocalhost ? "'with localhost'" :
+                    prof.config.lanMode == LanMode::WithoutLocalhost ? "'without localhost'" : "false");
             } else {
                 printf("    named_pipes     = %s\n", prof.config.allowNamedPipes ? "true" : "false");
             }
@@ -1110,6 +1163,10 @@ namespace Sandbox {
         bool isAppContainer = !isRestricted;
 
         g_instanceId = GenerateInstanceId();
+        if (g_instanceId.empty()) {
+            fprintf(stderr, "Error: failed to generate instance ID (CoCreateGuid failed).\n");
+            return SandyExit::SetupError;
+        }
 
         std::wstring exeFolder = config.workdir.empty() ? GetInheritedWorkdir() : config.workdir;
         if (exeFolder.empty())
@@ -1142,7 +1199,7 @@ namespace Sandbox {
                                 prof.sidString.c_str(), GetLastError());
                 fprintf(stderr, "Error: cannot reconstruct SID for profile '%ls'.\n",
                         prof.name.c_str());
-                DeleteCleanupTask(g_instanceId);
+                DeleteCleanupTask(g_instanceId);  // no-op if task not yet created
                 return SandyExit::SetupError;
             }
             pSid = pGrantSid;
@@ -1152,7 +1209,7 @@ namespace Sandbox {
                 g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)",
                                 GetLastError());
                 LocalFree(pGrantSid);
-                DeleteCleanupTask(g_instanceId);
+                DeleteCleanupTask(g_instanceId);  // no-op if task not yet created
                 return SandyExit::SetupError;
             }
             g_logger.Log(config.integrity == IntegrityLevel::Low
@@ -1177,12 +1234,17 @@ namespace Sandbox {
                 FreeSid(pSid);
             else
                 LocalFree(pSid);
-            DeleteCleanupTask(g_instanceId);
+            DeleteCleanupTask(g_instanceId);  // no-op if task not yet created
             ResetEmergencyCleanupState();
             fprintf(stderr, "Error: failed to persist live profile state for '%ls'.\n",
                     prof.name.c_str());
             return SandyExit::SetupError;
         }
+
+        // P2: Create cleanup task AFTER PersistLiveState writes the ledger.
+        // This ensures concurrent DeleteStaleCleanupTasks sees our ledger
+        // and won't discard the task prematurely.
+        CreateCleanupTask(g_instanceId);
 
         int result = RunPipeline(config, exePath, exeArgs, exeFolder,
                                  identity);

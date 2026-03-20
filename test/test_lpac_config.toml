@@ -16,7 +16,6 @@ stat    = ['C:\Users\H\test_lpac']
 
 [privileges]
 network   = false
-localhost = false
 lan       = false
 
 [environment]

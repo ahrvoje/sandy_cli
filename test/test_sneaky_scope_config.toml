@@ -1,0 +1,12 @@
+# Sneaky scope interaction test — AC mode
+# .this stat on parent dir + .deep read on child dir
+# Tests that .this does NOT propagate to children
+
+[sandbox]
+token = 'appcontainer'
+
+[allow.this]
+stat = ['%SNEAKY_SCOPE_ROOT%\stat_only']
+
+[allow.deep]
+read = ['%SNEAKY_SCOPE_ROOT%\deep_read']

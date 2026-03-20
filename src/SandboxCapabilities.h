@@ -21,15 +21,22 @@ namespace Sandbox {
         DWORD  capCount = 0;
         PSID   pNetSid = nullptr;
         PSID   pLanSid = nullptr;
+        bool   failed = false;  // P3: true if any requested capability allocation failed
     };
 
     // -----------------------------------------------------------------------
     // BuildCapabilities — allocate network capability SIDs based on config.
     //
-    // Inputs:  config — sandbox config with allowNetwork/allowLan flags
+    // Inputs:  config — sandbox config with allowNetwork/lanMode flags
     // Returns: CapabilityState with allocated SIDs
     // Verifiable: capCount matches expected network permissions;
     //             SIDs can be verified via ConvertSidToStringSidW
+    //
+    // NOTE: LanMode::WithLocalhost and LanMode::WithoutLocalhost both
+    // require PRIVATE_NETWORK_CLIENT_SERVER capability.  Loopback
+    // additionally needs CheckNetIsolation exemption (see SandboxCleanup.h).
+    // There is no localhost-only capability SID — loopback always implies
+    // LAN access.  The LanMode enum makes this explicit at the config level.
     // -----------------------------------------------------------------------
     inline CapabilityState BuildCapabilities(const SandboxConfig& config)
     {
@@ -54,10 +61,14 @@ namespace Sandbox {
                 } else {
                     g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
                 }
+            } else {
+                g_logger.LogFmt(L"CAPABILITY: INTERNET_CLIENT AllocateAndInitializeSid FAILED (error %lu)",
+                                GetLastError());
+                state.failed = true;
             }
         }
 
-        if (config.allowLan) {
+        if (config.lanMode != LanMode::Off) {
             SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
             if (AllocateAndInitializeSid(&appAuthority,
                 SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
@@ -76,6 +87,10 @@ namespace Sandbox {
                 } else {
                     g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
                 }
+            } else {
+                g_logger.LogFmt(L"CAPABILITY: PRIVATE_NETWORK AllocateAndInitializeSid FAILED (error %lu)",
+                                GetLastError());
+                state.failed = true;
             }
         }
 

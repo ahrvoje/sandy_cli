@@ -27,29 +27,11 @@ inline int HandleStatus(bool json = false)
     std::vector<std::wstring> profiles;
     int staleInstances = 0;
 
-    // Grants registry -- P1: snapshot subkey names first to avoid index-shift races.
-    HKEY hGrants = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, Sandbox::kGrantsParentKey, 0,
-                      KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hGrants) == ERROR_SUCCESS) {
-        DWORD n = 0;
-        RegQueryInfoKeyW(hGrants, 0, 0, 0, &n, 0, 0, 0, 0, 0, 0, 0);
-        std::vector<std::wstring> grantKeys;
-        for (DWORD i = 0; i < n; i++) {
-            wchar_t nm[128]; DWORD nl = 128;
-            if (RegEnumKeyExW(hGrants, i, nm, &nl, 0, 0, 0, 0) == ERROR_SUCCESS)
-                grantKeys.push_back(nm);
-        }
-        RegCloseKey(hGrants);
-        for (const auto& gk : grantKeys) {
-            std::wstring fk = std::wstring(Sandbox::kGrantsParentKey) + L"\\" + gk;
-            HKEY hS = nullptr; DWORD pid = 0; ULONGLONG ct = 0;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fk.c_str(), 0, KEY_READ, &hS) == ERROR_SUCCESS) {
-                Sandbox::ReadPidAndCtime(hS, pid, ct); RegCloseKey(hS);
-            }
-            bool alive = Sandbox::IsProcessAlive(pid, ct);
-            if (!alive) staleInstances++;
-            insts.push_back({ gk, pid, alive });
-        }
+    // Grants registry — use centralized snapshot
+    auto grantSnapshot = Sandbox::SnapshotGrantLedgers();
+    for (const auto& e : grantSnapshot) {
+        if (!e.isAlive) staleInstances++;
+        insts.push_back({ e.instanceId, e.pid, e.isAlive });
     }
 
     tasks = ListCleanupTasks();

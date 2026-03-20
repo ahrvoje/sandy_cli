@@ -49,7 +49,7 @@ struct ParseResult {
 // -----------------------------------------------------------------------
 // Unescape TOML double-quoted string (\\, \n, \t, \r, \")
 // -----------------------------------------------------------------------
-inline std::wstring UnescapeDQ(const std::wstring& s) {
+inline std::wstring UnescapeDQ(const std::wstring& s, bool& escapeError) {
     std::wstring out;
     out.reserve(s.size());
     for (size_t i = 0; i < s.size(); i++) {
@@ -60,7 +60,13 @@ inline std::wstring UnescapeDQ(const std::wstring& s) {
                 case L't':  out += L'\t'; i++; break;
                 case L'r':  out += L'\r'; i++; break;
                 case L'"':  out += L'"';  i++; break;
-                default:    out += s[i]; break;
+                default:
+                    // P2: Unsupported escape sequence — flag as error.
+                    // Silently passing the backslash through causes
+                    // "C:\temp" to become a tab, corrupting paths.
+                    escapeError = true;
+                    out += s[i];
+                    break;
             }
         } else {
             out += s[i];
@@ -105,7 +111,7 @@ inline std::wstring StripQuotes(const std::wstring& val, bool& error) {
             }
         }
         std::wstring inner = val.substr(1, closePos - 1);
-        return isDQ ? UnescapeDQ(inner) : inner;
+        return isDQ ? UnescapeDQ(inner, error) : inner;
     }
     return val;
 }
@@ -118,10 +124,12 @@ inline std::wstring StripQuotes(const std::wstring& val, bool& error) {
 // -----------------------------------------------------------------------
 inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text,
                                                       bool* unterminated = nullptr,
-                                                      bool* missingComma = nullptr) {
+                                                      bool* missingComma = nullptr,
+                                                      bool* badEscape = nullptr) {
     std::vector<std::wstring> result;
     if (unterminated) *unterminated = false;
     if (missingComma) *missingComma = false;
+    if (badEscape) *badEscape = false;
     size_t pos = 0;
     size_t prevQend = std::wstring::npos;  // end of previous quoted string
     while (pos < text.size()) {
@@ -161,7 +169,11 @@ inline std::vector<std::wstring> ExtractQuotedStrings(const std::wstring& text,
         }
 
         std::wstring s = text.substr(qstart + 1, qend - qstart - 1);
-        if (!isSingle) s = UnescapeDQ(s);
+        if (!isSingle) {
+            bool escErr = false;
+            s = UnescapeDQ(s, escErr);
+            if (escErr && badEscape) *badEscape = true;
+        }
         result.push_back(s);
         prevQend = qend;
         pos = qend + 1;
@@ -261,7 +273,14 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
 
         // Section header
         if (line.front() == L'[' && line.back() == L']') {
-            currentSection = line.substr(1, line.size() - 2);
+            std::wstring sectionName = Trim(line.substr(1, line.size() - 2));
+            // P3: Detect duplicate section headers — TOML spec forbids them
+            if (result.doc.count(sectionName) > 0) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Duplicate section header: [%ls]", sectionName.c_str());
+                result.errors.push_back(buf);
+            }
+            currentSection = sectionName;
             // Ensure section exists in document even if empty
             result.doc[currentSection];
             continue;
@@ -270,8 +289,25 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
         // Key = value
         auto eq = line.find(L'=');
         if (eq == std::wstring::npos) {
-            // Bare continuation line inside an array — skip silently
-            // (arrays are handled by looking back at the last key)
+            // F3: Lines without '=' outside a multi-line array are errors
+            // (catches typos like "child_processes false" missing the '=')
+            wchar_t buf[256];
+            swprintf(buf, 256, L"Line without '=' outside array in section [%ls]: %ls",
+                     currentSection.c_str(), line.c_str());
+            result.errors.push_back(buf);
+            continue;
+        }
+
+        // P1: Reject key=value pairs before any [section] header.
+        // Parse() starts with currentSection empty. Keys placed before
+        // a section would go into the empty-name section, which the
+        // config mapper silently ignores — causing settings to vanish.
+        if (currentSection.empty()) {
+            std::wstring key = Trim(line.substr(0, eq));
+            wchar_t buf[256];
+            swprintf(buf, 256, L"Key '%ls' appears before any [section] header — it will be ignored. Place it under the appropriate section.",
+                     key.c_str());
+            result.errors.push_back(buf);
             continue;
         }
 
@@ -280,12 +316,33 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
 
         // Detect array: value starts with '['
         if (!rawVal.empty() && rawVal.front() == L'[') {
+            // P3: Detect duplicate keys within the same section
+            if (result.doc[currentSection].count(key) > 0) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Duplicate key '%ls' in section [%ls]",
+                         key.c_str(), currentSection.c_str());
+                result.errors.push_back(buf);
+            }
             TomlValue tv;
             tv.isArray = true;
 
+            // F4: Quote-aware ']' detection — skip ']' inside quoted strings
+            auto hasUnquotedClose = [](const std::wstring& text) -> bool {
+                bool inSQ = false, inDQ = false;
+                for (size_t i = 0; i < text.size(); i++) {
+                    if (!inDQ && !inSQ && text[i] == L'\'') { inSQ = true; continue; }
+                    if (inSQ && text[i] == L'\'') { inSQ = false; continue; }
+                    if (!inSQ && !inDQ && text[i] == L'"') { inDQ = true; continue; }
+                    if (inDQ && text[i] == L'\\') { i++; continue; }
+                    if (inDQ && text[i] == L'"') { inDQ = false; continue; }
+                    if (!inSQ && !inDQ && text[i] == L']') return true;
+                }
+                return false;
+            };
+
             // Collect all lines of the array
             std::wstring arrayText = rawVal;
-            bool closed = (rawVal.find(L']') != std::wstring::npos);
+            bool closed = hasUnquotedClose(rawVal);
 
             while (!closed) {
                 std::wstring contLine;
@@ -296,7 +353,7 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
                 contLine = StripInlineComment(contLine);
                 if (contLine.empty()) continue;
                 arrayText += L' ' + contLine;
-                if (contLine.find(L']') != std::wstring::npos) closed = true;
+                if (hasUnquotedClose(contLine)) closed = true;
             }
 
             if (!closed) {
@@ -307,7 +364,8 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
 
             bool unterminatedStr = false;
             bool missingComma = false;
-            tv.arr = ExtractQuotedStrings(arrayText, &unterminatedStr, &missingComma);
+            bool badEscape = false;
+            tv.arr = ExtractQuotedStrings(arrayText, &unterminatedStr, &missingComma, &badEscape);
             if (unterminatedStr) {
                 wchar_t buf[256];
                 swprintf(buf, 256, L"Unterminated string in array for key '%ls' (missing closing quote)", key.c_str());
@@ -316,6 +374,11 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
             if (missingComma) {
                 wchar_t buf[256];
                 swprintf(buf, 256, L"Missing comma between array elements for key '%ls'", key.c_str());
+                result.errors.push_back(buf);
+            }
+            if (badEscape) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Unsupported escape sequence in double-quoted string for key '%ls' (use single quotes for Windows paths)", key.c_str());
                 result.errors.push_back(buf);
             }
 
@@ -349,9 +412,67 @@ inline ParseResult Parse(const std::wstring& contentRaw) {
                 }
             }
 
+            // P2: Detect empty array elements from stray commas.
+            // Patterns like [, 'a'] or ['a',, 'b'] are syntactically
+            // wrong TOML and silently normalize to fewer elements than
+            // the user intended.
+            // Empty arrays [] and trailing commas ['a',] are valid TOML.
+            {
+                // Walk structural characters only (skip quoted strings)
+                size_t ep = 0;
+                bool prevWasCommaOrOpen = false;
+                while (ep < arrayText.size()) {
+                    wchar_t ch = arrayText[ep];
+                    if (ch == L'\'' || ch == L'"') {
+                        // Skip quoted string
+                        size_t qe = std::wstring::npos;
+                        if (ch == L'"') {
+                            for (size_t j = ep + 1; j < arrayText.size(); j++) {
+                                if (arrayText[j] == L'\\') { j++; continue; }
+                                if (arrayText[j] == L'"') { qe = j; break; }
+                            }
+                        } else {
+                            qe = arrayText.find(L'\'', ep + 1);
+                        }
+                        if (qe == std::wstring::npos) break;
+                        prevWasCommaOrOpen = false;
+                        ep = qe + 1;
+                    } else if (ch == L'[') {
+                        prevWasCommaOrOpen = true;
+                        ep++;
+                    } else if (ch == L',') {
+                        if (prevWasCommaOrOpen) {
+                            wchar_t buf[256];
+                            swprintf(buf, 256, L"Empty element in array for key '%ls' (stray comma)", key.c_str());
+                            result.errors.push_back(buf);
+                            break;
+                        }
+                        prevWasCommaOrOpen = true;
+                        ep++;
+                    } else if (ch == L']') {
+                        // Empty array [] and trailing comma ['a',] are
+                        // valid TOML — only [, ...] and [..,, ..] are
+                        // errors (caught by the comma branch above).
+                        break;
+                    } else if (ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r') {
+                        ep++;
+                    } else {
+                        prevWasCommaOrOpen = false;
+                        ep++;
+                    }
+                }
+            }
+
             result.doc[currentSection][key] = tv;
         }
         else {
+            // P3: Detect duplicate keys within the same section
+            if (result.doc[currentSection].count(key) > 0) {
+                wchar_t buf[256];
+                swprintf(buf, 256, L"Duplicate key '%ls' in section [%ls]",
+                         key.c_str(), currentSection.c_str());
+                result.errors.push_back(buf);
+            }
             // Scalar value
             TomlValue tv;
             bool quoteErr = false;

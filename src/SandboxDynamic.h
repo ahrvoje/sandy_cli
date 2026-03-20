@@ -41,9 +41,7 @@ namespace Sandbox {
             g_logger.Log(L"DYNAMIC: WARNING — 'workdir' change ignored (immutable after launch)");
         if (oldCfg.allowNetwork != newCfg.allowNetwork)
             g_logger.Log(L"DYNAMIC: WARNING — 'network' change ignored (immutable after launch)");
-        if (oldCfg.allowLocalhost != newCfg.allowLocalhost)
-            g_logger.Log(L"DYNAMIC: WARNING — 'localhost' change ignored (immutable after launch)");
-        if (oldCfg.allowLan != newCfg.allowLan)
+        if (oldCfg.lanMode != newCfg.lanMode)
             g_logger.Log(L"DYNAMIC: WARNING — 'lan' change ignored (immutable after launch)");
         if (oldCfg.allowNamedPipes != newCfg.allowNamedPipes)
             g_logger.Log(L"DYNAMIC: WARNING — 'named_pipes' change ignored (immutable after launch)");
@@ -61,8 +59,14 @@ namespace Sandbox {
             g_logger.Log(L"DYNAMIC: WARNING — 'processes' change ignored (immutable after launch)");
         if (oldCfg.stdinMode != newCfg.stdinMode)
             g_logger.Log(L"DYNAMIC: WARNING — 'stdin' change ignored (immutable after launch)");
+        if (oldCfg.strict != newCfg.strict)
+            g_logger.Log(L"DYNAMIC: WARNING — 'strict' change ignored (immutable after launch)");
+        if (oldCfg.allowDesktop != newCfg.allowDesktop)
+            g_logger.Log(L"DYNAMIC: WARNING — 'desktop' change ignored (immutable after launch)");
         if (oldCfg.envInherit != newCfg.envInherit)
             g_logger.Log(L"DYNAMIC: WARNING — 'environment.inherit' change ignored (immutable after launch)");
+        if (oldCfg.envPass != newCfg.envPass)
+            g_logger.Log(L"DYNAMIC: WARNING — 'environment.pass' change ignored (immutable after launch)");
     }
 
     // -----------------------------------------------------------------------

@@ -39,6 +39,15 @@ namespace Sandbox {
     // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isThis flag
     typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool, bool);
 
+    // Forward declaration — defined later in this file.  Needed by P1 ACE
+    // rollback logic in GrantObjectAccess/DenyObjectAccess.
+    inline AceRemovalResult RemoveSidFromDaclDetailed(const std::wstring& path,
+                                                     const std::wstring& sidString,
+                                                     SE_OBJECT_TYPE objType,
+                                                     DaclProtectionIntent protection,
+                                                     bool skipTreeSet,
+                                                     AceRemovalMode removalMode);
+
     // -----------------------------------------------------------------------
     // AclMutexGuard -- serialize DACL read-modify-write across Sandy instances.
     //
@@ -169,6 +178,84 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // RollbackAceBySid — emergency ACE removal using binary SID directly.
+    //
+    // Used when ConvertSidToStringSidW fails and we need to undo an
+    // already-applied ACE without going through the string-SID path.
+    // Returns true if the ACE was successfully removed.
+    // -----------------------------------------------------------------------
+    inline bool RollbackAceBySid(PSID pSid, const std::wstring& path,
+                                 SE_OBJECT_TYPE objType, AceRemovalMode removalMode)
+    {
+        PACL pOldDacl = nullptr;
+        PSECURITY_DESCRIPTOR pSD = nullptr;
+        DWORD rc = GetNamedSecurityInfoW(
+            path.c_str(), objType, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &pOldDacl, nullptr, &pSD);
+        if (rc != ERROR_SUCCESS) return false;
+
+        ACL_SIZE_INFORMATION aclInfo = {};
+        if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
+            LocalFree(pSD);
+            return false;
+        }
+
+        auto shouldRemove = [&](BYTE aceType, PSID pAceSid) -> bool {
+            if (!EqualSid(pAceSid, pSid)) return false;
+            switch (removalMode) {
+            case AceRemovalMode::AllowOnly: return aceType == ACCESS_ALLOWED_ACE_TYPE;
+            case AceRemovalMode::DenyOnly:  return aceType == ACCESS_DENIED_ACE_TYPE;
+            default:                        return aceType == ACCESS_ALLOWED_ACE_TYPE ||
+                                                   aceType == ACCESS_DENIED_ACE_TYPE;
+            }
+        };
+
+        int removed = 0;
+        DWORD newAclSize = sizeof(ACL);
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid))
+                removed++;
+            else
+                newAclSize += pAceHdr->AceSize;
+        }
+        if (removed == 0) { LocalFree(pSD); return true; }
+
+        PACL pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+        if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
+            LocalFree(pSD); if (pNewDacl) LocalFree(pNewDacl);
+            return false;
+        }
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
+            PSID pAceSid = nullptr;
+            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) continue;
+            AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
+        }
+        LocalFree(pSD);
+
+        rc = SetNamedSecurityInfoW(
+            const_cast<LPWSTR>(path.c_str()), objType,
+            DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        LocalFree(pNewDacl);
+
+        g_logger.LogFmt(L"ROLLBACK_ACE: %s -> %s (%d ACEs)",
+                        path.c_str(), rc == ERROR_SUCCESS ? L"OK" : L"FAILED", removed);
+        return rc == ERROR_SUCCESS;
+    }
+
+    // -----------------------------------------------------------------------
     // Grant access to a file/folder or registry key
     //
     // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
@@ -264,6 +351,15 @@ namespace Sandbox {
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
                 recordFn(path, objType, sidStr, L"", false, scope == GrantScope::This);
                 LocalFree(sidStr);
+            } else {
+                // SID conversion failed — ACE is on disk but no cleanup record.
+                // P1: Roll back the untracked ACE using binary SID directly
+                // (re-calling ConvertSidToStringSidW would hit the same failure).
+                DWORD convErr = GetLastError();
+                g_logger.LogFmt(L"GRANT_RECORD: ConvertSidToStringSidW failed (error %lu) — "
+                               L"rolling back untracked ACE on %s", convErr, path.c_str());
+                RollbackAceBySid(pSid, path, objType, AceRemovalMode::AllowOnly);
+                return ERROR_NOT_ENOUGH_MEMORY;
             }
         }
 
@@ -344,6 +440,15 @@ namespace Sandbox {
             if (ConvertSidToStringSidW(pSid, &sidStr)) {
                 recordFn(path, objType, sidStr, L"", true, scope == GrantScope::This);
                 LocalFree(sidStr);
+            } else {
+                // SID conversion failed — ACE is on disk but no cleanup record.
+                // P1: Roll back the untracked deny ACE using binary SID directly
+                // (re-calling ConvertSidToStringSidW would hit the same failure).
+                DWORD convErr = GetLastError();
+                g_logger.LogFmt(L"DENY_RECORD: ConvertSidToStringSidW failed (error %lu) — "
+                               L"rolling back untracked deny ACE on %s", convErr, path.c_str());
+                RollbackAceBySid(pSid, path, objType, AceRemovalMode::DenyOnly);
+                return ERROR_NOT_ENOUGH_MEMORY;
             }
         }
 

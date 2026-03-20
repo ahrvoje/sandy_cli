@@ -118,13 +118,20 @@ inline int HandleDryRun(const SandboxConfig& config,
     printf("\n[privileges]\n");
     if (!isRestricted) {
         printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("  localhost:       %ls\n", config.allowLocalhost ? L"true" : L"false");
-        printf("  lan:             %ls\n", config.allowLan ? L"true" : L"false");
+        printf("  lan:             %ls\n", config.lanMode == LanMode::WithLocalhost ? L"'with localhost'" :
+                                            config.lanMode == LanMode::WithoutLocalhost ? L"'without localhost'" : L"false");
     } else {
         printf("  named_pipes:     %ls\n", config.allowNamedPipes ? L"true" : L"false");
         printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
     }
-    printf("  stdin:           %ls\n", config.stdinMode.c_str());
+    // P3: Map internal stdinMode to user-visible representation
+    // (NUL = false, empty = true/inherited, other = file path)
+    if (config.stdinMode == L"NUL")
+        printf("  stdin:           false\n");
+    else if (config.stdinMode.empty())
+        printf("  stdin:           true\n");
+    else
+        printf("  stdin:           %ls\n", config.stdinMode.c_str());
     printf("  clipboard_read:  %ls\n", config.allowClipboardRead ? L"true" : L"false");
     printf("  clipboard_write: %ls\n", config.allowClipboardWrite ? L"true" : L"false");
     printf("  child_processes: %ls\n", config.allowChildProcesses ? L"true" : L"false");
@@ -254,8 +261,9 @@ inline int HandlePrintConfig(const SandboxConfig& config)
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
     if (isRT && config.strict)
         printf("strict = true\n");
-    printf("workdir = '%ls'\n\n",
-           config.workdir.empty() ? L"inherit" : config.workdir.c_str());
+    printf("workdir = ");
+    TomlQuotedValue(config.workdir.empty() ? L"inherit" : config.workdir);
+    printf("\n\n");
 
     PrintFolderToml(L"allow.deep", config.folders, GrantScope::Deep);
     PrintFolderToml(L"allow.this", config.folders, GrantScope::This);
@@ -266,39 +274,54 @@ inline int HandlePrintConfig(const SandboxConfig& config)
     printf("\n[privileges]\n");
     if (!isRT) {
         printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("localhost       = %ls\n", config.allowLocalhost ? L"true" : L"false");
-        printf("lan             = %ls\n", config.allowLan ? L"true" : L"false");
+        printf("lan             = %ls\n", config.lanMode == LanMode::WithLocalhost ? L"'with localhost'" :
+                                           config.lanMode == LanMode::WithoutLocalhost ? L"'without localhost'" : L"false");
     } else {
         printf("named_pipes     = %ls\n", config.allowNamedPipes ? L"true" : L"false");
         printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
     }
-    printf("stdin           = %ls\n", config.stdinMode.c_str());
+    // stdin: NUL → false, empty (inherit) → true, path → quoted value
+    if (config.stdinMode == L"NUL")
+        printf("stdin           = false\n");
+    else if (config.stdinMode.empty())
+        printf("stdin           = true\n");
+    else {
+        printf("stdin           = ");
+        TomlQuotedValue(config.stdinMode);
+        printf("\n");
+    }
     printf("clipboard_read  = %ls\n", config.allowClipboardRead ? L"true" : L"false");
     printf("clipboard_write = %ls\n", config.allowClipboardWrite ? L"true" : L"false");
     printf("child_processes = %ls\n", config.allowChildProcesses ? L"true" : L"false");
 
     if (isRT) {
-        printf("\n[registry]\n");
-        auto printKeys = [](const wchar_t* k, const std::vector<std::wstring>& v) {
-            printf("%ls = [", k);
-            for (size_t i = 0; i < v.size(); i++) {
-                if (i) printf(", ");
-                TomlQuotedValue(v[i]);
-            }
-            printf("]\n");
-        };
-        printKeys(L"read",  config.registryRead);
-        printKeys(L"write", config.registryWrite);
+        bool hasRegKeys = !config.registryRead.empty() || !config.registryWrite.empty();
+        if (hasRegKeys) {
+            printf("\n[registry]\n");
+            auto printKeys = [](const wchar_t* k, const std::vector<std::wstring>& v) {
+                if (v.empty()) return;
+                printf("%ls = [", k);
+                for (size_t i = 0; i < v.size(); i++) {
+                    if (i) printf(", ");
+                    TomlQuotedValue(v[i]);
+                }
+                printf("]\n");
+            };
+            printKeys(L"read",  config.registryRead);
+            printKeys(L"write", config.registryWrite);
+        }
     }
 
     printf("\n[environment]\n");
     printf("inherit = %ls\n", config.envInherit ? L"true" : L"false");
-    printf("pass = [");
-    for (size_t i = 0; i < config.envPass.size(); i++) {
-        if (i) printf(", ");
-        TomlQuotedValue(config.envPass[i]);
+    if (!config.envPass.empty()) {
+        printf("pass = [");
+        for (size_t i = 0; i < config.envPass.size(); i++) {
+            if (i) printf(", ");
+            TomlQuotedValue(config.envPass[i]);
+        }
+        printf("]\n");
     }
-    printf("]\n");
 
     printf("\n[limit]\n");
     printf("timeout   = %lu\n", config.timeoutSeconds);

@@ -346,6 +346,132 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // GrantLedgerEntry — resolved snapshot of one Grants\<instanceId> subkey.
+    //
+    // Liveness semantics are defined HERE, not in callers:
+    //   isCommitted=false → treat as alive (fail closed, writer initializing)
+    //   isCommitted=true  → isAlive = IsProcessAlive(pid, ctime)
+    // -----------------------------------------------------------------------
+    struct GrantLedgerEntry {
+        std::wstring instanceId;
+        DWORD        pid = 0;
+        ULONGLONG    ctime = 0;
+        bool         isAlive = false;
+        bool         isCommitted = false;
+        std::wstring container;
+        std::wstring profileName;
+        bool         profileMode = false;
+    };
+
+    inline std::vector<GrantLedgerEntry> SnapshotGrantLedgers()
+    {
+        std::vector<GrantLedgerEntry> entries;
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return entries;
+
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        std::vector<std::wstring> subKeys;
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
+
+        for (const auto& subKey : subKeys) {
+            GrantLedgerEntry e;
+            e.instanceId = subKey;
+
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey) != ERROR_SUCCESS) {
+                // Key disappeared between snapshot and open — treat as stale
+                entries.push_back(std::move(e));
+                continue;
+            }
+
+            e.isCommitted = ReadPidAndCtime(hKey, e.pid, e.ctime);
+            e.container = ReadRegSz(hKey, L"_container");
+            e.profileName = ReadRegSz(hKey, L"_profile_name");
+
+            DWORD pm = 0, pmSize = sizeof(pm);
+            if (RegQueryValueExW(hKey, L"_profile_mode", nullptr, nullptr,
+                                 reinterpret_cast<BYTE*>(&pm), &pmSize) == ERROR_SUCCESS)
+                e.profileMode = (pm == 1);
+
+            RegCloseKey(hKey);
+
+            // Liveness: uncommitted = alive (fail closed), committed = check
+            e.isAlive = e.isCommitted ? IsProcessAlive(e.pid, e.ctime) : true;
+            entries.push_back(std::move(e));
+        }
+        return entries;
+    }
+
+    // -----------------------------------------------------------------------
+    // TransientContainerEntry — resolved snapshot of one
+    // TransientContainers\<instanceId> subkey.
+    // -----------------------------------------------------------------------
+    struct TransientContainerEntry {
+        std::wstring instanceId;
+        DWORD        pid = 0;
+        ULONGLONG    ctime = 0;
+        bool         isAlive = false;
+        bool         isCommitted = false;
+        std::wstring container;
+    };
+
+    inline std::vector<TransientContainerEntry> SnapshotTransientContainerLedgers()
+    {
+        std::vector<TransientContainerEntry> entries;
+        HKEY hParent = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
+                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
+            return entries;
+
+        DWORD subKeyCount = 0;
+        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
+                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+        std::vector<std::wstring> subKeys;
+        for (DWORD idx = 0; idx < subKeyCount; idx++) {
+            wchar_t name[128];
+            DWORD nameLen = 128;
+            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
+                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
+                subKeys.push_back(name);
+        }
+        RegCloseKey(hParent);
+
+        for (const auto& subKey : subKeys) {
+            TransientContainerEntry e;
+            e.instanceId = subKey;
+
+            std::wstring fullKey = GetTransientContainerRegKey(subKey);
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
+                              KEY_READ, &hKey) != ERROR_SUCCESS) {
+                entries.push_back(std::move(e));
+                continue;
+            }
+
+            e.isCommitted = ReadPidAndCtime(hKey, e.pid, e.ctime);
+            e.container = ReadRegSz(hKey, L"_container");
+            RegCloseKey(hKey);
+
+            e.isAlive = e.isCommitted ? IsProcessAlive(e.pid, e.ctime) : true;
+            entries.push_back(std::move(e));
+        }
+        return entries;
+    }
+
+    // -----------------------------------------------------------------------
     // Save a grant to the in-memory list, and optionally to the registry.
     //
     // Registry persistence is controlled by g_grantPersistence:
@@ -553,6 +679,13 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void ClearPersistedGrants()
     {
+        // P1: Guard against empty g_instanceId — GetGrantsRegKey() would return
+        // the parent path "Software\Sandy\Grants\" and RegDeleteTreeW would
+        // wipe ALL instances' recovery data.
+        if (g_instanceId.empty()) {
+            g_logger.Log(L"REG_CLEAR: SKIPPED (g_instanceId is empty — would delete parent key)");
+            return;
+        }
         std::wstring regKey = GetGrantsRegKey();
         LSTATUS r = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
@@ -610,37 +743,10 @@ namespace Sandbox {
         std::vector<std::wstring> instanceIds;
         if (containerName.empty()) return instanceIds;
 
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return instanceIds;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
         std::wstring lookup = NormalizeLookupKey(containerName);
-        for (const auto& subKey : subKeys) {
-            std::wstring fullKey = GetTransientContainerRegKey(subKey);
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            std::wstring recordedContainer = ReadRegSz(hKey, L"_container");
-            RegCloseKey(hKey);
-            if (NormalizeLookupKey(recordedContainer) == lookup)
-                instanceIds.push_back(subKey);
+        for (const auto& e : SnapshotTransientContainerLedgers()) {
+            if (NormalizeLookupKey(e.container) == lookup)
+                instanceIds.push_back(e.instanceId);
         }
         return instanceIds;
     }
@@ -697,48 +803,23 @@ namespace Sandbox {
     inline void RestoreTransientContainers()
     {
         std::set<std::wstring> savedProfileContainers = GetSavedProfileContainerNames();
+        auto entries = SnapshotTransientContainerLedgers();
 
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return;
-
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& instanceId : subKeys) {
-            std::wstring fullKey = GetTransientContainerRegKey(instanceId);
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            std::wstring containerName = ReadRegSz(hKey, L"_container");
-            RegCloseKey(hKey);
-            if (containerName.empty()) {
-                ClearTransientContainerCleanup(instanceId);
+        for (const auto& e : entries) {
+            if (e.container.empty()) {
+                ClearTransientContainerCleanup(e.instanceId);
                 continue;
             }
 
-            if (savedProfileContainers.count(NormalizeLookupKey(containerName)) > 0) {
+            if (savedProfileContainers.count(NormalizeLookupKey(e.container)) > 0) {
                 g_logger.LogFmt(L"TRANSIENT_RETRY_SKIP: %ls is profile-owned; clearing stale retry metadata for instance %ls",
-                                containerName.c_str(), instanceId.c_str());
-                ClearTransientContainerCleanup(instanceId);
+                                e.container.c_str(), e.instanceId.c_str());
+                ClearTransientContainerCleanup(e.instanceId);
                 continue;
             }
 
-            if (DeleteTransientContainerNow(containerName, L"TRANSIENT_RETRY"))
-                ClearTransientContainerCleanup(instanceId);
+            if (DeleteTransientContainerNow(e.container, L"TRANSIENT_RETRY"))
+                ClearTransientContainerCleanup(e.instanceId);
         }
     }
 
@@ -822,107 +903,29 @@ namespace Sandbox {
     // by owning SID only, so cross-instance coordination is unnecessary.
 
     // -----------------------------------------------------------------------
-    // GetLiveContainerNames — enumerate container monikers from live instances.
-    //
-    // Reads _container, _pid, _ctime from each Grants\<uuid> subkey.
-    // Returns the set of container names whose owning Sandy instance is
-    // still alive. Used by --cleanup and startup cleanup to avoid
-    // tearing down live AppContainer profiles/loopback exemptions.
+    // GetLiveContainerNames — returns container names whose owning Sandy
+    // instance is still alive (includes uncommitted = fail closed).
     // -----------------------------------------------------------------------
     inline std::set<std::wstring> GetLiveContainerNames()
     {
         std::set<std::wstring> live;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return live;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& subKey : subKeys) {
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            if (!ReadPidAndCtime(hKey, pid, ctime)) {
-                // P1: Ledger commit in progress — _pid not yet written.
-                // Treat as live (fail closed) to prevent false stale recovery.
-                std::wstring container = ReadRegSz(hKey, L"_container");
-                if (!container.empty())
-                    live.insert(NormalizeLookupKey(container));
-            } else if (IsProcessAlive(pid, ctime)) {
-                std::wstring container = ReadRegSz(hKey, L"_container");
-                if (!container.empty())
-                    live.insert(NormalizeLookupKey(container));
-            }
-            RegCloseKey(hKey);
+        for (const auto& e : SnapshotGrantLedgers()) {
+            if (e.isAlive && !e.container.empty())
+                live.insert(NormalizeLookupKey(e.container));
         }
         return live;
     }
 
     // -----------------------------------------------------------------------
-    // GetLiveProfileNames — enumerate profile names from live instances.
-    //
-    // F2/R8: Reads _profile_name, _pid, _ctime from each Grants\<uuid> subkey.
-    // Returns profile names whose owning Sandy instance is still alive.
-    // Type-agnostic: covers both AppContainer and restricted-token profiles.
+    // GetLiveProfileNames — returns profile names whose owning Sandy
+    // instance is still alive (includes uncommitted = fail closed).
     // -----------------------------------------------------------------------
     inline std::set<std::wstring> GetLiveProfileNames()
     {
         std::set<std::wstring> live;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return live;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& subKey : subKeys) {
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            if (!ReadPidAndCtime(hKey, pid, ctime)) {
-                // P1: Ledger commit in progress — treat as live (fail closed).
-                std::wstring profName = ReadRegSz(hKey, L"_profile_name");
-                if (!profName.empty())
-                    live.insert(NormalizeLookupKey(profName));
-            } else if (IsProcessAlive(pid, ctime)) {
-                std::wstring profName = ReadRegSz(hKey, L"_profile_name");
-                if (!profName.empty())
-                    live.insert(NormalizeLookupKey(profName));
-            }
-            RegCloseKey(hKey);
+        for (const auto& e : SnapshotGrantLedgers()) {
+            if (e.isAlive && !e.profileName.empty())
+                live.insert(NormalizeLookupKey(e.profileName));
         }
         return live;
     }
@@ -1096,60 +1099,25 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // RestoreStaleGrants — cleanup after crash/power loss.
-    // Processes dead PIDs only. Also deletes stale AppContainer profiles.
+    // Uses SnapshotGrantLedgers() — liveness resolved once, no ad-hoc loops.
     // -----------------------------------------------------------------------
     inline void RestoreStaleGrants()
     {
         RestoreTransientContainers();
 
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return;
+        auto snapshot = SnapshotGrantLedgers();
 
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-
-
-        // Separate live vs stale
-        std::vector<std::pair<std::wstring, DWORD>> staleKeys; // {subKey, pid}
-
-        for (const auto& subKey : subKeys) {
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
-            HKEY hKey = nullptr;
-            LSTATUS openResult = RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey);
-            if (openResult != ERROR_SUCCESS) {
-                if (openResult == ERROR_FILE_NOT_FOUND || openResult == ERROR_PATH_NOT_FOUND) {
-                    staleKeys.push_back({ subKey, 0 });
-                } else {
-                    g_logger.LogFmt(L"STALE_CHECK: %ls -> INACCESSIBLE (error %lu), treating as LIVE",
-                                    subKey.c_str(), (unsigned long)openResult);
-                }
-                continue;
-            }
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            ReadPidAndCtime(hKey, pid, ctime);
-            if (IsProcessAlive(pid, ctime)) {
-                g_logger.Log((L"STALE_CHECK: " + subKey + L" -> ALIVE (PID=" + std::to_wstring(pid) + L")").c_str());
+        // Separate live vs stale using pre-resolved liveness
+        std::vector<const GrantLedgerEntry*> staleEntries;
+        for (const auto& e : snapshot) {
+            if (e.isAlive) {
+                g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> ALIVE (PID=" +
+                              std::to_wstring(e.pid) + L")").c_str());
             } else {
-                staleKeys.push_back({ subKey, pid });
-                g_logger.Log((L"STALE_CHECK: " + subKey + L" -> DEAD (PID=" + std::to_wstring(pid) + L")").c_str());
+                staleEntries.push_back(&e);
+                g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> DEAD (PID=" +
+                              std::to_wstring(e.pid) + L")").c_str());
             }
-            RegCloseKey(hKey);
         }
 
         // Fetch saved-profile container names once — these are permanent and
@@ -1157,37 +1125,31 @@ namespace Sandbox {
         std::set<std::wstring> savedProfileContainers = GetSavedProfileContainerNames();
 
         // Remove stale ACEs and delete registry subkeys
-        for (const auto& stale : staleKeys) {
-            const auto& subKey = stale.first;
-            DWORD stalePid = stale.second;
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
+        for (const auto* ep : staleEntries) {
+            const auto& e = *ep;
+            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, e.instanceId);
             HKEY hKey = nullptr;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
                               KEY_READ, &hKey) == ERROR_SUCCESS) {
-                std::wstring containerName = ReadRegSz(hKey, L"_container");
                 bool containerRetryReady = true;
-                if (!containerName.empty()) {
-                    // Check if this is a profile-mode entry or a saved-profile container
-                    DWORD profileMode = 0;
-                    DWORD pmSize = sizeof(profileMode);
-                    RegQueryValueExW(hKey, L"_profile_mode", nullptr, nullptr,
-                                     reinterpret_cast<BYTE*>(&profileMode), &pmSize);
-                    bool isSavedContainer = savedProfileContainers.count(NormalizeLookupKey(containerName)) > 0;
+                if (!e.container.empty()) {
+                    bool isSavedContainer = savedProfileContainers.count(
+                        NormalizeLookupKey(e.container)) > 0;
 
-                    if (profileMode == 1 || isSavedContainer) {
+                    if (e.profileMode || isSavedContainer) {
                         g_logger.LogFmt(L"PROFILE_SKIP: %ls (saved profile container, not deleting)",
-                                        containerName.c_str());
+                                        e.container.c_str());
                         printf("  [PROFILE] %ls -> skipped (saved profile)\n",
-                               containerName.c_str());
+                               e.container.c_str());
                     } else {
-                        bool containerDeleted = DeleteTransientContainerNow(containerName, L"STALE_RECOVERY");
+                        bool containerDeleted = DeleteTransientContainerNow(e.container, L"STALE_RECOVERY");
                         if (!containerDeleted) {
-                            containerRetryReady = PersistTransientContainerCleanup(subKey, containerName);
+                            containerRetryReady = PersistTransientContainerCleanup(e.instanceId, e.container);
                             if (!containerRetryReady)
                                 g_logger.LogFmt(L"STALE_PRESERVE: %ls container retry persistence failed, keeping grant metadata",
-                                                subKey.c_str());
+                                                e.instanceId.c_str());
                         }
-                        printf("  [PROFILE] %ls -> %s\n", containerName.c_str(),
+                        printf("  [PROFILE] %ls -> %s\n", e.container.c_str(),
                                containerDeleted ? "deleted" : (containerRetryReady ? "deferred for retry" : "FAILED"));
                     }
                 }
@@ -1197,12 +1159,12 @@ namespace Sandbox {
                 if (!grantsRestored || !containerRetryReady) {
                     if (!grantsRestored)
                         g_logger.LogFmt(L"STALE_PRESERVE: %ls ACL rollback incomplete, keeping grant metadata",
-                                        subKey.c_str());
+                                        e.instanceId.c_str());
                     if (!containerRetryReady)
                         g_logger.LogFmt(L"STALE_PRESERVE: %ls transient container retry metadata incomplete, keeping grant metadata",
-                                        subKey.c_str());
+                                        e.instanceId.c_str());
                     printf("  [GRANTS] instance %ls (PID %lu) -> metadata preserved for retry\n",
-                           subKey.c_str(), (unsigned long)stalePid);
+                           e.instanceId.c_str(), (unsigned long)e.pid);
                     continue;
                 }
             }
@@ -1213,7 +1175,7 @@ namespace Sandbox {
                 g_logger.LogFmt(L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
             printf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
-                   subKey.c_str(), (unsigned long)stalePid);
+                   e.instanceId.c_str(), (unsigned long)e.pid);
         }
     }
 

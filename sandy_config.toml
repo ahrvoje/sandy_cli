@@ -40,13 +40,12 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown
 # ============================================================
-# AppContainer: network, localhost, lan, stdin, clipboard_*, child_processes
+# AppContainer: network, lan, stdin, clipboard_*, child_processes
 # Restricted:   named_pipes, desktop, stdin, clipboard_*, child_processes
 
 # [privileges]
 # network = false            # default false (appcontainer only)
-# localhost = false           # default false (appcontainer only)
-# lan = false                # default false (appcontainer only)
+# lan = false                # false | true | 'with localhost' | 'without localhost' (appcontainer only)
 # named_pipes = false        # default false (restricted only)
 # desktop = true             # default true (restricted only, WinSta0 + Desktop)
 # stdin = false              # default false (NUL)

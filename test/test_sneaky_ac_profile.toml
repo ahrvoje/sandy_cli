@@ -1,0 +1,37 @@
+# Sneaky AC profile config — exercises all 10 access levels in mixed scopes.
+# No deny (AC mode doesn't support it), no registry.
+# Uses TEMP paths that don't require admin privileges to grant ACLs on.
+
+[sandbox]
+token = 'appcontainer'
+
+[allow.deep]
+read = ['%SNEAKY_PROFILE_DIR%\deep_read']
+write = ['%SNEAKY_PROFILE_DIR%\deep_write']
+execute = ['%SNEAKY_PROFILE_DIR%\deep_exec']
+all = ['%SNEAKY_PROFILE_DIR%\deep_all']
+
+[allow.this]
+stat = ['%SNEAKY_PROFILE_DIR%\this_stat']
+touch = ['%SNEAKY_PROFILE_DIR%\this_touch']
+run = ['%SNEAKY_PROFILE_DIR%\this_run']
+create = ['%SNEAKY_PROFILE_DIR%\this_create']
+append = ['%SNEAKY_PROFILE_DIR%\this_append']
+delete = ['%SNEAKY_PROFILE_DIR%\this_delete']
+
+[privileges]
+network = false
+lan = false
+stdin = false
+clipboard_read = false
+clipboard_write = true
+child_processes = false
+
+[environment]
+inherit = false
+pass = ['TEMP']
+
+[limit]
+timeout = 30
+memory = 256
+processes = 5

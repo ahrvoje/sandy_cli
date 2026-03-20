@@ -33,60 +33,19 @@ namespace Sandbox {
     {
         if (containerName.empty()) return false;
 
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return false;
-
-        // P1: Snapshot subkey names first to avoid index-shift races
-        // when concurrent Sandy instances add/remove keys mid-walk.
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        bool foundOther = false;
-        for (const auto& subKey : subKeys) {
-            if (foundOther) break;
-            if (!excludeInstanceId.empty() && excludeInstanceId == subKey)
+        for (const auto& e : SnapshotGrantLedgers()) {
+            if (!excludeInstanceId.empty() && excludeInstanceId == e.instanceId)
                 continue;
-
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            DWORD pid = 0; ULONGLONG ctime = 0;
-            bool ledgerComplete = ReadPidAndCtime(hKey, pid, ctime);
-            if (!ledgerComplete) {
-                // P1: Ledger commit in progress — _pid not yet written.
-                // Fail closed: treat as live to avoid removing shared loopback
-                // while a concurrent peer is still initializing.
-                std::wstring liveContainer = ReadRegSz(hKey, L"_container");
-                if (!liveContainer.empty() &&
-                    _wcsicmp(liveContainer.c_str(), containerName.c_str()) == 0) {
+            if (!e.isAlive) continue;
+            if (!e.container.empty() &&
+                _wcsicmp(e.container.c_str(), containerName.c_str()) == 0) {
+                if (!e.isCommitted)
                     g_logger.LogFmt(L"LOOPBACK_LIVENESS: treating incomplete ledger %s as live (fail closed)",
-                                    subKey.c_str());
-                    foundOther = true;
-                }
-            } else if (IsProcessAlive(pid, ctime)) {
-                std::wstring liveContainer = ReadRegSz(hKey, L"_container");
-                if (_wcsicmp(liveContainer.c_str(), containerName.c_str()) == 0)
-                    foundOther = true;
+                                    e.instanceId.c_str());
+                return true;
             }
-            RegCloseKey(hKey);
         }
-
-        return foundOther;
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -410,35 +369,29 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void WarnStaleRegistryEntries()
     {
-        bool staleGrants = false;
-        bool staleTransientContainers = false;
-        HKEY hKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD subKeyCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subKeyCount,
-                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-            RegCloseKey(hKey);
-            if (subKeyCount > 0) staleGrants = true;
+        auto grantSnapshot = SnapshotGrantLedgers();
+        int grantLive = 0, grantStale = 0;
+        for (const auto& e : grantSnapshot) {
+            if (e.isAlive) grantLive++; else grantStale++;
         }
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
-                          KEY_READ, &hKey) == ERROR_SUCCESS) {
-            DWORD subKeyCount = 0;
-            RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subKeyCount,
-                             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-            RegCloseKey(hKey);
-            if (subKeyCount > 0) staleTransientContainers = true;
+
+        auto tcSnapshot = SnapshotTransientContainerLedgers();
+        int containerLive = 0, containerStale = 0;
+        for (const auto& e : tcSnapshot) {
+            if (e.isAlive) containerLive++; else containerStale++;
         }
-        if (staleGrants || staleTransientContainers) {
+
+        if (grantStale > 0 || containerStale > 0) {
             if (!g_logger.IsActive())
                 fprintf(stderr,
                     "[Sandy] WARNING: Stale recovery metadata detected from a previous crashed run.\n"
-                    "        Grants: HKCU\\%ls\n"
-                    "        Containers: HKCU\\%ls\n"
-                    "        Run 'sandy.exe --cleanup' to restore original state.\n"
-                    "        If another sandy instance is running, its entries are expected.\n",
-                    kGrantsParentKey, kTransientContainersParentKey);
-            g_logger.Log(L"STARTUP_WARNING: stale recovery metadata found (use --cleanup)");
+                    "        Grants: %d stale (%d live) under HKCU\\%ls\n"
+                    "        Containers: %d stale (%d live) under HKCU\\%ls\n"
+                    "        Run 'sandy.exe --cleanup' to restore original state.\n",
+                    grantStale, grantLive, kGrantsParentKey,
+                    containerStale, containerLive, kTransientContainersParentKey);
+            g_logger.LogFmt(L"STARTUP_WARNING: stale recovery metadata — grants: %d stale/%d live, containers: %d stale/%d live",
+                            grantStale, grantLive, containerStale, containerLive);
         }
     }
 

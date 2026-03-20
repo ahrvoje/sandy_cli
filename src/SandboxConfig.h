@@ -140,8 +140,15 @@ namespace Sandbox {
                     }
                     if (val.isArray) {
                         allowSeen.insert(key);
-                        for (size_t i = 0; i < val.arr.size(); i++)
+                        for (size_t i = 0; i < val.arr.size(); i++) {
+                            // P3: Reject empty strings in path arrays
+                            if (val.arr[i].empty()) {
+                                fprintf(stderr, "Error: Empty path in [%ls] '%ls' array (element %zu).\n", sectionName, key.c_str(), i);
+                                config.parseError = true;
+                                continue;
+                            }
                             config.folders.push_back({ val.arr[i], it->second, scope });
+                        }
                     } else {
                         fprintf(stderr, "Error: '%ls' in [%ls] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str(), sectionName);
                         config.parseError = true;
@@ -179,8 +186,15 @@ namespace Sandbox {
                     }
                     if (val.isArray) {
                         denySeen.insert(key);
-                        for (size_t i = 0; i < val.arr.size(); i++)
+                        for (size_t i = 0; i < val.arr.size(); i++) {
+                            // P3: Reject empty strings in path arrays
+                            if (val.arr[i].empty()) {
+                                fprintf(stderr, "Error: Empty path in [%ls] '%ls' array (element %zu).\n", sectionName, key.c_str(), i);
+                                config.parseError = true;
+                                continue;
+                            }
                             config.denyFolders.push_back({ val.arr[i], it->second, scope });
+                        }
                     } else {
                         fprintf(stderr, "Error: '%ls' in [%ls] must be an array, e.g. ['C:\\path']. Got scalar value.\n", key.c_str(), sectionName);
                         config.parseError = true;
@@ -245,15 +259,35 @@ namespace Sandbox {
                         else
                             config.stdinMode = valStr;  // file path
                     }
-                    else if (key == L"network" || key == L"localhost" || key == L"lan" ||
+                    else if (key == L"lan") {
+                        // lan accepts: false, true, 'with localhost', 'without localhost'
+                        if (valStr == L"false")
+                            config.lanMode = LanMode::Off;
+                        else if (valStr == L"true")
+                            config.lanMode = LanMode::WithoutLocalhost;
+                        else if (valStr == L"with localhost")
+                            config.lanMode = LanMode::WithLocalhost;
+                        else if (valStr == L"without localhost")
+                            config.lanMode = LanMode::WithoutLocalhost;
+                        else {
+                            fprintf(stderr, "Error: Invalid value for 'lan': '%ls'. "
+                                    "Expected false, true, 'with localhost', or 'without localhost'.\n",
+                                    valStr.c_str());
+                            config.parseError = true;
+                        }
+                    }
+                    else if (key == L"localhost") {
+                        fprintf(stderr, "Error: Key 'localhost' has been removed. "
+                                "Use lan = 'with localhost' instead.\n");
+                        config.parseError = true;
+                    }
+                    else if (key == L"network" ||
                              key == L"named_pipes" || key == L"desktop" ||
                              key == L"clipboard_read" || key == L"clipboard_write" ||
                              key == L"child_processes") {
                         if (requireBool(key, valStr)) {
                             bool enabled = (valStr == L"true");
                             if (key == L"network")           config.allowNetwork = enabled;
-                            else if (key == L"localhost")     config.allowLocalhost = enabled;
-                            else if (key == L"lan")           config.allowLan = enabled;
                             else if (key == L"named_pipes")   config.allowNamedPipes = enabled;
                             else if (key == L"desktop")       config.allowDesktop = enabled;
                             else if (key == L"clipboard_read")  config.allowClipboardRead = enabled;
@@ -286,7 +320,15 @@ namespace Sandbox {
                     } else if (key == L"pass") {
                         passSeen = true;
                         if (val.isArray) {
-                            config.envPass = val.arr;
+                            // P3: Filter out empty strings in env pass array
+                            for (size_t i = 0; i < val.arr.size(); i++) {
+                                if (val.arr[i].empty()) {
+                                    fprintf(stderr, "Error: Empty variable name in [environment] 'pass' array (element %zu).\n", i);
+                                    config.parseError = true;
+                                    continue;
+                                }
+                                config.envPass.push_back(val.arr[i]);
+                            }
                         } else {
                             fprintf(stderr, "Error: 'pass' in [environment] must be an array, e.g. pass = ['PATH']. Got scalar value.\n");
                             config.parseError = true;
@@ -302,11 +344,16 @@ namespace Sandbox {
         // --- [limit] ---
         std::set<std::wstring> limitSeen;
         {
+            // P3: Sane upper bounds for limit values
+            constexpr long long kMaxTimeout   = 86400;   // 24 hours
+            constexpr long long kMaxMemoryMB  = 65536;   // 64 GB
+            constexpr long long kMaxProcesses = 1024;
+
             auto sit = doc.find(L"limit");
             if (sit != doc.end()) {
                 for (const auto& [key, val] : sit->second) {
-                    int v = _wtoi(val.str.c_str());
-                    // _wtoi returns 0 for non-numeric input — validate digits
+                    // P3: Use _wtoi64 to avoid INT_MAX clamping on overflow
+                    // Validate digits first, then range-check the 64-bit value.
                     bool isNumeric = !val.str.empty();
                     for (size_t ci = 0; ci < val.str.size() && isNumeric; ci++)
                         isNumeric = iswdigit(val.str[ci]);
@@ -317,10 +364,19 @@ namespace Sandbox {
                         fprintf(stderr, "Error: '%ls' in [limit] must be a non-negative integer, got '%ls'.\n", key.c_str(), val.str.c_str());
                         config.parseError = true;
                     } else {
-                        limitSeen.insert(key);
-                        if (key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(v);
-                        else if (key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(v);
-                        else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(v);
+                        long long v64 = _wtoi64(val.str.c_str());
+                        long long maxVal = (key == L"timeout") ? kMaxTimeout :
+                                          (key == L"memory")  ? kMaxMemoryMB : kMaxProcesses;
+                        if (v64 > maxVal) {
+                            fprintf(stderr, "Error: '%ls' in [limit] is %lld, maximum is %lld.\n",
+                                    key.c_str(), v64, maxVal);
+                            config.parseError = true;
+                        } else {
+                            limitSeen.insert(key);
+                            if (key == L"timeout")        config.timeoutSeconds = static_cast<DWORD>(v64);
+                            else if (key == L"memory")    config.memoryLimitMB = static_cast<SIZE_T>(v64);
+                            else if (key == L"processes") config.maxProcesses = static_cast<DWORD>(v64);
+                        }
                     }
                 }
             }
@@ -340,7 +396,6 @@ namespace Sandbox {
             if (isRT) {
                 // Reject wrong-mode keys by presence, not value
                 if (privSeen.count(L"network"))     { fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");   config.parseError = true; }
-                if (privSeen.count(L"localhost"))   { fprintf(stderr, "Error: 'localhost' is not available in restricted mode (network is always unrestricted).\n"); config.parseError = true; }
                 if (privSeen.count(L"lan"))         { fprintf(stderr, "Error: 'lan' is not available in restricted mode (network is always unrestricted).\n");       config.parseError = true; }
                 if (!integritySeen)                  { fprintf(stderr, "Error: 'integrity' is required in [sandbox] for restricted mode ('low' or 'medium').\n"); config.parseError = true; }
             }
@@ -391,8 +446,11 @@ namespace Sandbox {
                                 e.path.c_str(), section);
                         config.parseError = true;
                     }
-                    // Detect duplicates within same section
-                    if (!seen.insert(e.path).second) {
+                    // P3: Case-insensitive duplicate detection — Windows paths
+                    // are case-insensitive, so C:\Windows and c:\windows are the
+                    // same directory and would get double ACL grants.
+                    std::wstring lowerPath = NormalizeLookupKey(e.path);
+                    if (!seen.insert(lowerPath).second) {
                         if (g_logger.IsActive())
                             g_logger.LogFmt(L"CONFIG_WARN: Duplicate path in [%s]: %s", section, e.path.c_str());
                         else

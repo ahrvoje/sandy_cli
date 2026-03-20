@@ -161,7 +161,7 @@
         </p>
         <ul class="check-list">
           <li>Isolated object namespace — invisible to other processes</li>
-          <li>Configurable network isolation (internet, LAN, localhost)</li>
+          <li>Configurable network isolation (internet, LAN/localhost via unified <code>lan</code> key)</li>
           <li>Private registry hive — no host registry access</li>
           <li>LPAC mode opts out of App. Packages — explicit grants only</li>
           <li>DENY implemented via allow-mask reduction (kernel ignores DENY ACEs for AC SIDs)</li>
@@ -262,7 +262,7 @@
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">Network</td></tr>
           <tr><td class="td-aspect">Internet / outbound</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>network</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
           <tr><td class="td-aspect">LAN access</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>lan</code></td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
-          <tr><td class="td-aspect">Localhost / loopback</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>localhost</code> ¹</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
+          <tr><td class="td-aspect">Localhost / loopback</td><td class="col-ac center"><span class="cfg">⚙️</span> <code>lan = 'with localhost'</code> ¹</td><td class="col-rtl center"><span class="ok">✅</span> Allowed</td><td class="col-rtm center"><span class="ok">✅</span> Allowed</td></tr>
 
           <tr><td class="td-aspect" colspan="4" style="background:rgba(56,189,248,0.04);color:var(--text-muted);font-size:0.76rem;text-transform:uppercase;letter-spacing:0.08em;">IPC &amp; Interop</td></tr>
           <tr><td class="td-aspect">Named pipes</td><td class="col-ac center"><span class="no">❌</span> Blocked</td><td class="col-rtl center"><span class="cfg">⚙️</span> <code>named_pipes</code></td><td class="col-rtm center"><span class="cfg">⚙️</span> <code>named_pipes</code></td></tr>
@@ -297,7 +297,7 @@
     </div>
 
     <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
-      ¹ <code>localhost</code> (AppContainer) requires admin. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked).<br>
+      ¹ Loopback (AppContainer) requires admin and is enabled with <code>lan = 'with localhost'</code>. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked). Loopback always implies LAN — there is no localhost-only capability in Windows.<br>
       ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.<br>
       ³ LPAC opts out of <code>ALL APPLICATION PACKAGES</code> (<code>S-1-15-2-1</code>). Windows system dirs (<code>C:\Windows</code>, <code>System32</code>, <code>Program Files</code>) carry <code>ALL RESTRICTED APPLICATION PACKAGES</code> (<code>S-1-15-2-2</code>) ACEs on Win10+ and are readable by LPAC. However, user-installed application dirs (e.g. Python under <code>AppData\Local\Programs</code>) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via <code>[allow.*]</code>. DLLs from those paths also need explicit execute grants.
     </p>

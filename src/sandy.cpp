@@ -216,6 +216,10 @@ static int RunMain(int argc, wchar_t* argv[])
             return SandyExit::InternalError;
         }
         SavedProfile prof;
+        // P2: Run staging recovery before loading — ensures profiles left
+        // in staging state by an interrupted --create-profile are rolled back
+        // before LoadSavedProfile rejects them as incomplete.
+        CleanStagingProfiles();
         if (!LoadSavedProfile(profileName, prof)) {
             fprintf(stderr, "Error: profile '%ls' not found.\n", profileName.c_str());
             return SandyExit::ConfigError;
