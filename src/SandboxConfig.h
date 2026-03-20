@@ -261,18 +261,16 @@ namespace Sandbox {
                             config.stdinMode = valStr;  // file path
                     }
                     else if (key == L"lan") {
-                        // lan accepts: false, true, 'with localhost', 'without localhost'
+                        // lan accepts: false, 'with localhost', 'without localhost'
                         if (valStr == L"false")
                             config.lanMode = LanMode::Off;
-                        else if (valStr == L"true")
-                            config.lanMode = LanMode::WithoutLocalhost;
                         else if (valStr == L"with localhost")
                             config.lanMode = LanMode::WithLocalhost;
                         else if (valStr == L"without localhost")
                             config.lanMode = LanMode::WithoutLocalhost;
                         else {
                             fprintf(stderr, "Error: Invalid value for 'lan': '%ls'. "
-                                    "Expected false, true, 'with localhost', or 'without localhost'.\n",
+                                    "Expected false, 'with localhost', or 'without localhost'.\n",
                                     valStr.c_str());
                             config.parseError = true;
                         }

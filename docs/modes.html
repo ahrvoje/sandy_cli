@@ -297,7 +297,7 @@
     </div>
 
     <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
-      ¹ Loopback (AppContainer) requires admin and is enabled with <code>lan = 'with localhost'</code>. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Without elevation, Sandy warns and continues (loopback blocked). Loopback always implies LAN — there is no localhost-only capability in Windows.<br>
+      ¹ Loopback (AppContainer) is enabled with <code>lan = 'with localhost'</code>. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Loopback always implies LAN — there is no localhost-only capability in Windows.<br>
       ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.<br>
       ³ LPAC opts out of <code>ALL APPLICATION PACKAGES</code> (<code>S-1-15-2-1</code>). Windows system dirs (<code>C:\Windows</code>, <code>System32</code>, <code>Program Files</code>) carry <code>ALL RESTRICTED APPLICATION PACKAGES</code> (<code>S-1-15-2-2</code>) ACEs on Win10+ and are readable by LPAC. However, user-installed application dirs (e.g. Python under <code>AppData\Local\Programs</code>) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via <code>[allow.*]</code>. DLLs from those paths also need explicit execute grants.
     </p>

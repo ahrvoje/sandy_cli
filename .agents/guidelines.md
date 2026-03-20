@@ -133,7 +133,7 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | `[deny.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive denies (RT only) |
 | `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
 | `[privileges]` | `network` | `false` | AC/LPAC only |
-| `[privileges]` | `lan` | `false` | AC/LPAC only; `false` · `true` · `'with localhost'` · `'without localhost'` |
+| `[privileges]` | `lan` | `false` | AC/LPAC only; `false` · `'with localhost'` · `'without localhost'` |
 | `[privileges]` | `named_pipes` | `false` | RT only |
 | `[privileges]` | `desktop` | `true` | RT only, WinSta0 + Desktop |
 | `[privileges]` | `stdin` | `false` | `false` = NUL, `true` = inherit, path = file |

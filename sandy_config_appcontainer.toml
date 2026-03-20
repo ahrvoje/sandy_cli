@@ -32,7 +32,7 @@ token = 'appcontainer'
 
 # [privileges]
 # network         = false   # default false: no outbound internet
-# lan             = false   # false | true | 'with localhost' | 'without localhost'
+# lan             = false   # false | 'with localhost' | 'without localhost'
 # stdin           = false   # default false (NUL). true=inherit, path=file
 # clipboard_read  = false   # default false
 # clipboard_write = false   # default false

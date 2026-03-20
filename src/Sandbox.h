@@ -502,7 +502,7 @@ namespace Sandbox {
                 g_logger.Log(L"LOOPBACK: using profile-owned exemption (no per-run check)");
             } else {
                 bool ok = EnableRunLoopback(containerName);
-                g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED (need Administrator)");
+                g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
                 if (!ok)
                     return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (loopback setup failure)");
                 guard.Add([]() { DisableLoopback(); });

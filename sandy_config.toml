@@ -45,7 +45,7 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 
 # [privileges]
 # network = false            # default false (appcontainer only)
-# lan = false                # false | true | 'with localhost' | 'without localhost' (appcontainer only)
+# lan = false                # false | 'with localhost' | 'without localhost' (appcontainer only)
 # named_pipes = false        # default false (restricted only)
 # desktop = true             # default true (restricted only, WinSta0 + Desktop)
 # stdin = false              # default false (NUL)
