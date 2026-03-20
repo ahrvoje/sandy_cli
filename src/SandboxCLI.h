@@ -21,7 +21,7 @@ inline void PrintUsage(const char* version)
         "and transient one-shot runs.\n"
         "\n"
         "Usage:\n"
-        "  sandy.exe -c <config.toml> [-y] [-l <logfile>] [-L] [-q] -x <executable> [args...]\n"
+        "  sandy.exe -c <config.toml> [-l <logfile>] [-L] [-q] -x <executable> [args...]\n"
         "  sandy.exe -s \"<toml>\"      [-l <logfile>] [-L] [-q] -x <executable> [args...]\n"
         "  sandy.exe -p <profile>     [-l <logfile>] [-q] -x <executable> [args...]\n"
         "  sandy.exe --create-profile <name> -c <config.toml>  (create persistent sandbox profile)\n"
@@ -47,7 +47,7 @@ inline void PrintUsage(const char* version)
         "  --delete-profile <n>  Delete a saved profile and revoke its ACLs (refuses if in use)\n"
         "  --profile-info <n>    Show saved profile details (type, SID, config, grants)\n"
         "  -q, --quiet           Suppress the config banner on stderr\n"
-        "  -y, --dynamic         Live config reload: polls every 2s, applies only grant deltas (requires -c)\n"
+
         "  --dry-run, --check    Validate config + show plan, or preview --create-profile (no system changes)\n"
         "  --print-config        Print resolved config to stdout\n"
         "  --json                JSON output (with --status, includes summary counts)\n"

@@ -1074,15 +1074,8 @@ PIPELINE: sorted 3 entries by path depth:
           Cleanup and recovery behavior are tracked in the same runtime log, with no extra host-global dump layer to manage.
         </p>
       </div>
-      <div class="card">
-        <span class="card-icon">🔄</span>
-        <h3>Dynamic config reload</h3>
-        <p>
-          With <code>--dynamic</code>, Sandy polls the config file every 2 seconds while the child runs.
-          When grants change, they are revoked and reapplied live — the running process sees updated permissions
-          without restart.
-        </p>
-      </div>
+
+
       <div class="card">
         <span class="card-icon">🚫</span>
         <h3>Stripped dangerous bits</h3>

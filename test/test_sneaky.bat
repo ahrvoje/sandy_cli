@@ -583,81 +583,8 @@ if exist "!SCOPE_ROOT!" rmdir /s /q "!SCOPE_ROOT!"
 del "%TEMP%\sneaky_scope_run.toml" 2>nul
 del "%TEMP%\sneaky_5.txt" 2>nul
 
-REM ===================================================================
-REM GROUP 6: Dynamic Reload Edge Cases
-REM ===================================================================
-echo.
-echo === GROUP 6: Dynamic Reload Edge Cases ===
-echo.
 
-set DYN_ROOT=%USERPROFILE%\sneaky_dynamic_test
-if exist "!DYN_ROOT!" rmdir /s /q "!DYN_ROOT!"
-mkdir "!DYN_ROOT!\target"
-echo test_data>"!DYN_ROOT!\target\file.txt"
 
-REM Initial config with .deep read
-echo [sandbox]>"%TEMP%\sneaky_dyn.toml"
-echo token = 'appcontainer'>>"%TEMP%\sneaky_dyn.toml"
-echo [allow.deep]>>"%TEMP%\sneaky_dyn.toml"
-echo read = ['!DYN_ROOT!\target']>>"%TEMP%\sneaky_dyn.toml"
-echo execute = ['C:\Windows\System32']>>"%TEMP%\sneaky_dyn.toml"
-
-"!SANDY!" --dry-run -c "%TEMP%\sneaky_dyn.toml" -x cmd.exe >"%TEMP%\sneaky_6a.txt" 2>&1
-set DRY_6A=!ERRORLEVEL!
-if !DRY_6A! EQU 0 (
-    echo   [PASS] 6a: Dynamic reload base config validates
-    set /a PASS+=1
-) else (
-    echo   [FAIL] 6a: Dynamic reload base config should be valid
-    type "%TEMP%\sneaky_6a.txt"
-    set /a FAIL+=1
-)
-del "%TEMP%\sneaky_6a.txt" 2>nul
-
-REM Config: change .deep to .this (scope change)
-echo [sandbox]>"%TEMP%\sneaky_dyn_changed.toml"
-echo token = 'appcontainer'>>"%TEMP%\sneaky_dyn_changed.toml"
-echo [allow.this]>>"%TEMP%\sneaky_dyn_changed.toml"
-echo read = ['!DYN_ROOT!\target']>>"%TEMP%\sneaky_dyn_changed.toml"
-echo [allow.deep]>>"%TEMP%\sneaky_dyn_changed.toml"
-echo execute = ['C:\Windows\System32']>>"%TEMP%\sneaky_dyn_changed.toml"
-
-"!SANDY!" --dry-run -c "%TEMP%\sneaky_dyn_changed.toml" -x cmd.exe >"%TEMP%\sneaky_6b.txt" 2>&1
-set DRY_6B=!ERRORLEVEL!
-if !DRY_6B! EQU 0 (
-    echo   [PASS] 6b: Dynamic reload scope-changed config validates
-    set /a PASS+=1
-) else (
-    echo   [FAIL] 6b: Scope-changed config should be valid
-    type "%TEMP%\sneaky_6b.txt"
-    set /a FAIL+=1
-)
-del "%TEMP%\sneaky_6b.txt" 2>nul
-
-REM Dotdot in config path — must normalize to the same target
-echo [sandbox]>"%TEMP%\sneaky_dyn_dotdot.toml"
-echo token = 'appcontainer'>>"%TEMP%\sneaky_dyn_dotdot.toml"
-echo [allow.deep]>>"%TEMP%\sneaky_dyn_dotdot.toml"
-echo read = ['!DYN_ROOT!\target\..\target']>>"%TEMP%\sneaky_dyn_dotdot.toml"
-echo execute = ['C:\Windows\System32']>>"%TEMP%\sneaky_dyn_dotdot.toml"
-
-"!SANDY!" --dry-run -c "%TEMP%\sneaky_dyn_dotdot.toml" -x cmd.exe >"%TEMP%\sneaky_6c.txt" 2>&1
-set DRY_6C=!ERRORLEVEL!
-if !DRY_6C! EQU 0 (
-    echo   [PASS] 6c: Dotdot path in dynamic config normalizes correctly
-    set /a PASS+=1
-) else (
-    echo   [FAIL] 6c: Dotdot path should normalize for dynamic reload matching
-    type "%TEMP%\sneaky_6c.txt"
-    set /a FAIL+=1
-)
-del "%TEMP%\sneaky_6c.txt" 2>nul
-
-REM Cleanup
-if exist "!DYN_ROOT!" rmdir /s /q "!DYN_ROOT!"
-del "%TEMP%\sneaky_dyn.toml" 2>nul
-del "%TEMP%\sneaky_dyn_changed.toml" 2>nul
-del "%TEMP%\sneaky_dyn_dotdot.toml" 2>nul
 
 REM ===================================================================
 REM CLEANUP & SUMMARY

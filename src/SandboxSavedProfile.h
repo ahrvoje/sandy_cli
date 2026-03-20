@@ -1172,7 +1172,7 @@ namespace Sandbox {
         if (exeFolder.empty())
             return SandyExit::SetupError;
 
-        BeginRunSession(exePath, L"profile:" + prof.name, prof.name, false);
+        BeginRunSession(exePath, L"profile:" + prof.name, prof.name);
         g_logger.Log((L"PROFILE_SID: " + prof.sidString).c_str());
 
         PSID pSid = nullptr;

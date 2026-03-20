@@ -154,13 +154,3 @@ This cleanup must stay ACE-level and owner-specific.
 
 **Never** revert to snapshot-based desktop DACL restoration.
 
-# Dynamic Reload ACL Rules
-
-Dynamic reload must preserve the same invariants as a full pipeline run:
-
-- Allow-under-deny requires stripping the inherited deny state first.
-- New denies over existing child allows require deny application followed by allow fixup.
-- Revoke must not remove surviving same-path rights for the same owner.
-- In-memory reload state must advance only after the actual ACL work succeeds.
-
-If dynamic reload cannot prove equivalence to a full pipeline run, it is wrong.

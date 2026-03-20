@@ -165,7 +165,8 @@ If applying or revoking an ACL fails, Sandy must not pretend the state is clean.
 Rules:
 - record grants only after the ACL change succeeded
 - preserve retry metadata when cleanup was partial or ambiguous
-- do not advance dynamic-reload baseline state when file/registry work failed
+
+
 - treat persistence failures as setup failures when they would otherwise leave untracked durable state behind
 
 Incorrect bookkeeping is a resilience bug even if the immediate filesystem change looked harmless.

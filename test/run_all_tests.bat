@@ -19,7 +19,8 @@ for %%F in (
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
-    test_dynamic.bat
+
+
     test_new_levels.bat
     test_scope.bat
     test_concurrent.bat

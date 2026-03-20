@@ -47,7 +47,6 @@ static int RunMain(int argc, wchar_t* argv[])
     bool dryRun = false;
     bool printConfig = false;
     bool jsonOutput = false;
-    bool dynamic = false;
 
     // --- Pre-scan for isolated flags ---
     // These flags must appear alone (or with a minimal companion like --json).
@@ -147,9 +146,6 @@ static int RunMain(int argc, wchar_t* argv[])
         }
         else if (arg == L"--print-config") {
             printConfig = true;
-        }
-        else if (arg == L"--dynamic" || arg == L"-y") {
-            dynamic = true;
         }
         else if ((arg == L"-c" || arg == L"--config") && i + 1 < argc) {
             configPath = argv[++i];
@@ -251,17 +247,7 @@ static int RunMain(int argc, wchar_t* argv[])
         return SandyExit::InternalError;
     }
 
-    // --- Validate --dynamic compatibility ---
-    if (dynamic) {
-        if (configPath.empty()) {
-            fprintf(stderr, "Error: --dynamic requires -c <config.toml> (file-based config).\n");
-            return SandyExit::InternalError;
-        }
-        if (dryRun || printConfig) {
-            fprintf(stderr, "Error: --dynamic is incompatible with --dry-run and --print-config.\n");
-            return SandyExit::InternalError;
-        }
-    }
+
 
     // (config-only modes handled after config loading below)
 
@@ -318,7 +304,7 @@ static int RunMain(int argc, wchar_t* argv[])
     // --- Run sandboxed ---
     // cleanup() inside RunSandboxed handles ACL restore, loopback, AppContainer.
     // CleanupSandbox() remains as safety net for CTRL+C / SEH crash paths only.
-    return RunSandboxed(config, exePath, exeArgs, dynamic, configPath);
+    return RunSandboxed(config, exePath, exeArgs);
 }
 
 // -----------------------------------------------------------------------

@@ -41,7 +41,6 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
 - ⏱️ **Resource limits** — timeout, memory cap, and process count limits
 - 📝 **Operational logging** — session logs and cleanup diagnostics
-- 🔄 **Dynamic reload** — live config monitoring, applies only grant deltas while the sandbox runs
 - ⚡ **Zero dependencies** — single native executable, no runtime needed
 
 ---
@@ -49,7 +48,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 ## Usage
 
 ```
-sandy.exe -c <config.toml> [-y] [-l <logfile>] [-L] [-q] -x <executable> [args...]
+sandy.exe -c <config.toml> [-l <logfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -s "<toml>"      [-l <logfile>] [-L] [-q] -x <executable> [args...]
 sandy.exe -p <profile>     [-l <logfile>] [-q] -x <executable> [args...]
 sandy.exe --create-profile <name> -c <config.toml>  (create persistent sandbox profile)
@@ -87,7 +86,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
 | `--dry-run`, `--check` | Validate config + show planned changes (no system modifications). Also supported with `--create-profile` to preview what would be created. |
 | `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
-| `-y`, `--dynamic` | Live config reload: polls config file every 2s, applies only grant deltas (added/removed). Deny interactions handled correctly. Requires `-c` |
+
 
 All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it.
 

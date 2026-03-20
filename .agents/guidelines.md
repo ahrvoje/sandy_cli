@@ -217,22 +217,8 @@ Key rules:
 - Run-owned cleanup must only remove run-owned state. Profile-owned state must survive normal run exit.
 - Any new feature that crosses profile and transient code paths should be modeled as shared primitives plus owner-specific metadata, not as copy-pasted branches.
 
-# Dynamic Config Reload (`--dynamic` / `-y`)
 
-A watcher thread polls the config file every 2 seconds while the child is running.
-Only the **delta** is applied.
 
-1. Build `GrantKey` sets from old and new config.
-2. Revoke removed entries.
-3. Apply added entries deny-first, then allows.
-4. Apply registry deltas for RT mode.
-
-Rules:
-- Deny interactions must remain equivalent to a full pipeline run.
-- State is updated only after reload work actually succeeds.
-- Immutable after launch: `token`, `integrity`, `strict`, `workdir`, `[privileges]`, `[environment]`, `[limit]`, network flags.
-- Dynamic-only sections: `[allow.deep]`, `[allow.this]`, `[deny.deep]`, `[deny.this]`, `[registry]`.
-- **Compatibility:** requires `-c <file>`. Incompatible with `-s`, `-p`, `--dry-run`, `--print-config`, `--create-profile`.
 
 # Removed Surface Area
 
