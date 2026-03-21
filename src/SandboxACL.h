@@ -4,6 +4,12 @@
 // Low-level helpers for modifying file/registry DACLs and removing
 // specific SID ACEs.  Multi-instance safe: never replaces entire DACLs.
 // Grant tracking, persistence, and revocation are in SandboxGrants.h.
+//
+// DACL Protection Invariant:
+//   All filesystem DACL writes go through WriteDaclToObject(), which
+//   preserves existing SE_DACL_PROTECTED by default.  Individual
+//   functions (grant, deny, remove, rollback) never decide SI flags
+//   independently — they pass a DaclProtectionIntent to the helper.
 // =========================================================================
 #pragma once
 
@@ -17,8 +23,8 @@ namespace Sandbox {
         DenyOnly,
     };
 
-    // DACL protection intent for RemoveSidFromDaclDetailed.
-    //   PreserveExisting — keep whatever protection the DACL already has
+    // DACL protection intent — used by ALL filesystem DACL writes.
+    //   PreserveExisting — keep whatever protection the DACL already has (DEFAULT)
     //   ForceUnprotected — set UNPROTECTED_DACL (cleanup: resume inheritance)
     //   ForceProtected   — set PROTECTED_DACL   (carve-out: block parent deny re-inheritance)
     enum class DaclProtectionIntent {
@@ -178,6 +184,86 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // WriteDaclToObject — the ONLY way Sandy writes filesystem DACLs.
+    //
+    // Centralizes the SE_DACL_PROTECTED decision so individual callers
+    // never have to reason about protection flags.  Default behavior
+    // (PreserveExisting) reads the existing SD control and preserves
+    // PROTECTED_DACL if already set.  This prevents any DACL write from
+    // silently stripping carve-out protection.
+    //
+    // Parameters:
+    //   path        — target object path
+    //   objType     — SE_FILE_OBJECT or SE_REGISTRY_KEY
+    //   pNewDacl    — new DACL to apply (caller-allocated, caller-freed)
+    //   pExistingSD — security descriptor from GetNamedSecurityInfoW
+    //                 (used to read SE_DACL_PROTECTED; may be nullptr)
+    //   protection  — how to handle DACL protection flags
+    //   directoryOnly — true = SetKernelObjectSecurity (no child propagation)
+    // -----------------------------------------------------------------------
+    inline DWORD WriteDaclToObject(
+        const std::wstring& path,
+        SE_OBJECT_TYPE objType,
+        PACL pNewDacl,
+        PSECURITY_DESCRIPTOR pExistingSD,
+        DaclProtectionIntent protection,
+        bool directoryOnly)
+    {
+        // Read existing protection state from the SD we already fetched
+        SECURITY_DESCRIPTOR_CONTROL existingControl = 0;
+        DWORD sdRevision = 0;
+        if (pExistingSD)
+            GetSecurityDescriptorControl(pExistingSD, &existingControl, &sdRevision);
+
+        // Compute SECURITY_INFORMATION flags
+        DWORD siFlags = DACL_SECURITY_INFORMATION;
+        if (protection == DaclProtectionIntent::ForceProtected) {
+            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
+        } else if (protection == DaclProtectionIntent::ForceUnprotected) {
+            siFlags |= UNPROTECTED_DACL_SECURITY_INFORMATION;
+        } else if (existingControl & SE_DACL_PROTECTED) {
+            // PreserveExisting: keep the protection that's already there
+            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
+        }
+
+        DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
+        bool isDir = (objType == SE_FILE_OBJECT)
+                     && (attrs != INVALID_FILE_ATTRIBUTES)
+                     && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+
+        DWORD rc;
+        if (isDir && directoryOnly) {
+            // SetKernelObjectSecurity: writes DACL to this single object only,
+            // no child propagation.  Used for This-scope grants and peek cleanup.
+            HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+            if (hDir == INVALID_HANDLE_VALUE) {
+                rc = GetLastError();
+            } else {
+                SECURITY_DESCRIPTOR sd;
+                InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+                SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
+                if (existingControl & SE_DACL_PROTECTED)
+                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
+                else if (protection == DaclProtectionIntent::ForceProtected)
+                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
+                rc = SetKernelObjectSecurity(hDir, siFlags, &sd)
+                     ? ERROR_SUCCESS : GetLastError();
+                CloseHandle(hDir);
+            }
+        } else {
+            // SetNamedSecurityInfoW: applies DACL with auto-inheritance.
+            // For directories, Windows propagates inheritable ACEs to children
+            // while respecting PROTECTED_DACL on children.
+            rc = SetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()), objType,
+                siFlags, nullptr, nullptr, pNewDacl, nullptr);
+        }
+        return rc;
+    }
+
+    // -----------------------------------------------------------------------
     // RollbackAceBySid — emergency ACE removal using binary SID directly.
     //
     // Used when ConvertSidToStringSidW fails and we need to undo an
@@ -243,12 +329,12 @@ namespace Sandbox {
             if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) continue;
             AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
         }
-        LocalFree(pSD);
 
-        rc = SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()), objType,
-            DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        // Use centralized DACL write — preserves PROTECTED_DACL if already set
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
+                               DaclProtectionIntent::PreserveExisting, false);
         LocalFree(pNewDacl);
+        LocalFree(pSD);
 
         g_logger.LogFmt(L"ROLLBACK_ACE: %s -> %s (%d ACEs)",
                         path.c_str(), rc == ERROR_SUCCESS ? L"OK" : L"FAILED", removed);
@@ -300,50 +386,18 @@ namespace Sandbox {
         PACL pNewDacl = nullptr;
         rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
         if (rc != ERROR_SUCCESS) { LocalFree(pSD); return rc; }
-        LocalFree(pSD);
 
         // 3. (moved below — record only after ACL application succeeds)
 
-        // 4. Apply new DACL
-        DWORD attr = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
-        bool isDir = (objType == SE_FILE_OBJECT) && (attr != INVALID_FILE_ATTRIBUTES)
-                     && (attr & FILE_ATTRIBUTE_DIRECTORY);
-        if (scope == GrantScope::This && isDir) {
-            // This scope: use SetKernelObjectSecurity — the raw kernel API that does NOT
-            // trigger auto-inheritance propagation.  SetSecurityInfo/SetNamedSecurityInfoW
-            // both walk all children to re-evaluate inherited ACEs on directories like
-            // C:\Users\H (65+ seconds).  SetKernelObjectSecurity writes the DACL to
-            // this single object only.
-            HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-            if (hDir == INVALID_HANDLE_VALUE) {
-                rc = GetLastError();
-            } else {
-                // Build a self-relative security descriptor with the new DACL
-                SECURITY_DESCRIPTOR sd;
-                InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-                SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
-                if (SetKernelObjectSecurity(hDir, DACL_SECURITY_INFORMATION, &sd)) {
-                    rc = ERROR_SUCCESS;
-                } else {
-                    rc = GetLastError();
-                }
-                CloseHandle(hDir);
-            }
-        } else if (isDir && scope != GrantScope::This) {
-            // Use SetNamedSecurityInfoW (not TreeSet) — inheritable ACEs propagate
-            // to children via Windows auto-inheritance, which respects
-            // PROTECTED_DACL on children (e.g. deny paths from other instances).
-            rc = SetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
-        } else {
-            rc = SetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
-        }
+        // 4. Apply new DACL via centralized helper.
+        //    PreserveExisting: if the target already has PROTECTED_DACL (e.g.
+        //    set by a prior carve-out strip), it is preserved — the grant
+        //    does not silently strip protection.
+        bool directoryOnly = (scope == GrantScope::This);
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
+                               DaclProtectionIntent::PreserveExisting, directoryOnly);
         LocalFree(pNewDacl);
+        LocalFree(pSD);
 
         // 3. Record the grant AFTER successful ACL application
         if (rc == ERROR_SUCCESS && recordFn) {
@@ -424,15 +478,17 @@ namespace Sandbox {
         ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
         rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
 
-        LocalFree(pSD);
-        if (rc != ERROR_SUCCESS || !pNewDacl)
+        if (rc != ERROR_SUCCESS || !pNewDacl) {
+            LocalFree(pSD);
             return (rc != ERROR_SUCCESS) ? rc : ERROR_NOT_ENOUGH_MEMORY;
+        }
 
-        // Apply — standard SetNamedSecurityInfoW with auto-inheritance
-        rc = SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()), objType,
-            DACL_SECURITY_INFORMATION, nullptr, nullptr, pNewDacl, nullptr);
+        // Apply via centralized helper — preserves existing PROTECTED_DACL
+        bool directoryOnly = (scope == GrantScope::This);
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
+                               DaclProtectionIntent::PreserveExisting, directoryOnly);
         LocalFree(pNewDacl);
+        LocalFree(pSD);
 
         // Record the grant AFTER successful ACL application
         if (rc == ERROR_SUCCESS && recordFn) {
@@ -605,57 +661,13 @@ namespace Sandbox {
             AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
         }
 
-        SECURITY_DESCRIPTOR_CONTROL control = 0;
-        DWORD revision = 0;
-        GetSecurityDescriptorControl(pSD, &control, &revision);
-
-        LocalFree(pSD);
         LocalFree(pTargetSid);
-        
-        // Apply cleaned DACL
-        DWORD siFlags = DACL_SECURITY_INFORMATION;
-        if (protection == DaclProtectionIntent::ForceProtected) {
-            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
-        } else if (protection == DaclProtectionIntent::ForceUnprotected) {
-            siFlags |= UNPROTECTED_DACL_SECURITY_INFORMATION;
-        } else if (control & SE_DACL_PROTECTED) {
-            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
-        }
 
-        DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
-        bool isDir = (objType == SE_FILE_OBJECT)
-                     && (attrs != INVALID_FILE_ATTRIBUTES)
-                     && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-        if (isDir && !skipTreeSet) {
-            // Use SetNamedSecurityInfoW (not TreeSet) — removing our ACE from
-            // the root lets auto-inheritance remove inherited copies from
-            // children, while respecting PROTECTED_DACL on deny paths.
-            rc = SetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                siFlags, nullptr, nullptr, pNewDacl, nullptr);
-        } else if (isDir && skipTreeSet) {
-            // Peek cleanup: SetKernelObjectSecurity does NOT propagate to children
-            HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-            if (hDir == INVALID_HANDLE_VALUE) {
-                rc = GetLastError();
-            } else {
-                SECURITY_DESCRIPTOR sd;
-                InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-                SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
-                if (control & SE_DACL_PROTECTED)
-                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
-                rc = SetKernelObjectSecurity(hDir, siFlags, &sd)
-                     ? ERROR_SUCCESS : GetLastError();
-                CloseHandle(hDir);
-            }
-        } else {
-            rc = SetNamedSecurityInfoW(
-                const_cast<LPWSTR>(path.c_str()), objType,
-                siFlags, nullptr, nullptr, pNewDacl, nullptr);
-        }
+        // Apply cleaned DACL via centralized helper
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
+                               protection, skipTreeSet);
         LocalFree(pNewDacl);
+        LocalFree(pSD);
 
         if (rc == ERROR_SUCCESS) {
             g_logger.LogFmt(L"ACL_REMOVE: %s -> %d ACEs removed for SID %s",

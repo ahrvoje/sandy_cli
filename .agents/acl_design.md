@@ -54,6 +54,23 @@ auto-inheritance. This is only supported in **Restricted Token** mode.
 > The Windows kernel **ignores** DENY ACEs for AppContainer SIDs (`S-1-15-2-*`).
 > Sandy rejects `[deny.*]` for AppContainer mode at config validation time.
 
+## DACL Protection Invariant — `WriteDaclToObject`
+
+All filesystem DACL writes go through `WriteDaclToObject()` in `SandboxACL.h`.
+This helper reads the existing `SE_DACL_PROTECTED` flag and **preserves it by
+default** (`PreserveExisting`). Individual callers (`GrantObjectAccess`,
+`DenyObjectAccess`, `RollbackAceBySid`, `RemoveSidFromDaclDetailed`) never
+decide `SECURITY_INFORMATION` flags independently.
+
+- `PreserveExisting` (default) — keeps whatever protection the DACL already has.
+- `ForceProtected` — sets `PROTECTED_DACL_SECURITY_INFORMATION` (carve-out strip).
+- `ForceUnprotected` — sets `UNPROTECTED_DACL_SECURITY_INFORMATION` (deny cleanup).
+
+> [!CAUTION]
+> **Never** add a bare `SetNamedSecurityInfoW` or `SetKernelObjectSecurity` call
+> for filesystem objects.  Always use `WriteDaclToObject`.  Bare calls silently
+> strip `PROTECTED_DACL` and break carve-outs.
+
 ## Rules
 
 - **Never** use `TreeSetNamedSecurityInfoW` for grants, cleanup, or deny.
