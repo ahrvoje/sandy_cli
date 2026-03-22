@@ -15,79 +15,219 @@ namespace Sandbox {
 
 // EnumSandyProfiles() is defined in SandboxCleanup.h (included above)
 
+struct StatusInstanceEntry {
+    std::wstring uuid;
+    DWORD pid = 0;
+    RecoveryLedgerLiveness liveness = RecoveryLedgerLiveness::Incomplete;
+};
+
+struct StatusRetryContainerEntry {
+    std::wstring instanceId;
+    std::wstring container;
+    RecoveryLedgerLiveness liveness = RecoveryLedgerLiveness::Incomplete;
+};
+
+struct StatusCleanupTaskEntry {
+    std::wstring taskName;
+    std::wstring instanceId;
+    CleanupTaskState state = CleanupTaskState::Orphaned;
+    RecoveryLedgerPresence ledgers;
+};
+
+struct StatusSnapshot {
+    std::vector<StatusInstanceEntry> instances;
+    std::vector<StatusRetryContainerEntry> retryContainers;
+    std::vector<StatusCleanupTaskEntry> tasks;
+    std::vector<std::wstring> profiles;  // transient/orphaned container mappings only
+    std::vector<ProfileSummary> savedProfiles;
+    int staleInstances = 0;
+    int incompleteInstances = 0;
+    int staleRetryContainers = 0;
+    int incompleteRetryContainers = 0;
+    int retainedTasks = 0;
+    int orphanedTasks = 0;
+};
+
+inline bool HasVisibleStatusState(const StatusSnapshot& snapshot)
+{
+    return !snapshot.instances.empty() ||
+           !snapshot.retryContainers.empty() ||
+           !snapshot.tasks.empty() ||
+           !snapshot.profiles.empty() ||
+           !snapshot.savedProfiles.empty();
+}
+
+inline std::string EscapeStatusJson(const std::wstring& s)
+{
+    std::string result;
+    for (wchar_t c : s) {
+        if (c == L'"') result += "\\\"";
+        else if (c == L'\\') result += "\\\\";
+        else if (c < 128) result += static_cast<char>(c);
+        else {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04X", static_cast<unsigned>(c));
+            result += buf;
+        }
+    }
+    return result;
+}
+
+inline const char* CleanupTaskLedgerSourceLabel(const RecoveryLedgerPresence& ledgers)
+{
+    if (ledgers.grants && ledgers.transientContainerRetry)
+        return "grants + transient retry";
+    if (ledgers.grants)
+        return "grants";
+    if (ledgers.transientContainerRetry)
+        return "transient retry";
+    return "none";
+}
+
+inline StatusSnapshot BuildStatusSnapshot()
+{
+    StatusSnapshot snapshot;
+
+    auto grantSnapshot = SnapshotGrantLedgers();
+    for (const auto& entry : grantSnapshot) {
+        if (entry.liveness == RecoveryLedgerLiveness::Stale)
+            snapshot.staleInstances++;
+        else if (entry.liveness == RecoveryLedgerLiveness::Incomplete)
+            snapshot.incompleteInstances++;
+        snapshot.instances.push_back({ entry.instanceId, entry.pid, entry.liveness });
+    }
+
+    auto retrySnapshot = SnapshotTransientContainerLedgers();
+    for (const auto& entry : retrySnapshot) {
+        if (entry.liveness == RecoveryLedgerLiveness::Stale)
+            snapshot.staleRetryContainers++;
+        else if (entry.liveness == RecoveryLedgerLiveness::Incomplete)
+            snapshot.incompleteRetryContainers++;
+        snapshot.retryContainers.push_back({ entry.instanceId, entry.container, entry.liveness });
+    }
+
+    for (const auto& task : BuildCleanupTaskInventory()) {
+        if (task.state == CleanupTaskState::Retained)
+            snapshot.retainedTasks++;
+        else
+            snapshot.orphanedTasks++;
+        snapshot.tasks.push_back({ task.taskName, task.instanceId, task.state, task.ledgers });
+    }
+
+    for (const auto& entry : BuildSandyContainerInventory()) {
+        if (entry.kind != SandyContainerKind::SavedProfile)
+            snapshot.profiles.push_back(entry.name);
+    }
+
+    snapshot.savedProfiles = EnumSavedProfiles();
+    return snapshot;
+}
+
+inline void PrintStatusJson(const StatusSnapshot& snapshot)
+{
+    printf("{\"instances\":[");
+    for (size_t i = 0; i < snapshot.instances.size(); i++)
+        printf("%s{\"uuid\":\"%s\",\"pid\":%lu,\"status\":\"%s\"}",
+               i ? "," : "", EscapeStatusJson(snapshot.instances[i].uuid).c_str(),
+               snapshot.instances[i].pid,
+               RecoveryLedgerLivenessJsonName(snapshot.instances[i].liveness));
+    printf("],\"retry_containers\":[");
+    for (size_t i = 0; i < snapshot.retryContainers.size(); i++)
+        printf("%s{\"instance\":\"%s\",\"container\":\"%s\",\"status\":\"%s\"}",
+               i ? "," : "",
+               EscapeStatusJson(snapshot.retryContainers[i].instanceId).c_str(),
+               EscapeStatusJson(snapshot.retryContainers[i].container).c_str(),
+               RecoveryLedgerLivenessJsonName(snapshot.retryContainers[i].liveness));
+    printf("],\"tasks\":[");
+    for (size_t i = 0; i < snapshot.tasks.size(); i++)
+        printf("%s{\"name\":\"%s\",\"instance\":\"%s\",\"status\":\"%s\",\"grants_ledger\":%s,\"transient_container_retry_ledger\":%s}",
+               i ? "," : "",
+               EscapeStatusJson(snapshot.tasks[i].taskName).c_str(),
+               EscapeStatusJson(snapshot.tasks[i].instanceId).c_str(),
+               CleanupTaskStateJsonName(snapshot.tasks[i].state),
+               snapshot.tasks[i].ledgers.grants ? "true" : "false",
+               snapshot.tasks[i].ledgers.transientContainerRetry ? "true" : "false");
+    printf("],\"profiles\":[");
+    for (size_t i = 0; i < snapshot.profiles.size(); i++)
+        printf("%s\"%s\"", i ? "," : "", EscapeStatusJson(snapshot.profiles[i]).c_str());
+    printf("],\"saved_profiles\":[");
+    for (size_t i = 0; i < snapshot.savedProfiles.size(); i++)
+        printf("%s{\"name\":\"%s\",\"type\":\"%s\",\"created\":\"%s\",\"status\":\"%s\"}",
+               i ? "," : "", EscapeStatusJson(snapshot.savedProfiles[i].name).c_str(),
+               EscapeStatusJson(snapshot.savedProfiles[i].type).c_str(),
+               EscapeStatusJson(snapshot.savedProfiles[i].created).c_str(),
+               snapshot.savedProfiles[i].invalid ? "invalid" : "ok");
+    printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"incomplete_instances\":%d,\"retry_containers\":%zu,\"stale_retry_containers\":%d,\"incomplete_retry_containers\":%d,\"tasks\":%zu,\"retained_tasks\":%d,\"orphaned_tasks\":%d,\"profiles\":%zu,\"saved_profiles\":%zu}}\n",
+           snapshot.instances.size(), snapshot.staleInstances, snapshot.incompleteInstances,
+           snapshot.retryContainers.size(), snapshot.staleRetryContainers, snapshot.incompleteRetryContainers,
+           snapshot.tasks.size(), snapshot.retainedTasks, snapshot.orphanedTasks,
+           snapshot.profiles.size(), snapshot.savedProfiles.size());
+}
+
+inline void PrintStatusText(const StatusSnapshot& snapshot)
+{
+    for (const auto& instance : snapshot.instances) {
+        const char* label = RecoveryLedgerLivenessTextLabel(instance.liveness);
+        const char* suffix = "";
+        if (instance.liveness == RecoveryLedgerLiveness::Stale)
+            suffix = " (dead process)";
+        else if (instance.liveness == RecoveryLedgerLiveness::Incomplete)
+            suffix = " (writer initializing or metadata incomplete)";
+        printf("  [%s]  PID %-6lu  %ls%s\n",
+               label, instance.pid, instance.uuid.c_str(), suffix);
+    }
+    for (const auto& retry : snapshot.retryContainers) {
+        const wchar_t* container = retry.container.empty()
+            ? L"<missing>"
+            : retry.container.c_str();
+        printf("  [RETRY_CONTAINER] %ls  (%s, instance: %ls)\n",
+               container,
+               RecoveryLedgerLivenessJsonName(retry.liveness),
+               retry.instanceId.c_str());
+    }
+    for (const auto& task : snapshot.tasks) {
+        printf("  [TASK]    %ls  (%s, instance: %ls, ledgers: %s)\n",
+               task.taskName.c_str(),
+               CleanupTaskStateTextLabel(task.state),
+               task.instanceId.c_str(),
+               CleanupTaskLedgerSourceLabel(task.ledgers));
+    }
+    for (const auto& profile : snapshot.profiles)
+        printf("  [PROFILE] %ls\n", profile.c_str());
+    for (const auto& savedProfile : snapshot.savedProfiles) {
+        const wchar_t* created = savedProfile.created.empty()
+            ? L"unknown"
+            : savedProfile.created.c_str();
+        if (savedProfile.invalid) {
+            printf("  [SAVED_PROFILE] %ls  (corrupted or incomplete, created: %ls)\n",
+                   savedProfile.name.c_str(), created);
+        } else {
+            printf("  [SAVED_PROFILE] %ls  (%ls, created: %ls)\n",
+                   savedProfile.name.c_str(), savedProfile.type.c_str(),
+                   created);
+        }
+    }
+
+    if (!HasVisibleStatusState(snapshot)) {
+        printf("Sandy - no active instances or recovery state.\n");
+    } else {
+        printf("Summary: %zu instance(s), %d stale instance(s), %d incomplete instance(s), %zu retry container(s), %zu task(s) (%d retained, %d orphaned), %zu profile(s), %zu saved profile(s).\n",
+               snapshot.instances.size(), snapshot.staleInstances, snapshot.incompleteInstances,
+               snapshot.retryContainers.size(), snapshot.tasks.size(),
+               snapshot.retainedTasks, snapshot.orphanedTasks,
+               snapshot.profiles.size(), snapshot.savedProfiles.size());
+    }
+}
+
 // -----------------------------------------------------------------------
-// Show active instances and stale state (--status [--json])
+// Show active, stale, or incomplete instances and other Sandy state
+// (--status [--json])
 // -----------------------------------------------------------------------
 inline int HandleStatus(bool json = false)
 {
-    // --- Collect data ---
-    struct Inst { std::wstring uuid; DWORD pid; bool alive; };
-    std::vector<Inst> insts;
-    std::vector<std::wstring> tasks;
-    std::vector<std::wstring> profiles;
-    int staleInstances = 0;
-
-    // Grants registry — use centralized snapshot
-    auto grantSnapshot = Sandbox::SnapshotGrantLedgers();
-    for (const auto& e : grantSnapshot) {
-        if (!e.isAlive) staleInstances++;
-        insts.push_back({ e.instanceId, e.pid, e.isAlive });
-    }
-
-    tasks = ListCleanupTasks();
-
-    profiles = EnumSandyProfiles();
-
-    // Saved profiles (persistent named profiles)
-    auto savedProfiles = EnumSavedProfiles();
-
-    // --- Output ---
-    if (json) {
-        auto esc = [](const std::wstring& s) {
-            std::string r; for (wchar_t c : s) {
-                if (c == L'"') r += "\\\""; else if (c == L'\\') r += "\\\\";
-                else if (c < 128) r += (char)c;
-                else { char b[8]; snprintf(b, 8, "\\u%04X", (unsigned)c); r += b; }
-            } return r;
-        };
-        printf("{\"instances\":[");
-        for (size_t i = 0; i < insts.size(); i++)
-            printf("%s{\"uuid\":\"%s\",\"pid\":%lu,\"status\":\"%s\"}",
-                   i ? "," : "", esc(insts[i].uuid).c_str(),
-                   insts[i].pid, insts[i].alive ? "active" : "stale");
-        printf("],\"tasks\":[");
-        for (size_t i = 0; i < tasks.size(); i++)
-            printf("%s\"%s\"", i ? "," : "", esc(tasks[i]).c_str());
-        printf("],\"profiles\":[");
-        for (size_t i = 0; i < profiles.size(); i++)
-            printf("%s\"%s\"", i ? "," : "", esc(profiles[i]).c_str());
-        printf("],\"saved_profiles\":[");
-        for (size_t i = 0; i < savedProfiles.size(); i++)
-            printf("%s{\"name\":\"%s\",\"type\":\"%s\",\"created\":\"%s\"}",
-                   i ? "," : "", esc(savedProfiles[i].name).c_str(),
-                   esc(savedProfiles[i].type).c_str(),
-                   esc(savedProfiles[i].created).c_str());
-        printf("],\"summary\":{\"instances\":%zu,\"stale_instances\":%d,\"tasks\":%zu,\"profiles\":%zu,\"saved_profiles\":%zu}}\n",
-               insts.size(), staleInstances, tasks.size(), profiles.size(), savedProfiles.size());
-    } else {
-        bool found = false;
-        for (auto& x : insts) {
-            printf("  [%s]  PID %-6lu  %ls%s\n",
-                   x.alive ? "ACTIVE" : "STALE ", x.pid, x.uuid.c_str(),
-                   x.alive ? "" : " (dead process)");
-            found = true;
-        }
-        for (auto& t : tasks) { printf("  [TASK]    %ls scheduled task exists\n", t.c_str()); found = true; }
-        for (auto& p : profiles) { printf("  [PROFILE] %ls\n", p.c_str()); found = true; }
-        for (auto& sp : savedProfiles) {
-            printf("  [SAVED_PROFILE] %ls  (%ls, created: %ls)\n",
-                   sp.name.c_str(), sp.type.c_str(), sp.created.c_str());
-            found = true;
-        }
-        if (!found) printf("Sandy - no active instances or stale state.\n");
-        else printf("Summary: %zu instance(s), %d stale instance(s), %zu task(s), %zu profile(s), %zu saved profile(s).\n",
-                    insts.size(), staleInstances, tasks.size(), profiles.size(), savedProfiles.size());
-    }
+    StatusSnapshot snapshot = BuildStatusSnapshot();
+    if (json) PrintStatusJson(snapshot);
+    else      PrintStatusText(snapshot);
     return 0;
 }
 
@@ -96,22 +236,14 @@ inline int HandleStatus(bool json = false)
 // -----------------------------------------------------------------------
 inline int HandleCleanup()
 {
-    // Enumerate all Sandy AppContainer profiles
-    auto allProfiles = EnumSandyProfiles();
-
-    // Filter to stale-only: preserve containers whose owning instance is live
-    // AND containers belonging to saved profiles (permanent, never cleaned)
-    auto liveContainers = Sandbox::GetLiveContainerNames();
-    auto savedContainers = Sandbox::GetSavedProfileContainerNames();
     std::vector<std::wstring> staleProfiles;
-    for (const auto& m : allProfiles) {
-        std::wstring lookup = NormalizeLookupKey(m);
-        if (liveContainers.count(lookup)) {
-            printf("  [PROFILE] %ls -> SKIPPED (live instance)\n", m.c_str());
-        } else if (savedContainers.count(lookup)) {
-            printf("  [PROFILE] %ls -> SKIPPED (saved profile)\n", m.c_str());
+    for (const auto& entry : BuildSandyContainerInventory()) {
+        if (entry.kind == SandyContainerKind::LiveTransient) {
+            printf("  [PROFILE] %ls -> SKIPPED (live instance)\n", entry.name.c_str());
+        } else if (entry.kind == SandyContainerKind::SavedProfile) {
+            printf("  [PROFILE] %ls -> SKIPPED (saved profile)\n", entry.name.c_str());
         } else {
-            staleProfiles.push_back(m);
+            staleProfiles.push_back(entry.name);
         }
     }
 

@@ -2,22 +2,22 @@
 for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM =====================================================================
-REM test_collusion.bat -- Multi-instance collusion attack suite
+REM test_collusion.bat -- Multi-instance SDDL poisoning test
 REM
-REM Two Sandy instances (Alice + Bob) run concurrently on shared folder.
-REM Alice has no denies. Bob has deny.all on shared/locked/.
-REM Alice reads Bob's forbidden data and relays it.
-REM Alice exits FIRST — her cleanup should NOT poison Bob's state.
-REM Bob exits SECOND — his cleanup should restore true originals.
+REM Two Sandy AC instances (Alice + Bob) run concurrently on shared folder.
+REM Both grant [all] to shared/.  No deny (AC does not support deny).
+REM Alice exits FIRST — her cleanup must not leave zombie ACEs.
+REM Bob exits SECOND — his cleanup must restore true originals.
 REM
 REM KEY BUG BEING TESTED:
-REM   If B saves A's modified SDDL as "original", then when B exits,
-REM   it restores with A's SID baked in = ORPHANED ACE forever.
+REM   Without cleanup serialization, concurrent exits can interleave
+REM   SetNamedSecurityInfoW auto-inheritance propagation, leaving
+REM   orphaned AppContainer SIDs on the shared tree.
 REM =====================================================================
 
 echo =====================================================================
-echo  Collusion Test Suite -- Multi-Instance Sandbox Breach
-echo  Alice (no denies) + Bob (deny.all on locked/)
+echo  Collusion Test Suite -- Multi-Instance SDDL Poisoning
+echo  Alice (AC, all on shared) + Bob (AC, all on shared)
 echo =====================================================================
 
 set "ROOT=%USERPROFILE%\test_collusion"

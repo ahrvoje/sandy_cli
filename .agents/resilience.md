@@ -91,8 +91,17 @@ This applies to:
 ## Overlapping ACL Cleanup
 
 Both AppContainer and Restricted Token SIDs are unique per instance. Cleanup
-removes ACEs by owning SID only, so one instance's cleanup **cannot** interfere
-with another's — no cross-instance coordination is needed.
+removes ACEs by owning SID only, so one instance's cleanup **cannot remove**
+another's ACEs.  However, individual ACE removal uses `SetNamedSecurityInfoW`
+which triggers Windows auto-inheritance propagation on directories.  When two
+instances clean up concurrently on overlapping paths, the interleaved
+propagation can re-stamp ACEs that the other instance just removed.
+
+**Solution:** `RevokeAllGrants()` and `RestoreGrantsFromKey()` acquire the
+global named mutex (`Local\Sandy_ACL`) for the entire cleanup sequence, not
+just per-operation.  Windows named mutexes are recursive, so the inner
+per-path `RemoveSidFromDaclDetailed` calls re-acquire without deadlock.
+This ensures one instance's full cleanup completes before another starts.
 
 This means:
 - No need to query other instances' deny paths before cleanup

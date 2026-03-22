@@ -21,6 +21,7 @@ echo =====================================================================
 REM === Pre-clean ===
 "!SANDY!" --delete-profile test_ac >nul 2>nul
 "!SANDY!" --delete-profile test_rt >nul 2>nul
+"!SANDY!" --delete-profile info_ac >nul 2>nul
 "!SANDY!" --delete-profile dup_test >nul 2>nul
 "!SANDY!" --delete-profile scope_ac >nul 2>nul
 "!SANDY!" --delete-profile scope_rt >nul 2>nul
@@ -29,9 +30,12 @@ REM === Pre-clean ===
 if exist "!ROOT!" rmdir /s /q "!ROOT!"
 mkdir "!ROOT!\data"
 echo test data > "!ROOT!\data\hello.txt"
+mkdir "!ROOT!\info\data"
+mkdir "!ROOT!\info\work"
+echo redirected stdin > "!ROOT!\info\input.txt"
 
 REM ===================================================================
-REM P1 — Create AppContainer Profile
+REM P1 ? Create AppContainer Profile
 REM ===================================================================
 echo.
 echo --- P1: Create AppContainer Profile ---
@@ -78,7 +82,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p1.txt" 2>nul
 
 REM ===================================================================
-REM P2 — Create Restricted Token Profile
+REM P2 ? Create Restricted Token Profile
 REM ===================================================================
 echo.
 echo --- P2: Create Restricted Token Profile ---
@@ -115,7 +119,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p2.txt" 2>nul
 
 REM ===================================================================
-REM P3 — Profile Info (AppContainer)
+REM P3 ? Profile Info (AppContainer)
 REM ===================================================================
 echo.
 echo --- P3: Profile Info ---
@@ -158,19 +162,104 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-findstr /C:"Allow paths:" "%TEMP%\sandy_p3.txt" >nul 2>nul
+findstr /C:"[sandbox]" "%TEMP%\sandy_p3.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] P3e: Config summary shown
+    echo   [PASS] P3e: Resolved config shown
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P3e: Config summary missing
+    echo   [FAIL] P3e: Resolved config missing
     set /a FAIL+=1
 )
 
 del "%TEMP%\sandy_p3.txt" 2>nul
 
+"!SANDY!" --create-profile info_ac -c "%~dp0test_profile_info_rich.toml" >"%TEMP%\sandy_p3f_create.txt" 2>&1
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3f: Rich profile fixture created
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3f: Rich profile fixture creation failed
+    set /a FAIL+=1
+)
+
+"!SANDY!" --profile-info info_ac >"%TEMP%\sandy_p3f.txt" 2>&1
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3g: Rich --profile-info exits 0
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3g: Rich --profile-info failed
+    set /a FAIL+=1
+)
+
+findstr /C:"workdir = '!ROOT!\info\work'" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3h: Profile info shows saved workdir
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3h: Profile info missing saved workdir
+    set /a FAIL+=1
+)
+
+findstr /C:"stdin           = '!ROOT!\info\input.txt'" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3i: Profile info preserves file-backed stdin
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3i: Profile info flattened file-backed stdin
+    set /a FAIL+=1
+)
+
+findstr /C:"[environment]" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3j: Profile info renders environment section
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3j: Profile info missing environment section
+    set /a FAIL+=1
+)
+
+findstr /C:"pass = ['TEMP']" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3k: Profile info renders env pass list
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3k: Profile info missing env pass list
+    set /a FAIL+=1
+)
+
+findstr /C:"child_processes = false" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3l: Profile info renders non-default child process setting
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3l: Profile info missing child process setting
+    set /a FAIL+=1
+)
+
+findstr /C:"memory    = 64" "%TEMP%\sandy_p3f.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3m: Profile info renders limits
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3m: Profile info missing limits
+    set /a FAIL+=1
+)
+
+"!SANDY!" --delete-profile info_ac >"%TEMP%\sandy_p3f_delete.txt" 2>&1
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P3n: Rich profile fixture deleted
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P3n: Rich profile fixture delete failed
+    set /a FAIL+=1
+)
+
+del "%TEMP%\sandy_p3f_create.txt" 2>nul
+del "%TEMP%\sandy_p3f.txt" 2>nul
+del "%TEMP%\sandy_p3f_delete.txt" 2>nul
+
 REM ===================================================================
-REM P4 — Status Lists Saved Profiles
+REM P4 ? Status Lists Saved Profiles
 REM ===================================================================
 echo.
 echo --- P4: Status Lists Saved Profiles ---
@@ -220,7 +309,7 @@ del "%TEMP%\sandy_p4.txt" 2>nul
 del "%TEMP%\sandy_p4j.txt" 2>nul
 
 REM ===================================================================
-REM P5 — Run With Profile (AppContainer)
+REM P5 ? Run With Profile (AppContainer)
 REM ===================================================================
 echo.
 echo --- P5: Run With AppContainer Profile ---
@@ -248,7 +337,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p5.txt" 2>nul
 
 REM ===================================================================
-REM P6 — Run With Profile (Restricted Token)
+REM P6 ? Run With Profile (Restricted Token)
 REM ===================================================================
 echo.
 echo --- P6: Run With Restricted Token Profile ---
@@ -276,7 +365,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p6.txt" 2>nul
 
 REM ===================================================================
-REM P7 — Flag Combinations: collision only when -x is present
+REM P7 ? Flag Combinations: collision only when -x is present
 REM     -p + config + -x  = COLLISION (error)
 REM     -p + config (no -x) = missing -x error (not collision)
 REM     --create-profile + -c = VALID (config is required for create)
@@ -410,7 +499,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p7*.txt" 2>nul
 
 REM ===================================================================
-REM P8 — Error: Duplicate Profile Name
+REM P8 ? Error: Duplicate Profile Name
 REM ===================================================================
 echo.
 echo --- P8: Duplicate Profile Name ---
@@ -436,7 +525,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p8.txt" 2>nul
 
 REM ===================================================================
-REM P9 — Error: Non-existent Profile
+REM P9 ? Error: Non-existent Profile
 REM ===================================================================
 echo.
 echo --- P9: Non-existent Profile ---
@@ -482,7 +571,7 @@ del "%TEMP%\sandy_p9c.txt" 2>nul
 del "%TEMP%\sandy_p9d.txt" 2>nul
 
 REM ===================================================================
-REM P10 — Error: Missing Config for --create-profile
+REM P10 ? Error: Missing Config for --create-profile
 REM ===================================================================
 echo.
 echo --- P10: Missing Config for --create-profile ---
@@ -499,7 +588,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_p10.txt" 2>nul
 
 REM ===================================================================
-REM P11 — Error: Invalid Config File
+REM P11 ? Error: Invalid Config File
 REM ===================================================================
 echo.
 echo --- P11: Invalid Config File ---
@@ -516,7 +605,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_p11.txt" 2>nul
 
 REM ===================================================================
-REM P12 — Error: Invalid Profile Names
+REM P12 ? Error: Invalid Profile Names
 REM ===================================================================
 echo.
 echo --- P12: Invalid Profile Names ---
@@ -543,7 +632,7 @@ del "%TEMP%\sandy_p12a.txt" 2>nul
 del "%TEMP%\sandy_p12b.txt" 2>nul
 
 REM ===================================================================
-REM P13 — Registry Isolation: grants stay in Profiles, not Grants
+REM P13 ? Registry Isolation: grants stay in Profiles, not Grants
 REM
 REM Verifies that --create-profile and -p (run) do NOT leave orphaned
 REM entries under Sandy\Grants.  All profile data must live exclusively
@@ -600,7 +689,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM P13e: Run with profile, then verify Grants is still clean
-REM   (P5 already ran with test_ac — check Grants after)
+REM   (P5 already ran with test_ac ? check Grants after)
 reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P13e: Sandy\Grants clean after profile run
@@ -611,7 +700,7 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM ===================================================================
-REM P17 — Discrete Config Values: verify registry-native storage
+REM P17 ? Discrete Config Values: verify registry-native storage
 REM
 REM Verifies that SandboxConfig fields are stored as discrete registry
 REM values (REG_DWORD for bools/ints, REG_SZ for strings), not just
@@ -721,7 +810,7 @@ if "!P17J_VAL!"=="0x0" (
 )
 
 REM ===================================================================
-REM P18 — Grant Scope Round-Trip (.deep / .this)
+REM P18 ? Grant Scope Round-Trip (.deep / .this)
 REM
 REM Verifies that GrantScope::Deep and GrantScope::This survive the
 REM registry serialization round-trip.  Tests both the stored format
@@ -893,8 +982,8 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_p18g.txt" 2>nul
 
 REM --- P18h: RT scope enforcement via profile run ---
-REM   Use cmd.exe probes instead of Python — simpler, no traversal deps.
-REM P18h1: RT deep_dir write (deep grant — should work)
+REM   Use cmd.exe probes instead of Python ? simpler, no traversal deps.
+REM P18h1: RT deep_dir write (deep grant ? should work)
 "!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\deep_dir\rt_probe.txt" >nul 2>nul
 if exist "!SCOPE_ROOT!\deep_dir\rt_probe.txt" (
     echo   [PASS] P18h1: RT deep_dir write allowed
@@ -905,7 +994,7 @@ if exist "!SCOPE_ROOT!\deep_dir\rt_probe.txt" (
     set /a FAIL+=1
 )
 
-REM P18h2: RT deep_dir\sub write (deep grant inherits — should work)
+REM P18h2: RT deep_dir\sub write (deep grant inherits ? should work)
 "!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" >nul 2>nul
 if exist "!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" (
     echo   [PASS] P18h2: RT deep_dir\sub write inherited
@@ -916,7 +1005,7 @@ if exist "!SCOPE_ROOT!\deep_dir\sub\rt_probe.txt" (
     set /a FAIL+=1
 )
 
-REM P18h3: RT this_dir write (this grant — should work on object)
+REM P18h3: RT this_dir write (this grant ? should work on object)
 "!SANDY!" -p scope_rt -x C:\Windows\System32\cmd.exe /c "echo probe>!SCOPE_ROOT!\this_dir\rt_probe.txt" >nul 2>nul
 if exist "!SCOPE_ROOT!\this_dir\rt_probe.txt" (
     echo   [PASS] P18h3: RT this_dir write allowed
@@ -927,7 +1016,7 @@ if exist "!SCOPE_ROOT!\this_dir\rt_probe.txt" (
     set /a FAIL+=1
 )
 
-REM P18h4: RT this_dir\sub — NOT tested at runtime.
+REM P18h4: RT this_dir\sub ? NOT tested at runtime.
 REM   Under RT, the user's own SID has inherited full control in subdirs,
 REM   so the 'this' scope boundary cannot be enforced via DACL alone.
 REM   Scope correctness for RT is verified by registry format (P18e/f)
@@ -939,7 +1028,7 @@ REM --- P18 cleanup: delete scope profiles ---
 if exist "!SCOPE_ROOT!" rmdir /s /q "!SCOPE_ROOT!"
 
 REM ===================================================================
-REM P19 — Strict RT Mode (user SID excluded from restricting list)
+REM P19 ? Strict RT Mode (user SID excluded from restricting list)
 REM ===================================================================
 echo.
 echo --- P19: Strict RT Mode ---
@@ -996,7 +1085,7 @@ REM --- P19 cleanup ---
 if exist "!STRICT_ROOT!" rmdir /s /q "!STRICT_ROOT!"
 
 REM ===================================================================
-REM P14 — Cleanup Does NOT Delete Profiles
+REM P14 ? Cleanup Does NOT Delete Profiles
 REM ===================================================================
 echo.
 echo --- P14: Cleanup Preserves Profiles ---
@@ -1109,7 +1198,7 @@ del "%TEMP%\sandy_p14g.txt" 2>nul
 
 
 REM ===================================================================
-REM P15 — Delete Profiles
+REM P15 ? Delete Profiles
 REM ===================================================================
 echo.
 echo --- P15: Delete Profiles ---
@@ -1154,7 +1243,7 @@ del "%TEMP%\sandy_p15a.txt" 2>nul
 del "%TEMP%\sandy_p15c.txt" 2>nul
 
 REM ===================================================================
-REM P16 — Status Clean After Delete
+REM P16 ? Status Clean After Delete
 REM ===================================================================
 echo.
 echo --- P16: Status Clean After Delete ---
@@ -1175,6 +1264,7 @@ del "%TEMP%\sandy_p16.txt" 2>nul
 REM ===================================================================
 REM Cleanup
 REM ===================================================================
+"!SANDY!" --delete-profile info_ac >nul 2>nul
 "!SANDY!" --cleanup >nul 2>nul
 if exist "!ROOT!" rmdir /s /q "!ROOT!"
 

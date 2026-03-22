@@ -1,4 +1,4 @@
-# Collusion test — Bob config (Instance B) (AC, no deny)
+# Collusion test — Bob config (Instance B) (AC, all on shared)
 # EXITS SECOND — restores "original" that includes Alice's SID
 
 [sandbox]

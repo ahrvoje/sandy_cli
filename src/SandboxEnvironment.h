@@ -12,6 +12,127 @@
 
 namespace Sandbox {
 
+    using EnvironmentVariable = std::pair<std::wstring, std::wstring>;
+
+    struct EnvironmentSnapshot {
+        std::vector<std::wstring> hiddenVars;
+        std::vector<EnvironmentVariable> vars;
+    };
+
+    inline bool IsEssentialEnvironmentVar(const std::wstring& name)
+    {
+        static const wchar_t* essential[] = {
+            L"SYSTEMROOT", L"SYSTEMDRIVE", L"WINDIR",
+            L"TEMP", L"TMP",
+            L"COMSPEC", L"PATHEXT",
+            L"LOCALAPPDATA", L"APPDATA",
+            L"USERPROFILE", L"HOMEDRIVE", L"HOMEPATH",
+            L"PROCESSOR_ARCHITECTURE", L"NUMBER_OF_PROCESSORS",
+            L"OS",
+        };
+        for (auto* entry : essential) {
+            if (_wcsicmp(name.c_str(), entry) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    inline bool IsExplicitlyPassedEnvironmentVar(const std::wstring& name,
+                                                 const SandboxConfig& config)
+    {
+        for (const auto& allowed : config.envPass) {
+            if (_wcsicmp(name.c_str(), allowed.c_str()) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    inline bool ShouldKeepEnvironmentVar(const std::wstring& name,
+                                         const SandboxConfig& config)
+    {
+        return IsEssentialEnvironmentVar(name) ||
+               IsExplicitlyPassedEnvironmentVar(name, config);
+    }
+
+    inline EnvironmentSnapshot CollectCurrentEnvironmentSnapshot()
+    {
+        EnvironmentSnapshot snapshot;
+
+        LPWCH envStrings = GetEnvironmentStringsW();
+        if (!envStrings)
+            return snapshot;
+
+        for (LPCWSTR p = envStrings; *p; p += wcslen(p) + 1) {
+            std::wstring entry(p);
+            if (entry.empty())
+                continue;
+
+            if (entry[0] == L'=') {
+                snapshot.hiddenVars.push_back(std::move(entry));
+                continue;
+            }
+
+            size_t eq = entry.find(L'=');
+            if (eq != std::wstring::npos && eq > 0) {
+                snapshot.vars.push_back({
+                    entry.substr(0, eq),
+                    entry.substr(eq + 1)
+                });
+            }
+        }
+
+        FreeEnvironmentStringsW(envStrings);
+        return snapshot;
+    }
+
+    inline std::vector<EnvironmentVariable> FilterEnvironmentVars(
+        const std::vector<EnvironmentVariable>& vars,
+        const SandboxConfig& config)
+    {
+        std::vector<EnvironmentVariable> filtered;
+        for (const auto& var : vars) {
+            if (ShouldKeepEnvironmentVar(var.first, config))
+                filtered.push_back(var);
+        }
+        return filtered;
+    }
+
+    inline void SortEnvironmentVarsForWindows(std::vector<EnvironmentVariable>& vars)
+    {
+        std::sort(vars.begin(), vars.end(),
+            [](const EnvironmentVariable& a, const EnvironmentVariable& b) {
+                return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
+            });
+    }
+
+    inline void AppendSerializedEnvironmentEntry(const std::wstring& entry,
+                                                 std::vector<wchar_t>& block)
+    {
+        block.insert(block.end(), entry.begin(), entry.end());
+        block.push_back(L'\0');
+    }
+
+    inline std::vector<wchar_t> SerializeEnvironmentBlock(
+        const std::vector<std::wstring>& hiddenVars,
+        const std::vector<EnvironmentVariable>& vars)
+    {
+        std::vector<wchar_t> block;
+        if (hiddenVars.empty() && vars.empty()) {
+            block.push_back(L'\0');
+            block.push_back(L'\0');
+            return block;
+        }
+
+        for (const auto& hidden : hiddenVars)
+            AppendSerializedEnvironmentEntry(hidden, block);
+
+        for (const auto& var : vars)
+            AppendSerializedEnvironmentEntry(var.first + L"=" + var.second, block);
+
+        block.push_back(L'\0');
+        return block;
+    }
+
     // -----------------------------------------------------------------------
     // BuildEnvironmentBlock — create a filtered environment for the child.
     //
@@ -22,83 +143,14 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline std::vector<wchar_t> BuildEnvironmentBlock(const SandboxConfig& config)
     {
-        std::vector<wchar_t> block;
-
         if (config.envInherit)
-            return block;  // empty = pass nullptr to CreateProcessW (inherit all)
+            return {};  // empty = pass nullptr to CreateProcessW (inherit all)
 
-        // Collect environment variables
-        // Hidden vars (starting with '=', e.g. =C:=C:\path) are drive-letter
-        // assignments required by the Windows loader — always include them.
-        std::vector<std::wstring> hiddenVars;
-        std::vector<std::pair<std::wstring, std::wstring>> env;
-
-        LPWCH envStrings = GetEnvironmentStringsW();
-        if (envStrings) {
-            for (LPCWSTR p = envStrings; *p; p += wcslen(p) + 1) {
-                std::wstring entry(p);
-                if (entry[0] == L'=') {
-                    hiddenVars.push_back(entry);
-                    continue;
-                }
-                auto eq = entry.find(L'=');
-                if (eq != std::wstring::npos && eq > 0)
-                    env.push_back({ entry.substr(0, eq), entry.substr(eq + 1) });
-            }
-            FreeEnvironmentStringsW(envStrings);
-        }
-
-        // Keep only essential vars + explicitly passed vars
-        std::vector<std::pair<std::wstring, std::wstring>> filtered;
-        auto isAllowed = [&](const std::wstring& name) {
-            // Always pass essential Windows vars needed by the loader
-            static const wchar_t* essential[] = {
-                L"SYSTEMROOT", L"SYSTEMDRIVE", L"WINDIR",
-                L"TEMP", L"TMP",
-                L"COMSPEC", L"PATHEXT",
-                L"LOCALAPPDATA", L"APPDATA",
-                L"USERPROFILE", L"HOMEDRIVE", L"HOMEPATH",
-                L"PROCESSOR_ARCHITECTURE", L"NUMBER_OF_PROCESSORS",
-                L"OS",
-            };
-            for (auto* e : essential) {
-                if (_wcsicmp(name.c_str(), e) == 0) return true;
-            }
-            for (const auto& allowed : config.envPass) {
-                if (_wcsicmp(name.c_str(), allowed.c_str()) == 0) return true;
-            }
-            return false;
-        };
-        for (auto& p : env) {
-            if (isAllowed(p.first)) filtered.push_back(p);
-        }
-        env = std::move(filtered);
-
-        // Sort regular vars alphabetically by name (required by Windows)
-        std::sort(env.begin(), env.end(),
-            [](const std::pair<std::wstring, std::wstring>& a,
-               const std::pair<std::wstring, std::wstring>& b) {
-                return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
-            });
-
-        // Serialize: hidden vars first, then KEY=VALUE\0...\0
-        if (hiddenVars.empty() && env.empty()) {
-            // Empty block must still be double-NUL terminated for CreateProcess
-            block.push_back(L'\0');
-            block.push_back(L'\0');
-            return block;
-        }
-        for (const auto& h : hiddenVars) {
-            block.insert(block.end(), h.begin(), h.end());
-            block.push_back(L'\0');
-        }
-        for (const auto& p : env) {
-            std::wstring line = p.first + L"=" + p.second;
-            block.insert(block.end(), line.begin(), line.end());
-            block.push_back(L'\0');
-        }
-        block.push_back(L'\0');
-        return block;
+        EnvironmentSnapshot snapshot = CollectCurrentEnvironmentSnapshot();
+        std::vector<EnvironmentVariable> filteredVars =
+            FilterEnvironmentVars(snapshot.vars, config);
+        SortEnvironmentVarsForWindows(filteredVars);
+        return SerializeEnvironmentBlock(snapshot.hiddenVars, filteredVars);
     }
 
     // -----------------------------------------------------------------------
@@ -149,6 +201,92 @@ namespace Sandbox {
         }
     }
 
+    inline const char* NetworkSummaryLabel(const SandboxConfig& config)
+    {
+        if (IsRestrictedTokenMode(config.tokenMode))
+            return "unrestricted (no capability model)";
+        if (config.allowNetwork)
+            return "INTERNET";
+        if (config.lanMode == LanMode::WithLocalhost)
+            return "LAN + LOCALHOST";
+        if (config.lanMode == LanMode::WithoutLocalhost)
+            return "LAN";
+        return "BLOCKED";
+    }
+
+    inline const char* StdinSummaryLabel(const std::wstring& stdinMode)
+    {
+        if (stdinMode.empty())
+            return nullptr;
+        return _wcsicmp(stdinMode.c_str(), L"NUL") == 0 ? "DISABLED" : "FILE";
+    }
+
+    inline void PrintSummaryHeader(const SandboxConfig& config,
+                                   const std::wstring& exePath,
+                                   const std::wstring& exeArgs)
+    {
+        fprintf(stderr, "Sandy - %s\n", TokenModeSummaryLabel(config.tokenMode));
+        fprintf(stderr, "Executable: %ls\n", exePath.c_str());
+        if (!exeArgs.empty())
+            fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
+    }
+
+    inline void PrintSummaryFolders(const SandboxConfig& config)
+    {
+        fprintf(stderr, "Folders:    %zu configured\n",
+                config.folders.size() + config.denyFolders.size());
+        for (const auto& entry : config.folders)
+            fprintf(stderr, "  [%ls] %ls\n", AccessTag(entry.access), entry.path.c_str());
+        for (const auto& entry : config.denyFolders)
+            fprintf(stderr, "  [DENY %ls] %ls\n", AccessTag(entry.access), entry.path.c_str());
+    }
+
+    inline void PrintSummaryRegistry(const SandboxConfig& config)
+    {
+        if (!IsRestrictedTokenMode(config.tokenMode))
+            return;
+        if (config.registryRead.empty() && config.registryWrite.empty())
+            return;
+
+        fprintf(stderr, "Registry:   %zu keys\n",
+                config.registryRead.size() + config.registryWrite.size());
+        for (const auto& key : config.registryRead)
+            fprintf(stderr, "  [R]  %ls\n", key.c_str());
+        for (const auto& key : config.registryWrite)
+            fprintf(stderr, "  [W]  %ls\n", key.c_str());
+    }
+
+    inline void PrintSummaryPrivileges(const SandboxConfig& config)
+    {
+        if (IsRestrictedTokenMode(config.tokenMode) && config.strict)
+            fprintf(stderr, "Strict:     YES (user SID excluded from restricting list)\n");
+        if (IsRestrictedTokenMode(config.tokenMode))
+            fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
+
+        fprintf(stderr, "Network:    %s\n", NetworkSummaryLabel(config));
+
+        if (const char* stdinLabel = StdinSummaryLabel(config.stdinMode))
+            fprintf(stderr, "Stdin:      %s\n", stdinLabel);
+        if (!config.allowClipboardRead || !config.allowClipboardWrite)
+            fprintf(stderr, "Clipboard:  read=%s write=%s\n",
+                    config.allowClipboardRead ? "ALLOWED" : "BLOCKED",
+                    config.allowClipboardWrite ? "ALLOWED" : "BLOCKED");
+        if (!config.allowChildProcesses)
+            fprintf(stderr, "Children:   BLOCKED\n");
+        if (!config.envInherit)
+            fprintf(stderr, "Env:        filtered (%zu pass vars)\n", config.envPass.size());
+    }
+
+    inline void PrintSummaryLimits(const SandboxConfig& config)
+    {
+        if (config.timeoutSeconds > 0)
+            fprintf(stderr, "Timeout:    %lu seconds\n", config.timeoutSeconds);
+        if (config.memoryLimitMB > 0)
+            fprintf(stderr, "Memory:     %zu MB\n", config.memoryLimitMB);
+        if (config.maxProcesses > 0)
+            fprintf(stderr, "Processes:  %lu max\n", config.maxProcesses);
+    }
+
     // -----------------------------------------------------------------------
     // PrintConfigSummary — print human-readable config to stderr.
     //
@@ -158,64 +296,22 @@ namespace Sandbox {
     // Inputs:  config     — sandbox configuration
     //          exePath    — target executable path
     //          exeArgs    — command-line arguments
-    //          isRestricted — true for restricted-token mode
     // Effect:  prints formatted summary to stderr
     // Verifiable: output matches config fields exactly
     // -----------------------------------------------------------------------
     inline void PrintConfigSummary(const SandboxConfig& config,
-                                    const std::wstring& exePath,
-                                    const std::wstring& exeArgs,
-                                    bool isRestricted)
+                                   const std::wstring& exePath,
+                                   const std::wstring& exeArgs)
     {
-        if (config.quiet) return;
+        if (config.quiet)
+            return;
 
-        const char* modeLabel = isRestricted ? "Restricted Token"
-                             : (config.tokenMode == TokenMode::LPAC) ? "LPAC Sandbox"
-                             : "AppContainer";
-        fprintf(stderr, "Sandy - %s\n", modeLabel);
-        fprintf(stderr, "Executable: %ls\n", exePath.c_str());
-        if (!exeArgs.empty())
-            fprintf(stderr, "Arguments:  %ls\n", exeArgs.c_str());
-        fprintf(stderr, "Folders:    %zu configured\n", config.folders.size() + config.denyFolders.size());
-        for (const auto& e : config.folders) {
-            fprintf(stderr, "  [%ls] %ls\n", AccessTag(e.access), e.path.c_str());
-        }
-        if (!config.denyFolders.empty()) {
-            for (const auto& e : config.denyFolders) {
-                fprintf(stderr, "  [DENY %ls] %ls\n", AccessTag(e.access), e.path.c_str());
-            }
-        }
-        if (isRestricted && (!config.registryRead.empty() || !config.registryWrite.empty())) {
-            fprintf(stderr, "Registry:   %zu keys\n", config.registryRead.size() + config.registryWrite.size());
-            for (const auto& k : config.registryRead)  fprintf(stderr, "  [R]  %ls\n", k.c_str());
-            for (const auto& k : config.registryWrite) fprintf(stderr, "  [W]  %ls\n", k.c_str());
-        }
+        PrintSummaryHeader(config, exePath, exeArgs);
+        PrintSummaryFolders(config);
+        PrintSummaryRegistry(config);
         fprintf(stderr, "---\n");
-        if (isRestricted && config.strict)
-            fprintf(stderr, "Strict:     YES (user SID excluded from restricting list)\n");
-        if (isRestricted)
-            fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
-
-        fprintf(stderr, "Network:    %s\n", isRestricted ? "unrestricted (no capability model)" :
-                                            config.allowNetwork ? "INTERNET" :
-                                            config.lanMode != LanMode::Off ? (config.lanMode == LanMode::WithLocalhost ? "LAN + LOCALHOST" : "LAN") : "BLOCKED");
-        if (!config.stdinMode.empty())
-            fprintf(stderr, "Stdin:      %s\n",
-                    _wcsicmp(config.stdinMode.c_str(), L"NUL") == 0 ? "DISABLED" : "FILE");
-        if (!config.allowClipboardRead || !config.allowClipboardWrite)
-            fprintf(stderr, "Clipboard:  read=%s write=%s\n",
-                    config.allowClipboardRead ? "ALLOWED" : "BLOCKED",
-                    config.allowClipboardWrite ? "ALLOWED" : "BLOCKED");
-        if (!config.allowChildProcesses)
-            fprintf(stderr, "Children:   BLOCKED\n");
-        if (!config.envInherit)
-            fprintf(stderr, "Env:        filtered (%zu pass vars)\n", config.envPass.size());
-        if (config.timeoutSeconds > 0)
-            fprintf(stderr, "Timeout:    %lu seconds\n", config.timeoutSeconds);
-        if (config.memoryLimitMB > 0)
-            fprintf(stderr, "Memory:     %zu MB\n", config.memoryLimitMB);
-        if (config.maxProcesses > 0)
-            fprintf(stderr, "Processes:  %lu max\n", config.maxProcesses);
+        PrintSummaryPrivileges(config);
+        PrintSummaryLimits(config);
     }
 
 } // namespace Sandbox

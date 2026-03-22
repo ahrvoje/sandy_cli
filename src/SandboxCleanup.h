@@ -36,10 +36,11 @@ namespace Sandbox {
         for (const auto& e : SnapshotGrantLedgers()) {
             if (!excludeInstanceId.empty() && excludeInstanceId == e.instanceId)
                 continue;
-            if (!e.isAlive) continue;
+            if (e.liveness == RecoveryLedgerLiveness::Stale)
+                continue;
             if (!e.container.empty() &&
                 _wcsicmp(e.container.c_str(), containerName.c_str()) == 0) {
-                if (!e.isCommitted)
+                if (e.liveness == RecoveryLedgerLiveness::Incomplete)
                     g_logger.LogFmt(L"LOOPBACK_LIVENESS: treating incomplete ledger %s as live (fail closed)",
                                     e.instanceId.c_str());
                 return true;
@@ -54,9 +55,31 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     constexpr const wchar_t* kCleanupTaskPrefix = L"SandyCleanup_";
 
+    enum class CleanupTaskState {
+        Retained,
+        Orphaned,
+    };
+
+    struct CleanupTaskInventoryEntry {
+        std::wstring taskName;
+        std::wstring instanceId;
+        RecoveryLedgerPresence ledgers;
+        CleanupTaskState state = CleanupTaskState::Orphaned;
+    };
+
     inline std::wstring CleanupTaskName(const std::wstring& instanceId)
     {
         return kCleanupTaskPrefix + instanceId;
+    }
+
+    inline const char* CleanupTaskStateJsonName(CleanupTaskState state)
+    {
+        return state == CleanupTaskState::Retained ? "retained" : "orphaned";
+    }
+
+    inline const char* CleanupTaskStateTextLabel(CleanupTaskState state)
+    {
+        return state == CleanupTaskState::Retained ? "retained" : "orphaned";
     }
 
     // -----------------------------------------------------------------------
@@ -111,9 +134,24 @@ namespace Sandbox {
         DeleteCleanupTask(g_instanceId);
     }
 
-    inline std::vector<std::wstring> ListCleanupTasks()
+    inline bool TryParseCleanupTaskNameFromCsvLine(const std::wstring& csvLine,
+                                                   std::wstring& taskName)
     {
-        std::vector<std::wstring> tasks;
+        taskName.clear();
+        auto q1 = csvLine.find(L'"');
+        auto q2 = (q1 == std::wstring::npos) ? std::wstring::npos : csvLine.find(L'"', q1 + 1);
+        if (q1 == std::wstring::npos || q2 == std::wstring::npos)
+            return false;
+
+        auto taskPath = csvLine.substr(q1 + 1, q2 - q1 - 1);
+        auto bs = taskPath.find_last_of(L'\\');
+        taskName = (bs != std::wstring::npos) ? taskPath.substr(bs + 1) : taskPath;
+        return taskName.rfind(kCleanupTaskPrefix, 0) == 0;
+    }
+
+    inline std::vector<CleanupTaskInventoryEntry> BuildCleanupTaskInventory()
+    {
+        std::vector<CleanupTaskInventoryEntry> tasks;
         HiddenProcessResult query = RunSchtasksCapture(L"/Query /FO CSV /NH");
         if (query.status != HiddenProcessStatus::Completed)
             return tasks;
@@ -122,14 +160,19 @@ namespace Sandbox {
         std::string line;
         while (std::getline(stream, line)) {
             std::wstring wline(line.begin(), line.end());
-            if (wline.find(kCleanupTaskPrefix) == std::wstring::npos) continue;
-            auto q1 = wline.find(L'"');
-            auto q2 = (q1 == std::wstring::npos) ? std::wstring::npos : wline.find(L'"', q1 + 1);
-            if (q1 == std::wstring::npos || q2 == std::wstring::npos) continue;
+            CleanupTaskInventoryEntry task;
+            if (!TryParseCleanupTaskNameFromCsvLine(wline, task.taskName))
+                continue;
 
-            auto taskPath = wline.substr(q1 + 1, q2 - q1 - 1);
-            auto bs = taskPath.find_last_of(L'\\');
-            tasks.push_back(bs != std::wstring::npos ? taskPath.substr(bs + 1) : taskPath);
+            task.instanceId = task.taskName.substr(wcslen(kCleanupTaskPrefix));
+            if (task.instanceId.empty())
+                continue;
+
+            task.ledgers = QueryRecoveryLedgerPresence(task.instanceId);
+            task.state = task.ledgers.Any()
+                ? CleanupTaskState::Retained
+                : CleanupTaskState::Orphaned;
+            tasks.push_back(std::move(task));
         }
         return tasks;
     }
@@ -143,14 +186,12 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline void DeleteStaleCleanupTasks()
     {
-        for (const auto& taskName : ListCleanupTasks()) {
-            std::wstring instanceId = taskName.substr(wcslen(kCleanupTaskPrefix));
-            if (instanceId.empty()) continue;
-            if (!QueryRecoveryLedgerPresence(instanceId).Any()) {
-                std::wstring delArgs = L"/Delete /TN \"" + taskName + L"\" /F";
+        for (const auto& task : BuildCleanupTaskInventory()) {
+            if (task.state == CleanupTaskState::Orphaned) {
+                std::wstring delArgs = L"/Delete /TN \"" + task.taskName + L"\" /F";
                 if (RunSchtasks(delArgs) == 0) {
-                    g_logger.Log((L"SCHTASK_STALE: deleted " + taskName).c_str());
-                    printf("  [TASK] %ls -> deleted\n", taskName.c_str());
+                    g_logger.LogFmt(L"SCHTASK_STALE: deleted %ls (orphaned)", task.taskName.c_str());
+                    printf("  [TASK] %ls -> deleted\n", task.taskName.c_str());
                 }
             }
         }
@@ -334,6 +375,44 @@ namespace Sandbox {
         return profiles;
     }
 
+    enum class SandyContainerKind { StaleTransient, LiveTransient, SavedProfile };
+
+    struct SandyContainerInventoryEntry {
+        std::wstring name;
+        SandyContainerKind kind = SandyContainerKind::StaleTransient;
+    };
+
+    // -----------------------------------------------------------------------
+    // BuildSandyContainerInventory — classify Windows AppContainer mappings
+    // by durable ownership.
+    //
+    // Saved profile containers are durable profile-owned identities and must
+    // not be treated as generic transient mappings even if a live run is
+    // currently using them.  Transient containers split into live vs stale.
+    // -----------------------------------------------------------------------
+    inline std::vector<SandyContainerInventoryEntry> BuildSandyContainerInventory()
+    {
+        std::vector<SandyContainerInventoryEntry> inventory;
+        std::set<std::wstring> liveContainers = GetLiveContainerNames();
+        std::set<std::wstring> savedContainers = GetSavedProfileContainerNames();
+
+        for (const auto& profile : EnumSandyProfiles()) {
+            SandyContainerInventoryEntry entry;
+            entry.name = profile;
+
+            std::wstring lookup = NormalizeLookupKey(profile);
+            if (savedContainers.count(lookup))
+                entry.kind = SandyContainerKind::SavedProfile;
+            else if (liveContainers.count(lookup))
+                entry.kind = SandyContainerKind::LiveTransient;
+            else
+                entry.kind = SandyContainerKind::StaleTransient;
+
+            inventory.push_back(std::move(entry));
+        }
+        return inventory;
+    }
+
     // -----------------------------------------------------------------------
     // CleanupStaleStartupState — clear stale state from previous crashed runs.
     //
@@ -344,16 +423,10 @@ namespace Sandbox {
     inline void CleanupStaleStartupState(const std::wstring& exePath)
     {
         (void)exePath;
-        // Filter profiles through liveness check — only clean stale ones
-        // Also exclude saved-profile containers (permanent, never cleaned)
-        auto allProfiles = EnumSandyProfiles();
-        auto liveContainers = GetLiveContainerNames();
-        auto savedContainers = GetSavedProfileContainerNames();
         std::vector<std::wstring> staleProfiles;
-        for (const auto& p : allProfiles) {
-            std::wstring lookup = NormalizeLookupKey(p);
-            if (!liveContainers.count(lookup) && !savedContainers.count(lookup))
-                staleProfiles.push_back(p);
+        for (const auto& entry : BuildSandyContainerInventory()) {
+            if (entry.kind == SandyContainerKind::StaleTransient)
+                staleProfiles.push_back(entry.name);
         }
         ForceDisableLoopback(staleProfiles);
 
@@ -361,37 +434,44 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // WarnStaleRegistryEntries — detect and warn about stale registry state.
+    // WarnStaleRegistryEntries — detect and warn about stale or incomplete
+    // recovery metadata.
     //
     // Inputs:  (none — reads HKCU\Software\Sandy\Grants)
-    // Effect:  prints warning to stderr and logs if stale entries found
-    // Verifiable: warning printed iff stale keys exist in registry
+    // Effect:  prints warning to stderr and logs if stale/incomplete entries found
+    // Verifiable: warning printed iff stale/incomplete keys exist in registry
     // -----------------------------------------------------------------------
     inline void WarnStaleRegistryEntries()
     {
         auto grantSnapshot = SnapshotGrantLedgers();
-        int grantLive = 0, grantStale = 0;
+        int grantActive = 0, grantStale = 0, grantIncomplete = 0;
         for (const auto& e : grantSnapshot) {
-            if (e.isAlive) grantLive++; else grantStale++;
+            if (e.liveness == RecoveryLedgerLiveness::Active) grantActive++;
+            else if (e.liveness == RecoveryLedgerLiveness::Incomplete) grantIncomplete++;
+            else grantStale++;
         }
 
         auto tcSnapshot = SnapshotTransientContainerLedgers();
-        int containerLive = 0, containerStale = 0;
+        int containerActive = 0, containerStale = 0, containerIncomplete = 0;
         for (const auto& e : tcSnapshot) {
-            if (e.isAlive) containerLive++; else containerStale++;
+            if (e.liveness == RecoveryLedgerLiveness::Active) containerActive++;
+            else if (e.liveness == RecoveryLedgerLiveness::Incomplete) containerIncomplete++;
+            else containerStale++;
         }
 
-        if (grantStale > 0 || containerStale > 0) {
+        if (grantStale > 0 || grantIncomplete > 0 ||
+            containerStale > 0 || containerIncomplete > 0) {
             if (!g_logger.IsActive())
                 fprintf(stderr,
-                    "[Sandy] WARNING: Stale recovery metadata detected from a previous crashed run.\n"
-                    "        Grants: %d stale (%d live) under HKCU\\%ls\n"
-                    "        Containers: %d stale (%d live) under HKCU\\%ls\n"
+                    "[Sandy] WARNING: Stale or incomplete recovery metadata detected.\n"
+                    "        Grants: %d stale, %d incomplete (%d active) under HKCU\\%ls\n"
+                    "        Containers: %d stale, %d incomplete (%d active) under HKCU\\%ls\n"
                     "        Run 'sandy.exe --cleanup' to restore original state.\n",
-                    grantStale, grantLive, kGrantsParentKey,
-                    containerStale, containerLive, kTransientContainersParentKey);
-            g_logger.LogFmt(L"STARTUP_WARNING: stale recovery metadata — grants: %d stale/%d live, containers: %d stale/%d live",
-                            grantStale, grantLive, containerStale, containerLive);
+                    grantStale, grantIncomplete, grantActive, kGrantsParentKey,
+                    containerStale, containerIncomplete, containerActive, kTransientContainersParentKey);
+            g_logger.LogFmt(L"STARTUP_WARNING: recovery metadata — grants: %d stale/%d incomplete/%d active, containers: %d stale/%d incomplete/%d active",
+                            grantStale, grantIncomplete, grantActive,
+                            containerStale, containerIncomplete, containerActive);
         }
     }
 

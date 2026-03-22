@@ -11,6 +11,7 @@ REM ===================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
 set RT_CONFIG=%~dp0test_resilience_rt.toml
+set LPAC_CONFIG=%~dp0test_lpac_minimal_config.toml
 set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
@@ -109,6 +110,160 @@ REM Force-delete so it does not leak into later tests
 reg delete "HKCU\Software\Sandy\Grants\dead-test-0000-0000-000000099999" /f >nul 2>nul
 
 REM ===================================================================
+REM Test 5: Incomplete Grants entry is visible and preserved fail-closed
+REM ===================================================================
+echo.
+echo --- Test 5: Incomplete grant detection ---
+reg add "HKCU\Software\Sandy\Grants\incomplete-test-0000-0000-000000055555" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\incomplete-test-0000-0000-000000055555" /v _container /t REG_SZ /d "Sandy_incomplete-test" /f >nul 2>nul
+
+"!SANDY!" --status >"%TEMP%\sandy_incomplete_status.txt" 2>nul
+findstr /C:"INCOMPLETE" "%TEMP%\sandy_incomplete_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Incomplete grants detected by --status
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Incomplete grants not shown by --status
+    set /a FAIL+=1
+)
+
+findstr /C:"incomplete-test" "%TEMP%\sandy_incomplete_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Status identifies incomplete instance ID
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Status does not identify incomplete instance ID
+    set /a FAIL+=1
+)
+
+"!SANDY!" --status --json >"%TEMP%\sandy_incomplete_status.json" 2>nul
+findstr /C:"\"uuid\":\"incomplete-test-0000-0000-000000055555\"" "%TEMP%\sandy_incomplete_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status includes incomplete instance entry
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing incomplete instance entry
+    set /a FAIL+=1
+)
+
+findstr /C:"\"status\":\"incomplete\"" "%TEMP%\sandy_incomplete_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status marks incomplete instance
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing incomplete marker
+    set /a FAIL+=1
+)
+
+"!SANDY!" -c "!LPAC_CONFIG!" -q -x "C:\does_not_exist\sandy_warn_probe.exe" >nul 2>"%TEMP%\sandy_incomplete_warn.txt"
+findstr /C:"incomplete" "%TEMP%\sandy_incomplete_warn.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Startup warning mentions incomplete recovery metadata
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Startup warning missing incomplete metadata notice
+    set /a FAIL+=1
+)
+
+"!SANDY!" --cleanup >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\incomplete-test-0000-0000-000000055555" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Incomplete grants preserved by --cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Incomplete grants were incorrectly deleted by --cleanup
+    set /a FAIL+=1
+)
+
+reg delete "HKCU\Software\Sandy\Grants\incomplete-test-0000-0000-000000055555" /f >nul 2>nul
+del "%TEMP%\sandy_incomplete_status.txt" 2>nul
+del "%TEMP%\sandy_incomplete_status.json" 2>nul
+del "%TEMP%\sandy_incomplete_warn.txt" 2>nul
+
+REM ===================================================================
+REM Test 5b: Transient retry ledger status + cleanup behavior
+REM ===================================================================
+echo.
+echo --- Test 5b: Transient retry ledger detection ---
+reg add "HKCU\Software\Sandy\TransientContainers\retry-incomplete-0000-0000-000000066666" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\TransientContainers\retry-incomplete-0000-0000-000000066666" /v _container /t REG_SZ /d "Sandy_retry-incomplete" /f >nul 2>nul
+
+"!SANDY!" --status >"%TEMP%\sandy_retry_status.txt" 2>nul
+findstr /C:"[RETRY_CONTAINER] Sandy_retry-incomplete" "%TEMP%\sandy_retry_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Retry ledger shown in text status
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Retry ledger missing from text status
+    set /a FAIL+=1
+)
+
+findstr /C:"incomplete, instance: retry-incomplete-0000-0000-000000066666" "%TEMP%\sandy_retry_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Retry ledger text status shows incomplete state
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Retry ledger text status missing incomplete detail
+    set /a FAIL+=1
+)
+
+"!SANDY!" --status --json >"%TEMP%\sandy_retry_status.json" 2>nul
+findstr /C:"\"retry_containers\":[" "%TEMP%\sandy_retry_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status includes retry container array
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing retry container array
+    set /a FAIL+=1
+)
+
+findstr /C:"\"container\":\"Sandy_retry-incomplete\"" "%TEMP%\sandy_retry_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status includes retry container name
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing retry container name
+    set /a FAIL+=1
+)
+
+findstr /C:"\"status\":\"incomplete\"" "%TEMP%\sandy_retry_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status marks retry ledger incomplete
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing retry incomplete marker
+    set /a FAIL+=1
+)
+
+"!SANDY!" --cleanup >nul 2>nul
+reg query "HKCU\Software\Sandy\TransientContainers\retry-incomplete-0000-0000-000000066666" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Incomplete retry ledger preserved by --cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Incomplete retry ledger was incorrectly deleted by --cleanup
+    set /a FAIL+=1
+)
+
+reg add "HKCU\Software\Sandy\TransientContainers\retry-stale-0000-0000-000000077777" /v _pid /t REG_DWORD /d 77777 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\TransientContainers\retry-stale-0000-0000-000000077777" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\TransientContainers\retry-stale-0000-0000-000000077777" /v _container /t REG_SZ /d "Sandy_retry-stale" /f >nul 2>nul
+
+"!SANDY!" --cleanup >nul 2>nul
+reg query "HKCU\Software\Sandy\TransientContainers\retry-stale-0000-0000-000000077777" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] Stale retry ledger removed by --cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Stale retry ledger still exists after --cleanup
+    set /a FAIL+=1
+)
+
+reg delete "HKCU\Software\Sandy\TransientContainers\retry-incomplete-0000-0000-000000066666" /f >nul 2>nul
+del "%TEMP%\sandy_retry_status.txt" 2>nul
+del "%TEMP%\sandy_retry_status.json" 2>nul
+
+REM ===================================================================
 REM Test 6: --cleanup is idempotent (running twice is safe)
 REM ===================================================================
 echo.
@@ -204,6 +359,66 @@ if !ERRORLEVEL! NEQ 0 (
     echo   [FAIL] Scheduled task still exists after clean exit
     set /a FAIL+=1
 )
+
+REM ===================================================================
+REM Test 10b: Orphaned scheduled task status + cleanup behavior
+REM ===================================================================
+echo.
+echo --- Test 10b: Orphaned scheduled task detection ---
+set "ORPHAN_TASK=SandyCleanup_orphaned-task-0000-0000-000000088888"
+set "ORPHAN_INSTANCE=orphaned-task-0000-0000-000000088888"
+schtasks /Delete /TN "!ORPHAN_TASK!" /F >nul 2>nul
+schtasks /Create /TN "!ORPHAN_TASK!" /TR "cmd.exe /c exit 0" /SC DAILY /ST 23:59 /F >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Orphaned scheduled task created for status test
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Could not create orphaned scheduled task
+    set /a FAIL+=1
+)
+
+"!SANDY!" --status >"%TEMP%\sandy_orphan_task_status.txt" 2>nul
+findstr /C:"[TASK]    !ORPHAN_TASK!" "%TEMP%\sandy_orphan_task_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Orphaned scheduled task shown in text status
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Orphaned scheduled task missing from text status
+    set /a FAIL+=1
+)
+
+findstr /C:"(orphaned, instance: !ORPHAN_INSTANCE!, ledgers: none)" "%TEMP%\sandy_orphan_task_status.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Text status classifies orphaned scheduled task
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Text status missing orphaned scheduled task classification
+    set /a FAIL+=1
+)
+
+"!SANDY!" --status --json >"%TEMP%\sandy_orphan_task_status.json" 2>nul
+findstr /C:"\"name\":\"!ORPHAN_TASK!\",\"instance\":\"!ORPHAN_INSTANCE!\",\"status\":\"orphaned\"" "%TEMP%\sandy_orphan_task_status.json" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] JSON status classifies orphaned scheduled task
+    set /a PASS+=1
+) else (
+    echo   [FAIL] JSON status missing orphaned scheduled task classification
+    set /a FAIL+=1
+)
+
+"!SANDY!" --cleanup >nul 2>nul
+schtasks /Query /TN "!ORPHAN_TASK!" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] Orphaned scheduled task removed by --cleanup
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Orphaned scheduled task still exists after --cleanup
+    set /a FAIL+=1
+)
+
+schtasks /Delete /TN "!ORPHAN_TASK!" /F >nul 2>nul
+del "%TEMP%\sandy_orphan_task_status.txt" 2>nul
+del "%TEMP%\sandy_orphan_task_status.json" 2>nul
 
 REM ===================================================================
 REM Test 11: --status JSON includes summary object

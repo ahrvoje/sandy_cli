@@ -1,17 +1,15 @@
 """Collusion test — Alice probe (Instance A)
 
-Alice grants [all] to shared/ with NO denies.
-She exploits access to shared/locked/ (which Bob can't touch)
-and relays data to Bob via shared/relay/.
-Alice exits FIRST to trigger the cleanup race condition.
+Alice grants [all] to shared/ (AppContainer mode).
+She exits FIRST to trigger the cleanup race condition.
 
-The key attack:
-  Alice's Sandy saves SDDL_0 (true original) for shared/.
-  Alice's Sandy adds SID_A ACE -> SDDL_1.
-  Bob starts AFTER Alice -> Bob saves SDDL_1 as "original" (includes SID_A!).
-  Bob's Sandy adds SID_B ACE -> SDDL_2.
-  Alice exits: GetOtherInstancePaths sees Bob alive -> SKIPS shared/.
-  Bob exits: restores SDDL_1 (with SID_A ACE baked in!) -> ORPHANED!
+The key scenario:
+  Alice's Sandy adds SID_A ACE to shared/.
+  Bob starts AFTER Alice -> Bob also adds SID_B ACE.
+  Alice exits: her cleanup removes SID_A ACEs.
+  Bob exits: his cleanup removes SID_B ACEs.
+  Without cleanup serialization, auto-inheritance interleaving
+  can leave orphaned SIDs on the shared tree.
 """
 import os, sys, time
 
@@ -47,31 +45,31 @@ else:
 
 
 # ===========================================================================
-# ATTACK 1: Cross-deny breach — Alice writes to Bob's denied area
+# CHECK 1: Verify access — Alice has [all] on shared/
 # ===========================================================================
-print("\n=== ATTACK 1: Cross-deny breach ===")
+print("\n=== ATTACK 1: Cross-instance access ===")
 try:
-    # Alice has NO deny on locked/ — she can write!
+    # Alice writes to locked/ — both instances have [all] on shared/
     with open(os.path.join(LOCKED, 'alice_was_here.txt'), 'w') as f:
         f.write('DATA_FROM_ALICE: Bob cannot read this directly')
-    print("  [INFO] Alice wrote to shared/locked/ (Bob's denied zone)")
-    results.append(('INFO', 'cross-deny: Alice wrote to locked/'))
+    print("  [INFO] Alice wrote to shared/locked/")
+    results.append(('INFO', 'access: Alice wrote to locked/'))
 except PermissionError:
     print("  [FAIL] Alice blocked from locked/ (unexpected)")
-    results.append(('FAIL', 'cross-deny: Alice blocked'))
+    results.append(('FAIL', 'access: Alice blocked'))
 
 # Alice can also read the seed secret
 try:
     content = open(os.path.join(LOCKED, 'secret.txt'), 'r').read()
     print(f"  [INFO] Alice read secret: {content.strip()}")
-    results.append(('INFO', f'cross-deny: secret={content.strip()}'))
+    results.append(('INFO', f'access: secret={content.strip()}'))
 except Exception as e:
     print(f"  [ERR] Alice can't read secret: {e}")
-    results.append(('ERR', f'cross-deny: {e}'))
+    results.append(('ERR', f'access: {e}'))
 
 
 # ===========================================================================
-# ATTACK 2: Data relay — Alice copies forbidden data for Bob
+# CHECK 2: Data relay — Alice copies data for Bob to read later
 # ===========================================================================
 print("\n=== ATTACK 2: Data relay ===")
 os.makedirs(RELAY, exist_ok=True)
@@ -80,14 +78,14 @@ try:
     with open(os.path.join(RELAY, 'exfiltrated.txt'), 'w') as f:
         f.write(f'EXFILTRATED: {secret}')
     print("  [INFO] Alice relayed secret to shared/relay/")
-    results.append(('INFO', 'relay: secret copied to non-denied area'))
+    results.append(('INFO', 'relay: secret copied'))
 except Exception as e:
     print(f"  [ERR] relay: {e}")
     results.append(('ERR', f'relay: {e}'))
 
 
 # ===========================================================================
-# ATTACK 3: ACL accumulation — verify both SIDs are on shared/
+# CHECK 3: ACL accumulation — verify Alice can read shared/
 # ===========================================================================
 print("\n=== ATTACK 3: ACL accumulation probe ===")
 try:

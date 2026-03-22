@@ -9,6 +9,7 @@ REM ===================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set AC_CONFIG=%~dp0test_dryrun_ac.toml
 set RT_CONFIG=%~dp0test_dryrun_rt.toml
+set LPAC_CONFIG=%~dp0test_lpac_minimal_config.toml
 set PASS=0
 set FAIL=0
 
@@ -20,7 +21,7 @@ REM === Pre-clean any stale profile named dr_test ===
 "!SANDY!" --delete-profile dr_test >nul 2>nul
 
 REM ===================================================================
-REM DR1 — --dry-run for sandboxed run (AC config, no -x)
+REM DR1 - --dry-run for sandboxed run (AC config, no -x)
 REM ===================================================================
 echo.
 echo --- DR1: --dry-run with AC config (no -x) ---
@@ -67,7 +68,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_dr1.txt" 2>nul
 
 REM ===================================================================
-REM DR2 — --dry-run for sandboxed run (AC config, with -x)
+REM DR2 - --dry-run for sandboxed run (AC config, with -x)
 REM ===================================================================
 echo.
 echo --- DR2: --dry-run with AC config and -x ---
@@ -95,7 +96,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_dr2.txt" 2>nul
 
 REM ===================================================================
-REM DR3 — --dry-run with RT config
+REM DR3 - --dry-run with RT config
 REM ===================================================================
 echo.
 echo --- DR3: --dry-run with RT config ---
@@ -123,7 +124,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_dr3.txt" 2>nul
 
 REM ===================================================================
-REM DR4 — --dry-run --create-profile (valid AC config, name not yet existing)
+REM DR4 - --dry-run --create-profile (valid AC config, name not yet existing)
 REM ===================================================================
 echo.
 echo --- DR4: --dry-run --create-profile (valid, no prior profile) ---
@@ -190,7 +191,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_dr4.txt" 2>nul
 
 REM ===================================================================
-REM DR5 — --dry-run --create-profile with duplicate (after real create)
+REM DR5 - --dry-run --create-profile with duplicate (after real create)
 REM ===================================================================
 echo.
 echo --- DR5: --dry-run --create-profile (existing profile = error) ---
@@ -222,7 +223,7 @@ REM Clean up real profile
 del "%TEMP%\sandy_dr5.txt" 2>nul
 
 REM ===================================================================
-REM DR6 — --dry-run --create-profile with invalid name characters
+REM DR6 - --dry-run --create-profile with invalid name characters
 REM ===================================================================
 echo.
 echo --- DR6: --dry-run --create-profile (invalid name) ---
@@ -248,7 +249,7 @@ if !ERRORLEVEL! EQU 0 (
 del "%TEMP%\sandy_dr6.txt" 2>nul
 
 REM ===================================================================
-REM DR7 — --dry-run --create-profile with non-existent config file
+REM DR7 - --dry-run --create-profile with non-existent config file
 REM ===================================================================
 echo.
 echo --- DR7: --dry-run --create-profile (bad config path) ---
@@ -265,7 +266,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_dr7.txt" 2>nul
 
 REM ===================================================================
-REM DR8 — --dry-run --create-profile with RT config
+REM DR8 - --dry-run --create-profile with RT config
 REM ===================================================================
 echo.
 echo --- DR8: --dry-run --create-profile (RT config) ---
@@ -313,7 +314,7 @@ if !ERRORLEVEL! NEQ 0 (
 del "%TEMP%\sandy_dr8.txt" 2>nul
 
 REM ===================================================================
-REM DR9 — Old 'localhost' key must be rejected
+REM DR9 - Old 'localhost' key must be rejected
 REM ===================================================================
 echo.
 echo --- DR9: Old 'localhost' key rejected ---
@@ -356,7 +357,7 @@ del "%TEMP%\dr9.toml" 2>nul
 del "%TEMP%\sandy_dr9.txt" 2>nul
 
 REM ===================================================================
-REM DR10 — lan = 'with localhost' accepted
+REM DR10 - lan = 'with localhost' accepted
 REM ===================================================================
 echo.
 echo --- DR10: lan = 'with localhost' accepted ---
@@ -390,10 +391,66 @@ del "%TEMP%\dr10.toml" 2>nul
 del "%TEMP%\sandy_dr10.txt" 2>nul
 
 REM ===================================================================
-REM DR11 — lan = 'without localhost' accepted
+REM DR11 - --dry-run --create-profile with LPAC config
 REM ===================================================================
 echo.
-echo --- DR11: lan = 'without localhost' accepted ---
+echo --- DR11: --dry-run --create-profile (LPAC config) ---
+
+"!SANDY!" --dry-run --create-profile dr_test -c "!LPAC_CONFIG!" >"%TEMP%\sandy_dr11.txt" 2>&1
+set DR11_EC=!ERRORLEVEL!
+
+if !DR11_EC! EQU 0 (
+    echo   [PASS] DR11a: exit 0 for LPAC dry-run create-profile
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11a: exit code !DR11_EC!
+    set /a FAIL+=1
+)
+
+findstr /C:"Type:         lpac" "%TEMP%\sandy_dr11.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR11b: Shows LPAC type
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11b: Missing LPAC type
+    set /a FAIL+=1
+)
+
+findstr /C:"Container:    Sandy_dr_test" "%TEMP%\sandy_dr11.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] DR11c: Shows AppContainer-backed profile container
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11c: Missing LPAC container output
+    set /a FAIL+=1
+)
+
+findstr /C:"Integrity:" "%TEMP%\sandy_dr11.txt" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] DR11d: Does not show restricted-only integrity field
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11d: LPAC dry-run should not show integrity
+    set /a FAIL+=1
+)
+
+reg query "HKCU\Software\Sandy\Profiles\dr_test" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] DR11e: LPAC dry-run did not create registry key
+    set /a PASS+=1
+) else (
+    echo   [FAIL] DR11e: LPAC dry-run incorrectly created registry key!
+    "!SANDY!" --delete-profile dr_test >nul 2>nul
+    set /a FAIL+=1
+)
+
+del "%TEMP%\sandy_dr11.txt" 2>nul
+
+REM ===================================================================
+REM DR12 - lan = 'without localhost' accepted
+REM ===================================================================
+echo.
+echo --- DR12: lan = 'without localhost' accepted ---
 
 echo [sandbox]>"%TEMP%\dr11.toml"
 echo token = 'appcontainer'>>"%TEMP%\dr11.toml"
@@ -404,19 +461,19 @@ echo lan = 'without localhost'>>"%TEMP%\dr11.toml"
 set DR11_EC=!ERRORLEVEL!
 
 if !DR11_EC! EQU 0 (
-    echo   [PASS] DR11a: exit 0 for lan = 'without localhost'
+    echo   [PASS] DR12a: exit 0 for lan = 'without localhost'
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR11a: exit code !DR11_EC!
+    echo   [FAIL] DR12a: exit code !DR11_EC!
     set /a FAIL+=1
 )
 
 findstr /C:"'without localhost'" "%TEMP%\sandy_dr11.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] DR11b: Dry-run output shows 'without localhost'
+    echo   [PASS] DR12b: Dry-run output shows 'without localhost'
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR11b: Missing 'without localhost' in output
+    echo   [FAIL] DR12b: Missing 'without localhost' in output
     set /a FAIL+=1
 )
 
@@ -424,10 +481,10 @@ del "%TEMP%\dr11.toml" 2>nul
 del "%TEMP%\sandy_dr11.txt" 2>nul
 
 REM ===================================================================
-REM DR12 — lan = true must be rejected (no longer accepted)
+REM DR13 - lan = true must be rejected (no longer accepted)
 REM ===================================================================
 echo.
-echo --- DR12: lan = true rejected ---
+echo --- DR13: lan = true rejected ---
 
 echo [sandbox]>"%TEMP%\dr12.toml"
 echo token = 'appcontainer'>>"%TEMP%\dr12.toml"
@@ -438,19 +495,19 @@ echo lan = true>>"%TEMP%\dr12.toml"
 set DR12_EC=!ERRORLEVEL!
 
 if !DR12_EC! EQU 128 (
-    echo   [PASS] DR12a: exit 128 for lan = true
+    echo   [PASS] DR13a: exit 128 for lan = true
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR12a: exit code !DR12_EC! (expected 128^)
+    echo   [FAIL] DR13a: exit code !DR12_EC! (expected 128^)
     set /a FAIL+=1
 )
 
 findstr /C:"Invalid value" "%TEMP%\sandy_dr12.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] DR12b: lan=true rejected with invalid value error
+    echo   [PASS] DR13b: lan=true rejected with invalid value error
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR12b: Missing invalid value error message
+    echo   [FAIL] DR13b: Missing invalid value error message
     set /a FAIL+=1
 )
 
@@ -458,10 +515,10 @@ del "%TEMP%\dr12.toml" 2>nul
 del "%TEMP%\sandy_dr12.txt" 2>nul
 
 REM ===================================================================
-REM DR13 — --print-config roundtrip preserves lan value
+REM DR14 - --print-config roundtrip preserves lan value
 REM ===================================================================
 echo.
-echo --- DR13: --print-config roundtrip for lan ---
+echo --- DR14: --print-config roundtrip for lan ---
 
 echo [sandbox]>"%TEMP%\dr13.toml"
 echo token = 'appcontainer'>>"%TEMP%\dr13.toml"
@@ -472,10 +529,10 @@ echo lan = 'with localhost'>>"%TEMP%\dr13.toml"
 set DR13_EC=!ERRORLEVEL!
 
 if !DR13_EC! EQU 0 (
-    echo   [PASS] DR13a: exit 0 for print-config
+    echo   [PASS] DR14a: exit 0 for print-config
     set /a PASS+=1
 ) else (
-    echo   [FAIL] DR13a: exit code !DR13_EC!
+    echo   [FAIL] DR14a: exit code !DR13_EC!
     set /a FAIL+=1
 )
 
@@ -483,14 +540,14 @@ findstr /C:"lan" "%TEMP%\sandy_dr13.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     findstr /C:"'with localhost'" "%TEMP%\sandy_dr13.txt" >nul 2>nul
     if !ERRORLEVEL! EQU 0 (
-        echo   [PASS] DR13b: print-config shows lan = 'with localhost'
+        echo   [PASS] DR14b: print-config shows lan = 'with localhost'
         set /a PASS+=1
     ) else (
-        echo   [FAIL] DR13b: print-config missing 'with localhost' value
+        echo   [FAIL] DR14b: print-config missing 'with localhost' value
         set /a FAIL+=1
     )
 ) else (
-    echo   [FAIL] DR13b: print-config missing lan key
+    echo   [FAIL] DR14b: print-config missing lan key
     set /a FAIL+=1
 )
 

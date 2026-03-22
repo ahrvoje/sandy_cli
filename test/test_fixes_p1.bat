@@ -146,6 +146,14 @@ del "%TEMP%\sandy_f3_config.toml" 2>nul
 del "%TEMP%\sandy_f3_out.txt" 2>nul
 
 REM ===================================================================
+REM Final cleanup
+REM ===================================================================
+"!SANDY!" --delete-profile f1_test >nul 2>nul
+"!SANDY!" --delete-profile f2_test >nul 2>nul
+del "%TEMP%\sandy_f1_config.toml" 2>nul
+del "%TEMP%\sandy_f2_config.toml" 2>nul
+
+REM ===================================================================
 REM Summary
 REM ===================================================================
 echo.

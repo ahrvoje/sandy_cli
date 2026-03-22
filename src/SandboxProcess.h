@@ -111,119 +111,183 @@ namespace Sandbox {
         }
     }
 
-    inline HiddenProcessResult RunHiddenProcessDetailed(const std::wstring& cmdLine,
-                                                        DWORD timeoutMs = 5000,
-                                                        const std::wstring& appPath = L"",
-                                                        bool captureOutput = false)
-    {
-        HiddenProcessResult result{};
+    struct HiddenProcessHandles {
+        HANDLE hRead = nullptr;
+        HANDLE hWrite = nullptr;
+        HANDLE hJob = nullptr;
+        PROCESS_INFORMATION pi{};
+    };
 
-        STARTUPINFOW si = { sizeof(si) };
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_HIDE;
-        HANDLE hRead = nullptr, hWrite = nullptr;
+    inline const wchar_t* HiddenProcessLogTarget(const std::wstring& cmdLine,
+                                                 const std::wstring& appPath)
+    {
+        return appPath.empty() ? cmdLine.c_str() : appPath.c_str();
+    }
+
+    inline void CloseHiddenProcessHandles(HiddenProcessHandles& handles)
+    {
+        CloseHandleIfValid(handles.hJob);
+        CloseHandleIfValid(handles.pi.hProcess);
+        CloseHandleIfValid(handles.pi.hThread);
+        CloseHandleIfValid(handles.hRead);
+        CloseHandleIfValid(handles.hWrite);
+    }
+
+    inline bool SetupHiddenProcessCapture(const wchar_t* logTarget,
+                                          bool captureOutput,
+                                          STARTUPINFOW& si,
+                                          HiddenProcessHandles& handles)
+    {
+        if (!captureOutput)
+            return true;
+
         SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-        if (captureOutput) {
-            if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
-                g_logger.LogFmt(L"HIDDEN_PROCESS: CreatePipe failed for %ls (error %lu)",
-                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
-                                GetLastError());
-                return result;
-            }
-            SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-            si.dwFlags |= STARTF_USESTDHANDLES;
-            si.hStdOutput = hWrite;
-            si.hStdError = hWrite;
+        if (!CreatePipe(&handles.hRead, &handles.hWrite, &sa, 0)) {
+            g_logger.LogFmt(L"HIDDEN_PROCESS: CreatePipe failed for %ls (error %lu)",
+                            logTarget, GetLastError());
+            return false;
         }
 
-        PROCESS_INFORMATION pi = {};
+        SetHandleInformation(handles.hRead, HANDLE_FLAG_INHERIT, 0);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdOutput = handles.hWrite;
+        si.hStdError = handles.hWrite;
+        return true;
+    }
+
+    inline bool LaunchHiddenProcessInstance(const std::wstring& cmdLine,
+                                            const std::wstring& appPath,
+                                            bool captureOutput,
+                                            STARTUPINFOW& si,
+                                            HiddenProcessHandles& handles)
+    {
         std::wstring cmd = cmdLine;  // CreateProcessW needs mutable buffer
         const wchar_t* app = appPath.empty() ? nullptr : appPath.c_str();
         BOOL inheritHandles = captureOutput ? TRUE : FALSE;
         if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, inheritHandles,
-                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &handles.pi)) {
             g_logger.LogFmt(L"HIDDEN_PROCESS: launch failed for %ls (error %lu)",
-                            appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
-                            GetLastError());
-            if (hRead) CloseHandle(hRead);
-            if (hWrite) CloseHandle(hWrite);
-            return result;
+                            HiddenProcessLogTarget(cmdLine, appPath), GetLastError());
+            return false;
         }
 
-        if (hWrite) {
-            CloseHandle(hWrite);
-            hWrite = nullptr;
-        }
+        return true;
+    }
 
-        HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
-        if (hJob) {
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation,
-                                         &limits, sizeof(limits)) ||
-                !AssignProcessToJobObject(hJob, pi.hProcess)) {
-                g_logger.LogFmt(L"HIDDEN_PROCESS: helper job setup failed for %ls (error %lu)",
-                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
-                                GetLastError());
-                CloseHandle(hJob);
-                hJob = nullptr;
-            }
-        }
+    inline void CloseHiddenProcessOutputWriter(HiddenProcessHandles& handles)
+    {
+        CloseHandleIfValid(handles.hWrite);
+    }
 
+    inline void AttachHiddenProcessJob(const wchar_t* logTarget,
+                                       HiddenProcessHandles& handles)
+    {
+        handles.hJob = CreateJobObjectW(nullptr, nullptr);
+        if (!handles.hJob)
+            return;
+
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(handles.hJob, JobObjectExtendedLimitInformation,
+                                     &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(handles.hJob, handles.pi.hProcess)) {
+            g_logger.LogFmt(L"HIDDEN_PROCESS: helper job setup failed for %ls (error %lu)",
+                            logTarget, GetLastError());
+            CloseHandleIfValid(handles.hJob);
+        }
+    }
+
+    inline void FinalizeHiddenProcessOutput(bool captureOutput,
+                                            HiddenProcessHandles& handles,
+                                            HiddenProcessResult& result)
+    {
+        if (captureOutput)
+            DrainHiddenProcessPipe(handles.hRead, result.output);
+    }
+
+    inline HiddenProcessStatus WaitForHiddenProcessCompletion(const wchar_t* logTarget,
+                                                              DWORD timeoutMs,
+                                                              bool captureOutput,
+                                                              HiddenProcessHandles& handles,
+                                                              HiddenProcessResult& result)
+    {
         ULONGLONG start = GetTickCount64();
         DWORD pollMs = 100;
         if (!captureOutput && timeoutMs != INFINITE && timeoutMs < pollMs)
             pollMs = timeoutMs;
+
         for (;;) {
             DWORD waitMs = INFINITE;
             if (timeoutMs != INFINITE) {
                 ULONGLONG elapsed = GetTickCount64() - start;
-                if (elapsed >= timeoutMs) {
-                    result.status = HiddenProcessStatus::TimedOut;
-                    break;
-                }
+                if (elapsed >= timeoutMs)
+                    return HiddenProcessStatus::TimedOut;
+
                 DWORD remaining = static_cast<DWORD>(timeoutMs - elapsed);
                 waitMs = (remaining < pollMs) ? remaining : pollMs;
             } else {
                 waitMs = pollMs;
             }
 
-            DWORD waitResult = WaitForSingleObject(pi.hProcess, waitMs);
-            if (captureOutput)
-                DrainHiddenProcessPipe(hRead, result.output);
+            DWORD waitResult = WaitForSingleObject(handles.pi.hProcess, waitMs);
+            FinalizeHiddenProcessOutput(captureOutput, handles, result);
 
             if (waitResult == WAIT_OBJECT_0) {
-                result.status = HiddenProcessStatus::Completed;
-                GetExitCodeProcess(pi.hProcess, &result.exitCode);
-                break;
+                GetExitCodeProcess(handles.pi.hProcess, &result.exitCode);
+                return HiddenProcessStatus::Completed;
             }
             if (waitResult == WAIT_FAILED) {
-                result.status = HiddenProcessStatus::WaitFailed;
                 g_logger.LogFmt(L"HIDDEN_PROCESS: wait failed for %ls (error %lu)",
-                                appPath.empty() ? cmdLine.c_str() : appPath.c_str(),
-                                GetLastError());
-                break;
+                                logTarget, GetLastError());
+                return HiddenProcessStatus::WaitFailed;
             }
         }
+    }
 
-        if (result.status == HiddenProcessStatus::TimedOut) {
-            g_logger.LogFmt(L"HIDDEN_PROCESS: timeout after %lu ms for %ls",
-                            timeoutMs, appPath.empty() ? cmdLine.c_str() : appPath.c_str());
-            if (hJob)
-                TerminateJobObject(hJob, 1);
-            else
-                TerminateProcess(pi.hProcess, 1);
-            WaitForSingleObject(pi.hProcess, 2000);
+    inline void TerminateHiddenProcessForTimeout(const wchar_t* logTarget,
+                                                 DWORD timeoutMs,
+                                                 HiddenProcessHandles& handles)
+    {
+        g_logger.LogFmt(L"HIDDEN_PROCESS: timeout after %lu ms for %ls",
+                        timeoutMs, logTarget);
+        if (handles.hJob)
+            TerminateJobObject(handles.hJob, 1);
+        else
+            TerminateProcess(handles.pi.hProcess, 1);
+        WaitForSingleObject(handles.pi.hProcess, 2000);
+    }
+
+    inline HiddenProcessResult RunHiddenProcessDetailed(const std::wstring& cmdLine,
+                                                        DWORD timeoutMs = 5000,
+                                                        const std::wstring& appPath = L"",
+                                                        bool captureOutput = false)
+    {
+        HiddenProcessResult result{};
+        const wchar_t* logTarget = HiddenProcessLogTarget(cmdLine, appPath);
+
+        STARTUPINFOW si = { sizeof(si) };
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        HiddenProcessHandles handles;
+
+        if (!SetupHiddenProcessCapture(logTarget, captureOutput, si, handles))
+            return result;
+
+        if (!LaunchHiddenProcessInstance(cmdLine, appPath, captureOutput, si, handles)) {
+            CloseHiddenProcessHandles(handles);
+            return result;
         }
 
-        if (captureOutput)
-            DrainHiddenProcessPipe(hRead, result.output);
+        CloseHiddenProcessOutputWriter(handles);
+        AttachHiddenProcessJob(logTarget, handles);
 
-        if (hJob)
-            CloseHandle(hJob);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-        if (hRead) CloseHandle(hRead);
+        result.status = WaitForHiddenProcessCompletion(logTarget, timeoutMs, captureOutput,
+                                                       handles, result);
+        if (result.status == HiddenProcessStatus::TimedOut)
+            TerminateHiddenProcessForTimeout(logTarget, timeoutMs, handles);
+
+        FinalizeHiddenProcessOutput(captureOutput, handles, result);
+        CloseHiddenProcessHandles(handles);
         return result;
     }
 

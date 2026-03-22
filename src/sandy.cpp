@@ -10,7 +10,7 @@
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
 
-constexpr const char* kVersion = "0.998";
+constexpr const char* kVersion = "0.999";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
@@ -77,10 +77,7 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
     return FALSE;  // let default handler terminate the process
 }
 
-// -----------------------------------------------------------------------
-// Sandboxed execution (separated for SEH wrapping)
-// -----------------------------------------------------------------------
-static int RunMain(int argc, wchar_t* argv[])
+struct RunMainOptions
 {
     std::wstring configPath;
     std::wstring configString;
@@ -89,271 +86,320 @@ static int RunMain(int argc, wchar_t* argv[])
     std::wstring exeArgs;
     std::wstring profileName;
     std::wstring createProfileName;
-    std::wstring deleteProfileName;
-    std::wstring profileInfoName;
     bool quiet = false;
     bool logStamp = false;
     bool dryRun = false;
     bool printConfig = false;
-    bool jsonOutput = false;
+};
 
-    // --- Pre-scan for isolated flags ---
-    // These flags must appear alone (or with a minimal companion like --json).
+static bool HandleStandaloneCliAction(const std::wstring& arg, int argc, int& exitCode)
+{
+    bool isStandalone = (arg == L"-v" || arg == L"--version" ||
+                         arg == L"-h" || arg == L"--help" ||
+                         arg == L"--cleanup" ||
+                         arg == L"--print-container-toml" ||
+                         arg == L"--print-restricted-toml");
+    if (!isStandalone)
+        return false;
+
+    if (argc > 2) {
+        fprintf(stderr, "Error: %ls must be used alone, without other options.\n",
+                arg.c_str());
+        exitCode = SandyExit::InternalError;
+        return true;
+    }
+
+    if (arg == L"-v" || arg == L"--version") {
+        printf("sandy v%s\n", kVersion);
+        exitCode = 0;
+    } else if (arg == L"-h" || arg == L"--help") {
+        PrintUsage(kVersion);
+        exitCode = 0;
+    } else if (arg == L"--print-container-toml") {
+        PrintContainerToml();
+        exitCode = 0;
+    } else if (arg == L"--print-restricted-toml") {
+        PrintRestrictedToml();
+        exitCode = 0;
+    } else {
+        exitCode = HandleCleanup();
+    }
+
+    return true;
+}
+
+static bool HandleImmediateCliAction(int argc, wchar_t* argv[], int& exitCode)
+{
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
-        bool isIsolated = (arg == L"-v" || arg == L"--version" ||
-                           arg == L"-h" || arg == L"--help" ||
-                           arg == L"--cleanup" ||
-                           arg == L"--print-container-toml" ||
-                           arg == L"--print-restricted-toml");
-        if (isIsolated) {
-            if (argc > 2) {
-                fprintf(stderr, "Error: %ls must be used alone, without other options.\n",
-                        arg.c_str());
-                return SandyExit::InternalError;
-            }
-            if (arg == L"-v" || arg == L"--version") {
-                printf("sandy v%s\n", kVersion);
-                return 0;
-            }
-            if (arg == L"-h" || arg == L"--help") {
-                PrintUsage(kVersion);
-                return 0;
-            }
-            if (arg == L"--print-container-toml") {
-                PrintContainerToml();
-                return 0;
-            }
-            if (arg == L"--print-restricted-toml") {
-                PrintRestrictedToml();
-                return 0;
-            }
-            if (arg == L"--cleanup") {
-                return HandleCleanup();
-            }
-        }
+        if (HandleStandaloneCliAction(arg, argc, exitCode))
+            return true;
 
-        // --status [--json] — exactly 2 or 3 args total
         if (arg == L"--status") {
             if (argc > 3) {
                 fprintf(stderr, "Error: --status only accepts --json as companion.\n");
-                return SandyExit::InternalError;
+                exitCode = SandyExit::InternalError;
+                return true;
             }
+
             bool json = false;
             if (argc == 3) {
-                // The other arg (whichever position it's in) must be --json
                 int other = (i == 1) ? 2 : 1;
                 if (std::wstring(argv[other]) != L"--json") {
                     fprintf(stderr, "Error: --status only accepts --json as companion.\n");
-                    return SandyExit::InternalError;
+                    exitCode = SandyExit::InternalError;
+                    return true;
                 }
                 json = true;
             }
-            return HandleStatus(json);
+
+            exitCode = HandleStatus(json);
+            return true;
         }
 
-        // --explain <code> — exactly 2 args
         if (arg == L"--explain") {
             if (argc != 3 || i + 1 >= argc) {
                 fprintf(stderr, "Error: --explain requires exactly one argument.\n");
-                return SandyExit::InternalError;
+                exitCode = SandyExit::InternalError;
+                return true;
             }
-            return HandleExplain(argv[i + 1]);
+
+            exitCode = HandleExplain(argv[i + 1]);
+            return true;
         }
 
-        // --profile-info <name> — exactly 2 args
         if (arg == L"--profile-info") {
             if (argc != 3 || i + 1 >= argc) {
                 fprintf(stderr, "Error: --profile-info requires exactly one argument.\n");
-                return SandyExit::InternalError;
+                exitCode = SandyExit::InternalError;
+                return true;
             }
-            return HandleProfileInfo(argv[i + 1]);
+
+            exitCode = HandleProfileInfo(argv[i + 1]);
+            return true;
         }
 
-        // --delete-profile <name> — exactly 2 args
         if (arg == L"--delete-profile") {
             if (argc != 3 || i + 1 >= argc) {
                 fprintf(stderr, "Error: --delete-profile requires exactly one argument.\n");
-                return SandyExit::InternalError;
+                exitCode = SandyExit::InternalError;
+                return true;
             }
-            return HandleDeleteProfile(argv[i + 1]);
+
+            exitCode = HandleDeleteProfile(argv[i + 1]);
+            return true;
         }
     }
 
-    // --- Parse command-line arguments ---
+    return false;
+}
+
+static bool ParseRunMainOptions(int argc,
+                                wchar_t* argv[],
+                                RunMainOptions& options,
+                                int& exitCode)
+{
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
 
         if (arg == L"-q" || arg == L"--quiet") {
-            quiet = true;
+            options.quiet = true;
         }
         else if (arg == L"-L" || arg == L"--log-stamp") {
-            logStamp = true;
+            options.logStamp = true;
         }
         else if (arg == L"--dry-run" || arg == L"--check") {
-            dryRun = true;
+            options.dryRun = true;
         }
         else if (arg == L"--print-config") {
-            printConfig = true;
+            options.printConfig = true;
         }
         else if ((arg == L"-c" || arg == L"--config") && i + 1 < argc) {
-            configPath = argv[++i];
+            options.configPath = argv[++i];
         }
         else if ((arg == L"-s" || arg == L"--string") && i + 1 < argc) {
-            configString = argv[++i];
+            options.configString = argv[++i];
         }
         else if ((arg == L"-l" || arg == L"--log") && i + 1 < argc) {
-            logPath = argv[++i];
+            options.logPath = argv[++i];
         }
         else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
-            profileName = argv[++i];
+            options.profileName = argv[++i];
         }
         else if (arg == L"--create-profile" && i + 1 < argc) {
-            createProfileName = argv[++i];
+            options.createProfileName = argv[++i];
         }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
-            exePath = argv[++i];
-            exeArgs = CollectArgs(i + 1, argc, argv);
-            break; // -x/--exec consumes all remaining args
+            options.exePath = argv[++i];
+            options.exeArgs = CollectArgs(i + 1, argc, argv);
+            return true;
         }
         else if (arg == L"--") {
-            // End of options: next arg is exe, rest are its arguments
             if (i + 1 < argc) {
-                exePath = argv[++i];
-                exeArgs = CollectArgs(i + 1, argc, argv);
+                options.exePath = argv[++i];
+                options.exeArgs = CollectArgs(i + 1, argc, argv);
             }
-            break;
+            return true;
         }
         else {
             fprintf(stderr, "Unknown option: %ls\n\n", arg.c_str());
             PrintUsage(kVersion);
-            return SandyExit::InternalError;
+            exitCode = SandyExit::InternalError;
+            return false;
         }
     }
 
-    // --- Create profile mode (needs -c, no -x) ---
-    if (!createProfileName.empty()) {
-        if (configPath.empty()) {
-            fprintf(stderr, "Error: --create-profile requires -c <config.toml>.\n\n");
-            PrintUsage(kVersion);
-            return SandyExit::InternalError;
-        }
-        if (!logPath.empty())
-            g_logger.Start(logPath);
-        int result = dryRun
-            ? HandleDryRunCreateProfile(createProfileName, configPath)
-            : HandleCreateProfile(createProfileName, configPath);
-        g_logger.Stop();
-        return result;
-    }
+    return true;
+}
 
-    // --- Run with profile mode (-p <name> -x <exe>) ---
-    if (!profileName.empty()) {
-        // -p and -c/-s are mutually exclusive
-        if (!configPath.empty() || !configString.empty()) {
-            fprintf(stderr, "Error: -p/--profile and -c/--config/-s/--string are mutually exclusive.\n");
-            fprintf(stderr, "       Profile already contains its configuration.\n\n");
-            return SandyExit::ConfigError;
-        }
-        if (exePath.empty()) {
-            fprintf(stderr, "Error: -p/--profile requires -x <executable>.\n\n");
-            PrintUsage(kVersion);
-            return SandyExit::InternalError;
-        }
-        SavedProfile prof;
-        // P2: Run staging recovery before loading — ensures profiles left
-        // in staging state by an interrupted --create-profile are rolled back
-        // before LoadSavedProfile rejects them as incomplete.
-        CleanStagingProfiles();
-        if (!LoadSavedProfile(profileName, prof)) {
-            fprintf(stderr, "Error: profile '%ls' not found.\n", profileName.c_str());
-            return SandyExit::ConfigError;
-        }
-        prof.config.logPath = logPath;
-        prof.config.quiet = quiet;
-        prof.config.configSource = L"profile:" + profileName;
-        if (!logPath.empty())
-            g_logger.Start(logPath);
-        int result = RunWithProfile(prof, exePath, exeArgs);
-        g_logger.Stop();
-        return result;
-    }
-
-    // --- No config/exec provided ---
-    if (configPath.empty() && configString.empty()) {
+static int RunCreateProfileMode(const RunMainOptions& options)
+{
+    if (options.configPath.empty()) {
+        fprintf(stderr, "Error: --create-profile requires -c <config.toml>.\n\n");
         PrintUsage(kVersion);
         return SandyExit::InternalError;
     }
-    if (exePath.empty() && !dryRun && !printConfig) {
+
+    if (!options.logPath.empty())
+        g_logger.Start(options.logPath);
+
+    int result = options.dryRun
+        ? HandleDryRunCreateProfile(options.createProfileName, options.configPath)
+        : HandleCreateProfile(options.createProfileName, options.configPath);
+    g_logger.Stop();
+    return result;
+}
+
+static int RunSavedProfileMode(const RunMainOptions& options)
+{
+    if (!options.configPath.empty() || !options.configString.empty()) {
+        fprintf(stderr, "Error: -p/--profile and -c/--config/-s/--string are mutually exclusive.\n");
+        fprintf(stderr, "       Profile already contains its configuration.\n\n");
+        return SandyExit::ConfigError;
+    }
+    if (options.exePath.empty()) {
+        fprintf(stderr, "Error: -p/--profile requires -x <executable>.\n\n");
+        PrintUsage(kVersion);
+        return SandyExit::InternalError;
+    }
+
+    SavedProfile profile;
+    CleanStagingProfiles();
+    SavedProfileLoadStatus loadStatus = LoadSavedProfile(options.profileName, profile);
+    if (loadStatus == SavedProfileLoadStatus::NotFound) {
+        fprintf(stderr, "Error: profile '%ls' not found.\n", options.profileName.c_str());
+        return SandyExit::ConfigError;
+    }
+    if (loadStatus == SavedProfileLoadStatus::Invalid) {
+        fprintf(stderr, "Error: profile '%ls' is corrupted or incomplete. Recreate it or delete it.\n",
+                options.profileName.c_str());
+        return SandyExit::ConfigError;
+    }
+
+    profile.config.logPath = options.logPath;
+    profile.config.quiet = options.quiet;
+    profile.config.configSource = L"profile:" + options.profileName;
+    if (!options.logPath.empty())
+        g_logger.Start(options.logPath);
+
+    int result = RunWithProfile(profile, options.exePath, options.exeArgs);
+    g_logger.Stop();
+    return result;
+}
+
+static std::wstring StampLogPath(const std::wstring& path)
+{
+    if (path.empty())
+        return path;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    DWORD uid = (GetTickCount() ^ GetCurrentProcessId()) & 0xFFFF;
+    wchar_t prefix[32];
+    swprintf(prefix, 32, L"%04d%02d%02d_%02d%02d%02d_%04x_",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond, uid);
+
+    size_t slash = path.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+        return path.substr(0, slash + 1) + prefix + path.substr(slash + 1);
+    return std::wstring(prefix) + path;
+}
+
+static bool LoadConfiguredSandbox(const RunMainOptions& options, SandboxConfig& config)
+{
+    if (!options.configString.empty()) {
+        config = ParseConfig(options.configString);
+    } else {
+        DWORD attrs = GetFileAttributesW(options.configPath.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "Error: Config file not found: %ls\n", options.configPath.c_str());
+            return false;
+        }
+        config = LoadConfig(options.configPath);
+    }
+
+    if (config.parseError) {
+        fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
+        return false;
+    }
+
+    return true;
+}
+
+static int RunConfigDrivenMode(RunMainOptions options)
+{
+    if (options.configPath.empty() && options.configString.empty()) {
+        PrintUsage(kVersion);
+        return SandyExit::InternalError;
+    }
+    if (options.exePath.empty() && !options.dryRun && !options.printConfig) {
         fprintf(stderr, "Error: -x <executable> required (or use --dry-run / --print-config).\n\n");
         PrintUsage(kVersion);
         return SandyExit::InternalError;
     }
-
-    if (!configPath.empty() && !configString.empty()) {
+    if (!options.configPath.empty() && !options.configString.empty()) {
         fprintf(stderr, "Error: -c and -s are mutually exclusive.\n\n");
         PrintUsage(kVersion);
         return SandyExit::InternalError;
     }
 
+    if (options.logStamp)
+        options.logPath = StampLogPath(options.logPath);
+    if (!options.logPath.empty())
+        g_logger.Start(options.logPath);
 
-
-    // (config-only modes handled after config loading below)
-
-    // --- Apply timestamp + UID prefix to log filenames if --log-stamp ---
-    if (logStamp) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        DWORD uid = (GetTickCount() ^ GetCurrentProcessId()) & 0xFFFF;
-        wchar_t prefix[32];
-        swprintf(prefix, 32, L"%04d%02d%02d_%02d%02d%02d_%04x_",
-                 st.wYear, st.wMonth, st.wDay,
-                 st.wHour, st.wMinute, st.wSecond, uid);
-        auto stampPath = [&](const std::wstring& path) -> std::wstring {
-            if (path.empty()) return path;
-            auto slash = path.find_last_of(L"\\/");
-            if (slash != std::wstring::npos)
-                return path.substr(0, slash + 1) + prefix + path.substr(slash + 1);
-            return std::wstring(prefix) + path;
-        };
-        logPath = stampPath(logPath);
-    }
-
-    // --- Start logger early so config parser warnings go to log ---
-    if (!logPath.empty())
-        g_logger.Start(logPath);
-
-    // --- Load configuration ---
     SandboxConfig config;
-    if (!configString.empty()) {
-        config = ParseConfig(configString);
-    } else {
-        DWORD attrs = GetFileAttributesW(configPath.c_str());
-        if (attrs == INVALID_FILE_ATTRIBUTES) {
-            fprintf(stderr, "Error: Config file not found: %ls\n", configPath.c_str());
-            return SandyExit::ConfigError;
-        }
-        config = LoadConfig(configPath);
-    }
-    if (config.parseError) {
-        fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
+    if (!LoadConfiguredSandbox(options, config))
         return SandyExit::ConfigError;
-    }
-
-    // --- Config-only modes (no -x needed) ---
-    if (printConfig)
+    if (options.printConfig)
         return HandlePrintConfig(config);
-    if (dryRun)
-        return HandleDryRun(config, exePath, exeArgs);
+    if (options.dryRun)
+        return HandleDryRun(config, options.exePath, options.exeArgs);
 
-    config.logPath = logPath;
-    config.quiet = quiet;
-    config.configSource = !configPath.empty() ? configPath : L"<inline>";
+    config.logPath = options.logPath;
+    config.quiet = options.quiet;
+    config.configSource = !options.configPath.empty() ? options.configPath : L"<inline>";
+    return RunSandboxed(config, options.exePath, options.exeArgs);
+}
 
-    // --- Run sandboxed ---
-    // cleanup() inside RunSandboxed handles ACL restore, loopback, AppContainer.
-    // CleanupSandbox() remains as safety net for CTRL+C / SEH crash paths only.
-    return RunSandboxed(config, exePath, exeArgs);
+// -----------------------------------------------------------------------
+// Sandboxed execution (separated for SEH wrapping)
+// -----------------------------------------------------------------------
+static int RunMain(int argc, wchar_t* argv[])
+{
+    int exitCode = 0;
+    if (HandleImmediateCliAction(argc, argv, exitCode))
+        return exitCode;
+
+    RunMainOptions options;
+    if (!ParseRunMainOptions(argc, argv, options, exitCode))
+        return exitCode;
+    if (!options.createProfileName.empty())
+        return RunCreateProfileMode(options);
+    if (!options.profileName.empty())
+        return RunSavedProfileMode(options);
+    return RunConfigDrivenMode(options);
 }
 
 // -----------------------------------------------------------------------

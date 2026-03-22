@@ -1,8 +1,8 @@
 """Collusion test — Bob probe (Instance B)
 
-Bob grants [all] to shared/ with [deny all] on shared/locked/.
-He relies on Alice to exfiltrate data from locked/.
-Bob exits SECOND — his cleanup restores SDDL that includes Alice's SID.
+Bob grants [all] to shared/ (AppContainer mode, no deny support).
+He exits SECOND — his cleanup must restore the true original DACLs
+without leaving zombie AppContainer SIDs from Alice's prior run.
 """
 import os, sys, time
 
@@ -38,30 +38,30 @@ else:
 
 
 # ===========================================================================
-# ATTACK 1: Verify Bob's deny works — locked/ is inaccessible
+# CHECK 1: Verify Bob has access to shared/ (both instances granted)
 # ===========================================================================
-print("\n=== BOB: Verify deny on locked/ ===")
+print("\n=== BOB: Verify access to shared/ ===")
+try:
+    os.listdir(SHARED)
+    print("  [PASS] Bob can list shared/")
+    results.append(('PASS', 'access: shared/ listed'))
+except PermissionError:
+    print("  [FAIL] Bob can't list shared/ (grant not applied)")
+    results.append(('FAIL', 'access: shared/ blocked'))
+
 try:
     os.listdir(LOCKED)
-    print("  [FAIL] Bob can list locked/ (deny not working!)")
-    results.append(('FAIL', 'bob-deny: list succeeded'))
+    print("  [PASS] Bob can list locked/ (AC, all grant inherited)")
+    results.append(('PASS', 'access: locked/ listed'))
 except PermissionError:
-    print("  [PASS] Bob cannot list locked/ (deny works)")
-    results.append(('PASS', 'bob-deny: list blocked'))
-
-try:
-    open(os.path.join(LOCKED, 'secret.txt'), 'r').read()
-    print("  [FAIL] Bob can read secret.txt (deny not working!)")
-    results.append(('FAIL', 'bob-deny: read succeeded'))
-except PermissionError:
-    print("  [PASS] Bob cannot read secret.txt (deny works)")
-    results.append(('PASS', 'bob-deny: read blocked'))
+    print("  [FAIL] Bob can't list locked/ (unexpected)")
+    results.append(('FAIL', 'access: locked/ blocked'))
 
 
 # ===========================================================================
-# ATTACK 2: Read exfiltrated data from relay (Alice's heist)
+# CHECK 2: Read exfiltrated data from relay (Alice wrote it)
 # ===========================================================================
-print("\n=== BOB: Read exfiltrated data ===")
+print("\n=== BOB: Read relay data ===")
 exfil_file = os.path.join(RELAY, 'exfiltrated.txt')
 # Wait for Alice to create the relay
 for i in range(20):
@@ -72,23 +72,18 @@ for i in range(20):
 if os.path.exists(exfil_file):
     try:
         content = open(exfil_file, 'r').read()
-        if 'EXFILTRATED' in content:
-            print(f"  [INFO] Bob received exfiltrated data: {content.strip()}")
-            print("         -> Two instances colluded to bypass deny!")
-            results.append(('INFO', 'exfil: Bob got Alice relay'))
-        else:
-            print(f"  [ERR] Unexpected content: {content}")
-            results.append(('ERR', 'exfil: bad content'))
+        print(f"  [PASS] Bob read relay data: {content.strip()}")
+        results.append(('PASS', 'relay: Bob read Alice data'))
     except PermissionError:
-        print("  [INFO] Bob can't read relay (unexpected)")
-        results.append(('INFO', 'exfil: blocked'))
+        print("  [FAIL] Bob can't read relay (unexpected)")
+        results.append(('FAIL', 'relay: blocked'))
 else:
-    print("  [INFO] No exfiltrated file (Alice didn't post yet)")
-    results.append(('INFO', 'exfil: not available'))
+    print("  [INFO] No relay file (Alice didn't post yet)")
+    results.append(('INFO', 'relay: not available'))
 
 
 # ===========================================================================
-# ATTACK 3: Concurrent write to shared area
+# CHECK 3: Concurrent write to shared area
 # ===========================================================================
 print("\n=== BOB: Concurrent writes ===")
 try:
@@ -101,16 +96,6 @@ try:
 except Exception as e:
     print(f"  [FAIL] Bob write: {e}")
     results.append(('FAIL', f'concurrent: {e}'))
-
-# Can Bob read what Alice wrote to shared/?
-try:
-    alice_file = os.path.join(LOCKED, 'alice_was_here.txt')
-    content = open(alice_file, 'r').read()
-    print(f"  [FAIL] Bob read Alice's file in locked/: {content[:30]}")
-    results.append(('FAIL', 'concurrent: Bob read locked'))
-except PermissionError:
-    print("  [PASS] Bob can't read Alice's file in locked/")
-    results.append(('PASS', 'concurrent: locked still denied'))
 
 
 # ===========================================================================
@@ -146,12 +131,13 @@ except PermissionError:
     results.append(('FAIL', 'post-alice: shared broken'))
 
 try:
-    os.listdir(LOCKED)
-    print("  [FAIL] locked/ accessible after Alice cleanup (deny lost!)  ")
-    results.append(('FAIL', 'post-alice: deny lost'))
-except PermissionError:
-    print("  [PASS] locked/ still denied after Alice cleanup")
-    results.append(('PASS', 'post-alice: deny survives'))
+    with open(p('bob_final.txt'), 'w') as f:
+        f.write('BOB_FINAL')
+    print("  [PASS] Bob can still write after Alice cleanup")
+    results.append(('PASS', 'post-alice: Bob write OK'))
+except Exception as e:
+    print(f"  [FAIL] Bob can't write after Alice cleanup: {e}")
+    results.append(('FAIL', f'post-alice: write failed'))
 
 
 # ===========================================================================

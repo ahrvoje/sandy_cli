@@ -9,30 +9,10 @@
 // =========================================================================
 #pragma once
 
-#include "SandboxTypes.h"
+#include "SandboxConfigRender.h"
 #include "SandboxSavedProfile.h"
 
 namespace Sandbox {
-
-// -----------------------------------------------------------------------
-// TomlQuotedValue — emit a string as TOML, using double-quotes with
-// escaping when the value contains an apostrophe.
-// -----------------------------------------------------------------------
-inline void TomlQuotedValue(const std::wstring& val)
-{
-    if (val.find(L'\'') != std::wstring::npos) {
-        // Escape backslashes and double-quotes for a TOML basic string
-        std::wstring escaped;
-        for (auto ch : val) {
-            if (ch == L'\\') escaped += L"\\\\";
-            else if (ch == L'"') escaped += L"\\\"";
-            else escaped += ch;
-        }
-        printf("\"%ls\"", escaped.c_str());
-    } else {
-        printf("'%ls'", val.c_str());
-    }
-}
 
 // -----------------------------------------------------------------------
 // Print folder entries grouped by access level (for dry-run display)
@@ -57,44 +37,16 @@ inline void PrintFolderEntries(const wchar_t* section,
 }
 
 // -----------------------------------------------------------------------
-// Print folder entries as TOML (for --print-config)
-// -----------------------------------------------------------------------
-inline void PrintFolderToml(const wchar_t* section,
-                            const std::vector<FolderEntry>& entries,
-                            GrantScope scope)
-{
-    printf("[%ls]\n", section);
-    for (int a = 0; a <= static_cast<int>(AccessLevel::Create); a++) {
-        auto lvl = static_cast<AccessLevel>(a);
-        bool first = true;
-        for (auto& e : entries) {
-            if (e.access != lvl || e.scope != scope) continue;
-            if (first) {
-                printf("%ls = [", AccessLevelName(lvl));
-                first = false;
-            } else {
-                printf(", ");
-            }
-            TomlQuotedValue(e.path);
-        }
-        if (!first) printf("]\n");
-    }
-}
-
-// -----------------------------------------------------------------------
 // Dry-run mode (--dry-run / --check) — validate config + show plan
 // -----------------------------------------------------------------------
 inline int HandleDryRun(const SandboxConfig& config,
                         const std::wstring& exePath,
                         const std::wstring& exeArgs)
 {
-    bool isRestricted = (config.tokenMode == TokenMode::Restricted);
+    bool isRestricted = IsRestrictedTokenMode(config.tokenMode);
     printf("=== Sandy Dry Run ===\n\n");
 
-    const wchar_t* modeStr = isRestricted ? L"restricted"
-                           : (config.tokenMode == TokenMode::LPAC) ? L"lpac"
-                           : L"appcontainer";
-    printf("Mode: %ls\n", modeStr);
+    printf("Mode: %ls\n", TokenModeName(config.tokenMode));
     if (isRestricted)
         printf("Integrity: %ls\n",
                config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
@@ -118,8 +70,7 @@ inline int HandleDryRun(const SandboxConfig& config,
     printf("\n[privileges]\n");
     if (!isRestricted) {
         printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("  lan:             %ls\n", config.lanMode == LanMode::WithLocalhost ? L"'with localhost'" :
-                                            config.lanMode == LanMode::WithoutLocalhost ? L"'without localhost'" : L"false");
+        printf("  lan:             %ls\n", LanModeTomlDisplayValue(config.lanMode));
     } else {
         printf("  named_pipes:     %ls\n", config.allowNamedPipes ? L"true" : L"false");
         printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
@@ -203,22 +154,22 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
         fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
         return SandyExit::ConfigError;
     }
-    SandboxConfig config = ParseConfig(tomlText);
+    SandboxConfig config = ParseConfigFileText(tomlText);
     if (config.parseError) {
         fprintf(stderr, "Error: config contains unknown sections or keys.\n");
         return SandyExit::ConfigError;
     }
 
-    bool isAC = (config.tokenMode == TokenMode::AppContainer);
-    const wchar_t* typeStr      = isAC ? L"appcontainer" : L"restricted";
+    bool isRestricted = IsRestrictedTokenMode(config.tokenMode);
+    bool isAppContainerFamily = IsAppContainerFamilyTokenMode(config.tokenMode);
     const wchar_t* integrityStr = (config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
 
     // --- Print what would happen ---
     printf("Profile name: %ls\n", name.c_str());
-    printf("Type:         %ls\n", typeStr);
-    if (!isAC)
+    printf("Type:         %ls\n", TokenModeName(config.tokenMode));
+    if (isRestricted)
         printf("Integrity:    %ls\n", integrityStr);
-    if (isAC)
+    if (isAppContainerFamily)
         printf("Container:    Sandy_%ls  (would be created via CreateAppContainerProfile)\n",
                name.c_str());
     printf("SID:          (would be generated at creation time)\n");
@@ -234,7 +185,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
             printf("  [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
     }
 
-    if (!isAC && (!config.registryRead.empty() || !config.registryWrite.empty())) {
+    if (isRestricted && (!config.registryRead.empty() || !config.registryWrite.empty())) {
         printf("[registry]\n");
         for (auto& k : config.registryRead)  printf("  read:  %ls\n", k.c_str());
         for (auto& k : config.registryWrite) printf("  write: %ls\n", k.c_str());
@@ -249,85 +200,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
 // -----------------------------------------------------------------------
 inline int HandlePrintConfig(const SandboxConfig& config)
 {
-    bool isRT = (config.tokenMode == TokenMode::Restricted);
-
-    printf("[sandbox]\n");
-    const wchar_t* tokenStr = isRT ? L"restricted"
-                            : (config.tokenMode == TokenMode::LPAC) ? L"lpac"
-                            : L"appcontainer";
-    printf("token = '%ls'\n", tokenStr);
-    if (isRT)
-        printf("integrity = '%ls'\n",
-               config.integrity == IntegrityLevel::Low ? L"low" : L"medium");
-    if (isRT && config.strict)
-        printf("strict = true\n");
-    printf("workdir = ");
-    TomlQuotedValue(config.workdir.empty() ? L"inherit" : config.workdir);
-    printf("\n\n");
-
-    PrintFolderToml(L"allow.deep", config.folders, GrantScope::Deep);
-    PrintFolderToml(L"allow.this", config.folders, GrantScope::This);
-    printf("\n");
-    PrintFolderToml(L"deny.deep", config.denyFolders, GrantScope::Deep);
-    PrintFolderToml(L"deny.this", config.denyFolders, GrantScope::This);
-
-    printf("\n[privileges]\n");
-    if (!isRT) {
-        printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("lan             = %ls\n", config.lanMode == LanMode::WithLocalhost ? L"'with localhost'" :
-                                           config.lanMode == LanMode::WithoutLocalhost ? L"'without localhost'" : L"false");
-    } else {
-        printf("named_pipes     = %ls\n", config.allowNamedPipes ? L"true" : L"false");
-        printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
-    }
-    // stdin: NUL → false, empty (inherit) → true, path → quoted value
-    if (config.stdinMode == L"NUL")
-        printf("stdin           = false\n");
-    else if (config.stdinMode.empty())
-        printf("stdin           = true\n");
-    else {
-        printf("stdin           = ");
-        TomlQuotedValue(config.stdinMode);
-        printf("\n");
-    }
-    printf("clipboard_read  = %ls\n", config.allowClipboardRead ? L"true" : L"false");
-    printf("clipboard_write = %ls\n", config.allowClipboardWrite ? L"true" : L"false");
-    printf("child_processes = %ls\n", config.allowChildProcesses ? L"true" : L"false");
-
-    if (isRT) {
-        bool hasRegKeys = !config.registryRead.empty() || !config.registryWrite.empty();
-        if (hasRegKeys) {
-            printf("\n[registry]\n");
-            auto printKeys = [](const wchar_t* k, const std::vector<std::wstring>& v) {
-                if (v.empty()) return;
-                printf("%ls = [", k);
-                for (size_t i = 0; i < v.size(); i++) {
-                    if (i) printf(", ");
-                    TomlQuotedValue(v[i]);
-                }
-                printf("]\n");
-            };
-            printKeys(L"read",  config.registryRead);
-            printKeys(L"write", config.registryWrite);
-        }
-    }
-
-    printf("\n[environment]\n");
-    printf("inherit = %ls\n", config.envInherit ? L"true" : L"false");
-    if (!config.envPass.empty()) {
-        printf("pass = [");
-        for (size_t i = 0; i < config.envPass.size(); i++) {
-            if (i) printf(", ");
-            TomlQuotedValue(config.envPass[i]);
-        }
-        printf("]\n");
-    }
-
-    printf("\n[limit]\n");
-    printf("timeout   = %lu\n", config.timeoutSeconds);
-    printf("memory    = %zu\n", config.memoryLimitMB);
-    printf("processes = %lu\n", config.maxProcesses);
-
+    PrintResolvedConfig(config);
     return 0;
 }
 

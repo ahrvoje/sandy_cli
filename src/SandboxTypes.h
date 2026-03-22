@@ -241,6 +241,44 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     enum class TokenMode { AppContainer, LPAC, Restricted };
 
+    inline bool IsRestrictedTokenMode(TokenMode mode)
+    {
+        return mode == TokenMode::Restricted;
+    }
+
+    inline bool IsAppContainerFamilyTokenMode(TokenMode mode)
+    {
+        return !IsRestrictedTokenMode(mode);
+    }
+
+    inline const wchar_t* TokenModeName(TokenMode mode)
+    {
+        switch (mode) {
+        case TokenMode::Restricted:   return L"restricted";
+        case TokenMode::LPAC:         return L"lpac";
+        case TokenMode::AppContainer:
+        default:                      return L"appcontainer";
+        }
+    }
+
+    inline const char* TokenModeSummaryLabel(TokenMode mode)
+    {
+        switch (mode) {
+        case TokenMode::Restricted:   return "Restricted Token";
+        case TokenMode::LPAC:         return "LPAC Sandbox";
+        case TokenMode::AppContainer:
+        default:                      return "AppContainer";
+        }
+    }
+
+    inline bool TryParseTokenMode(const std::wstring& value, TokenMode& out)
+    {
+        if (value == L"restricted")   { out = TokenMode::Restricted; return true; }
+        if (value == L"lpac")         { out = TokenMode::LPAC; return true; }
+        if (value == L"appcontainer") { out = TokenMode::AppContainer; return true; }
+        return false;
+    }
+
     // -----------------------------------------------------------------------
     // Integrity level for restricted token
     // -----------------------------------------------------------------------
@@ -255,6 +293,52 @@ namespace Sandbox {
     // SID — loopback always implies LAN access.
     // -----------------------------------------------------------------------
     enum class LanMode { Off, WithoutLocalhost, WithLocalhost };
+
+    inline const wchar_t* LanModeRegistryName(LanMode mode)
+    {
+        switch (mode) {
+        case LanMode::WithLocalhost:    return L"with_localhost";
+        case LanMode::WithoutLocalhost: return L"without_localhost";
+        case LanMode::Off:
+        default:                        return L"off";
+        }
+    }
+
+    inline const wchar_t* LanModePhrase(LanMode mode)
+    {
+        switch (mode) {
+        case LanMode::WithLocalhost:    return L"with localhost";
+        case LanMode::WithoutLocalhost: return L"without localhost";
+        case LanMode::Off:
+        default:                        return L"false";
+        }
+    }
+
+    inline const wchar_t* LanModeTomlDisplayValue(LanMode mode)
+    {
+        switch (mode) {
+        case LanMode::WithLocalhost:    return L"'with localhost'";
+        case LanMode::WithoutLocalhost: return L"'without localhost'";
+        case LanMode::Off:
+        default:                        return L"false";
+        }
+    }
+
+    inline bool TryParseLanModeConfigValue(const std::wstring& value, LanMode& out)
+    {
+        if (value == L"false")             { out = LanMode::Off; return true; }
+        if (value == L"with localhost")    { out = LanMode::WithLocalhost; return true; }
+        if (value == L"without localhost") { out = LanMode::WithoutLocalhost; return true; }
+        return false;
+    }
+
+    inline bool TryParseLanModeRegistryValue(const std::wstring& value, LanMode& out)
+    {
+        if (value == L"off")               { out = LanMode::Off; return true; }
+        if (value == L"with_localhost")    { out = LanMode::WithLocalhost; return true; }
+        if (value == L"without_localhost") { out = LanMode::WithoutLocalhost; return true; }
+        return false;
+    }
 
     // -----------------------------------------------------------------------
     // Full sandbox configuration (parsed from TOML)
@@ -395,72 +479,112 @@ namespace Sandbox {
             ReleaseSRWLockExclusive(&lock);
         }
 
+        static const wchar_t* StdinLogValue(const SandboxConfig& config)
+        {
+            if (config.stdinMode.empty())
+                return L"inherit";
+            if (_wcsicmp(config.stdinMode.c_str(), L"NUL") == 0)
+                return L"disabled";
+            return config.stdinMode.c_str();
+        }
+
+        void WriteConfigHeaderUnlocked(const std::wstring& ts,
+                                       const std::wstring& exe,
+                                       const std::wstring& args)
+        {
+            fwprintf(logFile, L"[%s] === Configuration ===\n", ts.c_str());
+            fwprintf(logFile, L"[%s] EXEC: %s\n", ts.c_str(), exe.c_str());
+            if (!args.empty())
+                fwprintf(logFile, L"[%s] ARGS: %s\n", ts.c_str(), args.c_str());
+        }
+
+        void WriteAccessSectionUnlocked(const std::wstring& ts,
+                                        const wchar_t* sectionName,
+                                        const std::vector<FolderEntry>& entries)
+        {
+            if (entries.empty())
+                return;
+
+            fwprintf(logFile, L"[%s] %ls: %zu entries\n", ts.c_str(), sectionName, entries.size());
+            for (const auto& entry : entries)
+                fwprintf(logFile, L"[%s]     [%-7s] %s\n", ts.c_str(),
+                         AccessTag(entry.access), entry.path.c_str());
+        }
+
+        void WriteRegistryEntriesUnlocked(const std::wstring& ts,
+                                          const wchar_t* tag,
+                                          const std::vector<std::wstring>& keys)
+        {
+            for (const auto& key : keys)
+                fwprintf(logFile, L"[%s]     [%-7ls] %s\n", ts.c_str(), tag, key.c_str());
+        }
+
+        void WriteRegistrySectionUnlocked(const std::wstring& ts,
+                                          const SandboxConfig& config)
+        {
+            if (config.registryRead.empty() && config.registryWrite.empty())
+                return;
+
+            fwprintf(logFile, L"[%s] REGISTRY: %zu keys\n", ts.c_str(),
+                     config.registryRead.size() + config.registryWrite.size());
+            WriteRegistryEntriesUnlocked(ts, L"READ", config.registryRead);
+            WriteRegistryEntriesUnlocked(ts, L"WRITE", config.registryWrite);
+        }
+
+        void WritePrivilegesSectionUnlocked(const std::wstring& ts,
+                                            const SandboxConfig& config)
+        {
+            fwprintf(logFile, L"[%s] PRIVILEGES:\n", ts.c_str());
+            if (config.strict)
+                fwprintf(logFile, L"[%s]     strict          = yes\n", ts.c_str());
+            fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(),
+                     config.allowNamedPipes ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     stdin           = %s\n", ts.c_str(),
+                     StdinLogValue(config));
+            fwprintf(logFile, L"[%s]     clipboard       = read=%s write=%s\n", ts.c_str(),
+                     config.allowClipboardRead ? L"yes" : L"no",
+                     config.allowClipboardWrite ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     child_processes = %s\n", ts.c_str(),
+                     config.allowChildProcesses ? L"yes" : L"no");
+            fwprintf(logFile, L"[%s]     environment     = %s\n", ts.c_str(),
+                     config.envInherit ? L"inherit" : L"filtered");
+
+            if (config.allowNetwork)
+                fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
+            if (config.lanMode != LanMode::Off)
+                fwprintf(logFile, L"[%s]     lan             = %ls\n", ts.c_str(),
+                         LanModePhrase(config.lanMode));
+        }
+
+        void WriteLimitsSectionUnlocked(const std::wstring& ts,
+                                        const SandboxConfig& config)
+        {
+            if (!config.timeoutSeconds && !config.memoryLimitMB && !config.maxProcesses)
+                return;
+
+            fwprintf(logFile, L"[%s] LIMITS:\n", ts.c_str());
+            if (config.timeoutSeconds)
+                fwprintf(logFile, L"[%s]     timeout         = %lu sec\n", ts.c_str(),
+                         config.timeoutSeconds);
+            if (config.memoryLimitMB)
+                fwprintf(logFile, L"[%s]     memory          = %zu MB\n", ts.c_str(),
+                         config.memoryLimitMB);
+            if (config.maxProcesses)
+                fwprintf(logFile, L"[%s]     processes       = %lu max\n", ts.c_str(),
+                         config.maxProcesses);
+        }
+
         void LogConfig(const SandboxConfig& config, const std::wstring& exe,
                        const std::wstring& args) {
             AcquireSRWLockExclusive(&lock);
             if (!active) { ReleaseSRWLockExclusive(&lock); return; }
             auto ts = Timestamp();
-
-            // --- Header ---
-            fwprintf(logFile, L"[%s] === Configuration ===\n", ts.c_str());
-
-            // --- Target ---
-            fwprintf(logFile, L"[%s] EXEC: %s\n", ts.c_str(), exe.c_str());
-            if (!args.empty())
-                fwprintf(logFile, L"[%s] ARGS: %s\n", ts.c_str(), args.c_str());
-
-            // --- Allow ---
-            if (!config.folders.empty()) {
-                fwprintf(logFile, L"[%s] ALLOW: %zu entries\n", ts.c_str(), config.folders.size());
-                for (const auto& e : config.folders)
-                    fwprintf(logFile, L"[%s]     [%-7s] %s\n", ts.c_str(), AccessTag(e.access), e.path.c_str());
-            }
-
-            // --- Deny ---
-            if (!config.denyFolders.empty()) {
-                fwprintf(logFile, L"[%s] DENY: %zu entries\n", ts.c_str(), config.denyFolders.size());
-                for (const auto& d : config.denyFolders)
-                    fwprintf(logFile, L"[%s]     [%-7s] %s\n", ts.c_str(), AccessTag(d.access), d.path.c_str());
-            }
-
-            // --- Registry ---
-            if (!config.registryRead.empty() || !config.registryWrite.empty()) {
-                fwprintf(logFile, L"[%s] REGISTRY: %zu keys\n", ts.c_str(),
-                         config.registryRead.size() + config.registryWrite.size());
-                for (const auto& k : config.registryRead)
-                    fwprintf(logFile, L"[%s]     [READ   ] %s\n", ts.c_str(), k.c_str());
-                for (const auto& k : config.registryWrite)
-                    fwprintf(logFile, L"[%s]     [WRITE  ] %s\n", ts.c_str(), k.c_str());
-            }
-
-            // --- Privileges ---
-            fwprintf(logFile, L"[%s] PRIVILEGES:\n", ts.c_str());
-            if (config.strict)
-                fwprintf(logFile, L"[%s]     strict          = yes\n", ts.c_str());
-            fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(), config.allowNamedPipes ? L"yes" : L"no");
-            fwprintf(logFile, L"[%s]     stdin           = %s\n", ts.c_str(),
-                     config.stdinMode.empty() ? L"inherit"
-                     : _wcsicmp(config.stdinMode.c_str(), L"NUL") == 0 ? L"disabled" : config.stdinMode.c_str());
-            fwprintf(logFile, L"[%s]     clipboard       = read=%s write=%s\n", ts.c_str(),
-                     config.allowClipboardRead ? L"yes" : L"no",
-                     config.allowClipboardWrite ? L"yes" : L"no");
-            fwprintf(logFile, L"[%s]     child_processes = %s\n", ts.c_str(), config.allowChildProcesses ? L"yes" : L"no");
-            fwprintf(logFile, L"[%s]     environment     = %s\n", ts.c_str(),
-                     config.envInherit ? L"inherit" : L"filtered");
-
-            if (config.allowNetwork)    fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
-            if (config.lanMode == LanMode::WithLocalhost)
-                fwprintf(logFile, L"[%s]     lan             = with localhost\n", ts.c_str());
-            else if (config.lanMode == LanMode::WithoutLocalhost)
-                fwprintf(logFile, L"[%s]     lan             = without localhost\n", ts.c_str());
-
-            // --- Limits ---
-            if (config.timeoutSeconds || config.memoryLimitMB || config.maxProcesses) {
-                fwprintf(logFile, L"[%s] LIMITS:\n", ts.c_str());
-                if (config.timeoutSeconds) fwprintf(logFile, L"[%s]     timeout         = %lu sec\n", ts.c_str(), config.timeoutSeconds);
-                if (config.memoryLimitMB)  fwprintf(logFile, L"[%s]     memory          = %zu MB\n", ts.c_str(), config.memoryLimitMB);
-                if (config.maxProcesses)   fwprintf(logFile, L"[%s]     processes       = %lu max\n", ts.c_str(), config.maxProcesses);
-            }
+            WriteConfigHeaderUnlocked(ts, exe, args);
+            WriteAccessSectionUnlocked(ts, L"ALLOW", config.folders);
+            WriteAccessSectionUnlocked(ts, L"DENY", config.denyFolders);
+            WriteRegistrySectionUnlocked(ts, config);
+            WritePrivilegesSectionUnlocked(ts, config);
+            WriteLimitsSectionUnlocked(ts, config);
 
             _commit(_fileno(logFile));
             ReleaseSRWLockExclusive(&lock);
@@ -468,11 +592,64 @@ namespace Sandbox {
 
         // (LogOutput removed — console passthrough: no pipe to capture from)
 
+        void WriteLogLineUnlocked(const wchar_t* msg)
+        {
+            fwprintf(logFile, L"[%s] %s\n", Timestamp().c_str(), msg);
+            _commit(_fileno(logFile));
+        }
+
+        void RecordFormattingDiagnostic(const wchar_t* msg)
+        {
+            AcquireSRWLockExclusive(&lock);
+            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
+            truncatedCount++;
+            WriteLogLineUnlocked(msg);
+            ReleaseSRWLockExclusive(&lock);
+        }
+
+        bool TryFormatLogMessage(const wchar_t* fmt,
+                                 va_list& args,
+                                 std::wstring& message,
+                                 const wchar_t*& diagnostic)
+        {
+            wchar_t stackBuf[1024];
+            va_list measureArgs;
+            va_copy(measureArgs, args);
+            int needed = _vscwprintf(fmt, measureArgs);
+            va_end(measureArgs);
+
+            if (needed < 0) {
+                diagnostic = L"LOG_DIAG: formatting failure in LogFmt";
+                return false;
+            }
+
+            const size_t required = static_cast<size_t>(needed) + 1;
+            if (required <= _countof(stackBuf)) {
+                int written = _vsnwprintf_s(stackBuf, _countof(stackBuf), _TRUNCATE, fmt, args);
+                if (written < 0) {
+                    diagnostic = L"LOG_DIAG: stack formatting truncated unexpectedly";
+                    return false;
+                }
+                stackBuf[_countof(stackBuf) - 1] = L'\0';
+                message = stackBuf;
+                return true;
+            }
+
+            std::vector<wchar_t> dynamicBuf(required);
+            int written = _vsnwprintf_s(dynamicBuf.data(), dynamicBuf.size(), _TRUNCATE, fmt, args);
+            if (written < 0) {
+                diagnostic = L"LOG_DIAG: dynamic formatting truncated unexpectedly";
+                return false;
+            }
+            dynamicBuf.back() = L'\0';
+            message.assign(dynamicBuf.data());
+            return true;
+        }
+
         void Log(const wchar_t* msg) {
             AcquireSRWLockExclusive(&lock);
             if (!active) { ReleaseSRWLockExclusive(&lock); return; }
-            fwprintf(logFile, L"[%s] %s\n", Timestamp().c_str(), msg);
-            _commit(_fileno(logFile));
+            WriteLogLineUnlocked(msg);
             ReleaseSRWLockExclusive(&lock);
         }
 
@@ -480,46 +657,23 @@ namespace Sandbox {
         // Falls back to a fixed stack buffer for the common case, but avoids
         // silent detail loss for larger diagnostics.
         void LogFmt(const wchar_t* fmt, ...) {
-
             AcquireSRWLockExclusive(&lock);
             if (!active) { ReleaseSRWLockExclusive(&lock); return; }
             ReleaseSRWLockExclusive(&lock);
 
-            wchar_t stackBuf[1024];
             va_list args;
             va_start(args, fmt);
-            va_list argsCopy;
-            va_copy(argsCopy, args);
-
-            int needed = _vscwprintf(fmt, argsCopy);
-            va_end(argsCopy);
-
-            if (needed < 0) {
-                va_end(args);
-                truncatedCount++;
-                Log(L"LOG_DIAG: formatting failure in LogFmt");
-                return;
-            }
-
-            const size_t required = static_cast<size_t>(needed) + 1;
-            if (required <= _countof(stackBuf)) {
-                _vsnwprintf_s(stackBuf, _countof(stackBuf), _TRUNCATE, fmt, args);
-                stackBuf[_countof(stackBuf) - 1] = L'\0';
-                va_end(args);
-                Log(stackBuf);
-                return;
-            }
-
-            std::vector<wchar_t> dynamicBuf(required);
-            int written = _vsnwprintf_s(dynamicBuf.data(), dynamicBuf.size(), _TRUNCATE, fmt, args);
+            std::wstring message;
+            const wchar_t* diagnostic = nullptr;
+            bool ok = TryFormatLogMessage(fmt, args, message, diagnostic);
             va_end(args);
-            if (written < 0) {
-                truncatedCount++;
-                Log(L"LOG_DIAG: dynamic formatting truncated unexpectedly");
+
+            if (!ok) {
+                RecordFormattingDiagnostic(diagnostic);
                 return;
             }
-            dynamicBuf.back() = L'\0';
-            Log(dynamicBuf.data());
+
+            Log(message.c_str());
         }
 
         void LogSummary(DWORD exitCode, bool timedOut, DWORD timeoutSec) {

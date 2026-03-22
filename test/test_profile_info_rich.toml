@@ -1,0 +1,23 @@
+# Rich profile-info fixture for profile display regression coverage.
+
+[sandbox]
+token = 'appcontainer'
+workdir = 'C:\Users\H\test_sandy_profile\info\work'
+
+[allow.deep]
+read = ['C:\Users\H\test_sandy_profile\info\data']
+execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+
+[privileges]
+stdin = 'C:\Users\H\test_sandy_profile\info\input.txt'
+clipboard_write = true
+child_processes = false
+
+[environment]
+inherit = false
+pass = ['TEMP']
+
+[limit]
+timeout = 12
+memory = 64
+processes = 2

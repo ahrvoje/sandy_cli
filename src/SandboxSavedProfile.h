@@ -9,11 +9,10 @@
 #pragma once
 
 #include "Sandbox.h"
+#include "SandboxConfigRender.h"
+#include "SandboxProfileRegistry.h"
 
 namespace Sandbox {
-
-    // Registry parent key for saved profiles
-    static const wchar_t* kProfilesParentKey = L"Software\\Sandy\\Profiles";
 
     // -----------------------------------------------------------------------
     // SavedProfile — in-memory representation of a persisted profile
@@ -28,6 +27,8 @@ namespace Sandbox {
         std::wstring tomlText;      // raw TOML config
         SandboxConfig config;       // parsed config
     };
+
+    enum class SavedProfileLoadStatus { Ok, NotFound, Invalid };
 
     // Durable profile teardown must be treated as a transaction: only forget
     // profile ownership metadata after both loopback and container state are
@@ -100,67 +101,143 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // ReadTomlFileText — read a TOML file as raw wide string for storage.
-    // -----------------------------------------------------------------------
-    inline std::wstring ReadTomlFileText(const std::wstring& configPath)
-    {
-        HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE) return {};
-
-        DWORD fileSize = GetFileSize(hFile, nullptr);
-        if (fileSize == 0 || fileSize == INVALID_FILE_SIZE || fileSize > 1024 * 1024) {
-            CloseHandle(hFile);
-            return {};
-        }
-
-        std::string buf(fileSize, '\0');
-        DWORD bytesRead = 0;
-        if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
-            CloseHandle(hFile);
-            return {};
-        }
-        CloseHandle(hFile);
-
-        // Reject files with a BOM — Sandy requires clean UTF-8 (no BOM).
-        if (bytesRead >= 3 &&
-            static_cast<unsigned char>(buf[0]) == 0xEF &&
-            static_cast<unsigned char>(buf[1]) == 0xBB &&
-            static_cast<unsigned char>(buf[2]) == 0xBF) {
-            fprintf(stderr, "Error: Config file starts with a UTF-8 BOM (byte order mark).\n");
-            fprintf(stderr, "  Sandy requires clean UTF-8 without a BOM. Re-save the file as 'UTF-8' (not 'UTF-8 with BOM').\n");
-            return {};
-        }
-        if (bytesRead >= 2 &&
-            ((static_cast<unsigned char>(buf[0]) == 0xFF && static_cast<unsigned char>(buf[1]) == 0xFE) ||
-             (static_cast<unsigned char>(buf[0]) == 0xFE && static_cast<unsigned char>(buf[1]) == 0xFF))) {
-            fprintf(stderr, "Error: Config file appears to be UTF-16 encoded.\n");
-            fprintf(stderr, "  Sandy requires plain UTF-8. Re-save the file as 'UTF-8' (not 'Unicode' or 'UTF-16').\n");
-            return {};
-        }
-
-        int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), (int)bytesRead, nullptr, 0);
-        if (wideLen == 0) {
-            fprintf(stderr, "Error: Config file contains invalid UTF-8 byte sequences.\n");
-            return {};
-        }
-        std::wstring content(wideLen, L'\0');
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf.c_str(), (int)bytesRead, &content[0], wideLen);
-        return content;
-    }
-
-    // -----------------------------------------------------------------------
     // ProfileExists — check if a named profile exists in the registry.
     // -----------------------------------------------------------------------
     inline bool ProfileExists(const std::wstring& name)
     {
-        std::wstring key = std::wstring(kProfilesParentKey) + L"\\" + name;
         HKEY hKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (OpenSavedProfileRegistryKey(name, KEY_READ, hKey)) {
             RegCloseKey(hKey);
             return true;
         }
         return false;
+    }
+
+    inline void BuildIndexedValueName(const wchar_t* prefix,
+                                      DWORD index,
+                                      wchar_t (&name)[32])
+    {
+        swprintf(name, 32, L"%ls%lu", prefix, index);
+    }
+
+    inline const wchar_t* GrantScopeSuffix(GrantScope scope)
+    {
+        return scope == GrantScope::This ? L".this" : L".deep";
+    }
+
+    inline std::wstring SerializeFolderEntry(const FolderEntry& entry)
+    {
+        return std::wstring(AccessLevelName(entry.access))
+             + GrantScopeSuffix(entry.scope)
+             + L"|"
+             + entry.path;
+    }
+
+    inline bool TryDeserializeFolderEntry(const std::wstring& serialized,
+                                          FolderEntry& entry,
+                                          std::wstring& error)
+    {
+        size_t sep = serialized.find(L'|');
+        if (sep == std::wstring::npos || sep == 0 || sep + 1 >= serialized.size()) {
+            error = L"missing access/path separator";
+            return false;
+        }
+
+        std::wstring tag = serialized.substr(0, sep);
+        if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".this") {
+            entry.scope = GrantScope::This;
+            tag.resize(tag.size() - 5);
+        } else if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".deep") {
+            entry.scope = GrantScope::Deep;
+            tag.resize(tag.size() - 5);
+        } else {
+            error = L"missing grant scope suffix";
+            return false;
+        }
+
+        if (!ParseAccessTag(tag, entry.access)) {
+            error = L"unknown access tag";
+            return false;
+        }
+
+        entry.path = NormalizeFsPath(serialized.substr(sep + 1));
+        if (entry.path.empty()) {
+            error = L"empty path";
+            return false;
+        }
+        return true;
+    }
+
+    inline bool WriteIndexedStringValues(HKEY hKey,
+                                         const wchar_t* countName,
+                                         const wchar_t* valuePrefix,
+                                         const std::vector<std::wstring>& values)
+    {
+        bool ok = TryWriteRegDword(hKey, countName, static_cast<DWORD>(values.size()));
+        for (DWORD i = 0; i < values.size(); i++) {
+            wchar_t name[32];
+            BuildIndexedValueName(valuePrefix, i, name);
+            ok &= TryWriteRegSz(hKey, name, values[i]);
+        }
+        return ok;
+    }
+
+    inline bool WriteIndexedFolderEntries(HKEY hKey,
+                                          const wchar_t* countName,
+                                          const wchar_t* valuePrefix,
+                                          const std::vector<FolderEntry>& entries)
+    {
+        bool ok = TryWriteRegDword(hKey, countName, static_cast<DWORD>(entries.size()));
+        for (DWORD i = 0; i < entries.size(); i++) {
+            wchar_t name[32];
+            BuildIndexedValueName(valuePrefix, i, name);
+            ok &= TryWriteRegSz(hKey, name, SerializeFolderEntry(entries[i]));
+        }
+        return ok;
+    }
+
+    inline bool ReadIndexedStringValues(HKEY hKey,
+                                        const wchar_t* countName,
+                                        const wchar_t* valuePrefix,
+                                        const wchar_t* fieldTag,
+                                        std::vector<std::wstring>& out)
+    {
+        DWORD count = ReadRegDword(hKey, countName);
+        for (DWORD i = 0; i < count; i++) {
+            wchar_t name[32];
+            BuildIndexedValueName(valuePrefix, i, name);
+            std::wstring value = ReadRegSz(hKey, name);
+            if (value.empty()) {
+                g_logger.LogFmt(L"PROFILE_LOAD: %s entry '%s' missing or empty — rejecting profile",
+                                fieldTag, name);
+                return false;
+            }
+            out.push_back(std::move(value));
+        }
+        return true;
+    }
+
+    inline bool ReadIndexedFolderEntries(HKEY hKey,
+                                         const wchar_t* countName,
+                                         const wchar_t* valuePrefix,
+                                         const wchar_t* fieldTag,
+                                         std::vector<FolderEntry>& out)
+    {
+        DWORD count = ReadRegDword(hKey, countName);
+        for (DWORD i = 0; i < count; i++) {
+            wchar_t name[32];
+            BuildIndexedValueName(valuePrefix, i, name);
+            std::wstring value = ReadRegSz(hKey, name);
+            FolderEntry entry;
+            std::wstring error;
+            if (!TryDeserializeFolderEntry(value, entry, error)) {
+                g_logger.LogFmt(L"PROFILE_LOAD: malformed %s entry '%s' (%s) — rejecting profile",
+                                fieldTag, name, error.c_str());
+                return false;
+            }
+            out.push_back(std::move(entry));
+        }
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -203,10 +280,7 @@ namespace Sandbox {
         bool ok = true;
 
         // --- Enums ---
-        ok &= TryWriteRegSz(hKey, L"_token_mode",
-            (cfg.tokenMode == TokenMode::Restricted) ? L"restricted"
-            : (cfg.tokenMode == TokenMode::LPAC) ? L"lpac"
-            : L"appcontainer");
+        ok &= TryWriteRegSz(hKey, L"_token_mode", TokenModeName(cfg.tokenMode));
         ok &= TryWriteRegSz(hKey, L"_cfg_integrity",
             (cfg.integrity == IntegrityLevel::Low) ? L"low" : L"medium");
 
@@ -216,9 +290,7 @@ namespace Sandbox {
 
         // --- Booleans (REG_DWORD 0/1) ---
         ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
-        ok &= TryWriteRegSz(hKey, L"_lan_mode",
-            cfg.lanMode == LanMode::WithLocalhost ? L"with_localhost" :
-            cfg.lanMode == LanMode::WithoutLocalhost ? L"without_localhost" : L"off");
+        ok &= TryWriteRegSz(hKey, L"_lan_mode", LanModeRegistryName(cfg.lanMode));
 
         ok &= TryWriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
@@ -233,50 +305,11 @@ namespace Sandbox {
         ok &= TryWriteRegDword(hKey, L"_memory_limit_mb", static_cast<DWORD>(cfg.memoryLimitMB));
         ok &= TryWriteRegDword(hKey, L"_max_processes",   cfg.maxProcesses);
 
-        // --- Allow folders: _allow_count + _allow_0, _allow_1, ... ---
-        // Format: "access.deep|path" or "access.this|path"
-        ok &= TryWriteRegDword(hKey, L"_allow_count", static_cast<DWORD>(cfg.folders.size()));
-        for (DWORD i = 0; i < cfg.folders.size(); i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_allow_%lu", i);
-            std::wstring tag = std::wstring(AccessLevelName(cfg.folders[i].access))
-                + ((cfg.folders[i].scope == GrantScope::This) ? L".this" : L".deep");
-            ok &= TryWriteRegSz(hKey, name, tag + L"|" + cfg.folders[i].path);
-        }
-
-        // --- Deny folders: _deny_count + _deny_0, _deny_1, ... ---
-        ok &= TryWriteRegDword(hKey, L"_deny_count", static_cast<DWORD>(cfg.denyFolders.size()));
-        for (DWORD i = 0; i < cfg.denyFolders.size(); i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_deny_%lu", i);
-            std::wstring tag = std::wstring(AccessLevelName(cfg.denyFolders[i].access))
-                + ((cfg.denyFolders[i].scope == GrantScope::This) ? L".this" : L".deep");
-            ok &= TryWriteRegSz(hKey, name, tag + L"|" + cfg.denyFolders[i].path);
-        }
-
-        // --- Registry read keys ---
-        ok &= TryWriteRegDword(hKey, L"_reg_read_count", static_cast<DWORD>(cfg.registryRead.size()));
-        for (DWORD i = 0; i < cfg.registryRead.size(); i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_reg_read_%lu", i);
-            ok &= TryWriteRegSz(hKey, name, cfg.registryRead[i]);
-        }
-
-        // --- Registry write keys ---
-        ok &= TryWriteRegDword(hKey, L"_reg_write_count", static_cast<DWORD>(cfg.registryWrite.size()));
-        for (DWORD i = 0; i < cfg.registryWrite.size(); i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_reg_write_%lu", i);
-            ok &= TryWriteRegSz(hKey, name, cfg.registryWrite[i]);
-        }
-
-        // --- Environment pass-through vars ---
-        ok &= TryWriteRegDword(hKey, L"_env_pass_count", static_cast<DWORD>(cfg.envPass.size()));
-        for (DWORD i = 0; i < cfg.envPass.size(); i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_env_pass_%lu", i);
-            ok &= TryWriteRegSz(hKey, name, cfg.envPass[i]);
-        }
+        ok &= WriteIndexedFolderEntries(hKey, L"_allow_count", L"_allow_", cfg.folders);
+        ok &= WriteIndexedFolderEntries(hKey, L"_deny_count", L"_deny_", cfg.denyFolders);
+        ok &= WriteIndexedStringValues(hKey, L"_reg_read_count", L"_reg_read_", cfg.registryRead);
+        ok &= WriteIndexedStringValues(hKey, L"_reg_write_count", L"_reg_write_", cfg.registryWrite);
+        ok &= WriteIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", cfg.envPass);
 
         return ok;
     }
@@ -293,10 +326,7 @@ namespace Sandbox {
         // P2: Reject missing/unrecognized _token_mode instead of silently
         // defaulting to AppContainer — incomplete metadata is a data integrity error.
         std::wstring mode = ReadRegSz(hKey, L"_token_mode");
-        if (mode == L"restricted") cfg.tokenMode = TokenMode::Restricted;
-        else if (mode == L"lpac") cfg.tokenMode = TokenMode::LPAC;
-        else if (mode == L"appcontainer") cfg.tokenMode = TokenMode::AppContainer;
-        else {
+        if (!TryParseTokenMode(mode, cfg.tokenMode)) {
             g_logger.LogFmt(L"PROFILE_LOAD: _token_mode missing or unrecognized ('%s') — rejecting profile",
                             mode.c_str());
             cfg.parseError = true;
@@ -322,39 +352,75 @@ namespace Sandbox {
         else
             cfg.stdinMode = NormalizeFsPath(cfg.stdinMode);
 
+        auto rejectPathValue = [&](const wchar_t* sectionName,
+                                   const wchar_t* keyName,
+                                   const std::wstring& value,
+                                   ConfigPathValidationError error) {
+            switch (error) {
+            case ConfigPathValidationError::NotAbsolute:
+                g_logger.LogFmt(L"PROFILE_LOAD: '%s' in [%s] is not an absolute path — rejecting profile",
+                                keyName, sectionName);
+                break;
+            case ConfigPathValidationError::Missing:
+                g_logger.LogFmt(L"PROFILE_LOAD: path does not exist for '%s' in [%s]: %s — rejecting profile",
+                                keyName, sectionName, value.c_str());
+                break;
+            case ConfigPathValidationError::ExpectedFile:
+                g_logger.LogFmt(L"PROFILE_LOAD: '%s' in [%s] must reference a file, got directory: %s — rejecting profile",
+                                keyName, sectionName, value.c_str());
+                break;
+            case ConfigPathValidationError::ExpectedDirectory:
+                g_logger.LogFmt(L"PROFILE_LOAD: '%s' in [%s] must reference a directory, got file: %s — rejecting profile",
+                                keyName, sectionName, value.c_str());
+                break;
+            default:
+                return;
+            }
+            cfg.parseError = true;
+        };
+
+        if (!cfg.workdir.empty()) {
+            rejectPathValue(L"sandbox", L"workdir", cfg.workdir,
+                            GetConfiguredPathValidationError(cfg.workdir, ConfigPathKind::Directory));
+        }
+        if (!cfg.stdinMode.empty() && _wcsicmp(cfg.stdinMode.c_str(), L"NUL") != 0) {
+            rejectPathValue(L"privileges", L"stdin", cfg.stdinMode,
+                            GetConfiguredPathValidationError(cfg.stdinMode, ConfigPathKind::File));
+        }
+
         // --- Booleans ---
         // P1a: _allow_desktop and _allow_child_procs must exist in the registry.
         // Missing values previously defaulted to 1 (enabled), silently granting
         // permissions the user never configured.  Now fail closed.
         cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
         std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
-        if (lanModeStr == L"with_localhost")
-            cfg.lanMode = LanMode::WithLocalhost;
-        else if (lanModeStr == L"without_localhost")
-            cfg.lanMode = LanMode::WithoutLocalhost;
-        else
+        if (!TryParseLanModeRegistryValue(lanModeStr, cfg.lanMode))
             cfg.lanMode = LanMode::Off;
 
         cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
         {
-            DWORD desktopVal = 0, desktopSz = sizeof(desktopVal), desktopType = 0;
-            if (RegQueryValueExW(hKey, L"_allow_desktop", nullptr, &desktopType,
-                                 reinterpret_cast<BYTE*>(&desktopVal), &desktopSz) != ERROR_SUCCESS
-                || desktopType != REG_DWORD) {
+            DWORD desktopVal = 0;
+            if (!TryReadRegDword(hKey, L"_allow_desktop", desktopVal)) {
                 g_logger.Log(L"PROFILE_LOAD: _allow_desktop missing — rejecting profile");
                 cfg.parseError = true;
             } else {
                 cfg.allowDesktop = desktopVal != 0;
             }
         }
-        cfg.strict              = ReadRegDword(hKey, L"_strict") != 0;
+        {
+            DWORD strictVal = 0;
+            if (!TryReadRegDword(hKey, L"_strict", strictVal)) {
+                g_logger.Log(L"PROFILE_LOAD: _strict missing — rejecting profile");
+                cfg.parseError = true;
+            } else {
+                cfg.strict = strictVal != 0;
+            }
+        }
         cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
         cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
         {
-            DWORD childVal = 0, childSz = sizeof(childVal), childType = 0;
-            if (RegQueryValueExW(hKey, L"_allow_child_procs", nullptr, &childType,
-                                 reinterpret_cast<BYTE*>(&childVal), &childSz) != ERROR_SUCCESS
-                || childType != REG_DWORD) {
+            DWORD childVal = 0;
+            if (!TryReadRegDword(hKey, L"_allow_child_procs", childVal)) {
                 g_logger.Log(L"PROFILE_LOAD: _allow_child_procs missing — rejecting profile");
                 cfg.parseError = true;
             } else {
@@ -368,87 +434,324 @@ namespace Sandbox {
         cfg.memoryLimitMB  = ReadRegDword(hKey, L"_memory_limit_mb");
         cfg.maxProcesses   = ReadRegDword(hKey, L"_max_processes");
 
-        // --- Allow folders ---
-        // Format: "access.deep|path" or "access.this|path"
-        DWORD allowCount = ReadRegDword(hKey, L"_allow_count");
-        for (DWORD i = 0; i < allowCount; i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_allow_%lu", i);
-            std::wstring val = ReadRegSz(hKey, name);
-            size_t sep = val.find(L'|');
-            if (sep != std::wstring::npos) {
-                FolderEntry entry;
-                std::wstring tag = val.substr(0, sep);
-                if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".this") {
-                    entry.scope = GrantScope::This;
-                    tag = tag.substr(0, tag.size() - 5);
-                } else if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".deep") {
-                    entry.scope = GrantScope::Deep;
-                    tag = tag.substr(0, tag.size() - 5);
-                }
-                if (!ParseAccessTag(tag, entry.access)) {
-                    g_logger.LogFmt(L"PROFILE_LOAD: skipping allow entry with unknown tag '%s'", tag.c_str());
-                    continue;
-                }
-                entry.path = NormalizeFsPath(val.substr(sep + 1));
-                cfg.folders.push_back(std::move(entry));
-            }
-        }
-
-        // --- Deny folders ---
-        DWORD denyCount = ReadRegDword(hKey, L"_deny_count");
-        for (DWORD i = 0; i < denyCount; i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_deny_%lu", i);
-            std::wstring val = ReadRegSz(hKey, name);
-            size_t sep = val.find(L'|');
-            if (sep != std::wstring::npos) {
-                FolderEntry entry;
-                std::wstring tag = val.substr(0, sep);
-                if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".this") {
-                    entry.scope = GrantScope::This;
-                    tag = tag.substr(0, tag.size() - 5);
-                } else if (tag.size() > 5 && tag.substr(tag.size() - 5) == L".deep") {
-                    entry.scope = GrantScope::Deep;
-                    tag = tag.substr(0, tag.size() - 5);
-                }
-                if (!ParseAccessTag(tag, entry.access)) {
-                    g_logger.LogFmt(L"PROFILE_LOAD: skipping deny entry with unknown tag '%s'", tag.c_str());
-                    continue;
-                }
-                entry.path = NormalizeFsPath(val.substr(sep + 1));
-                cfg.denyFolders.push_back(std::move(entry));
-            }
-        }
-
-        // --- Registry read keys ---
-        DWORD regReadCount = ReadRegDword(hKey, L"_reg_read_count");
-        for (DWORD i = 0; i < regReadCount; i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_reg_read_%lu", i);
-            std::wstring val = ReadRegSz(hKey, name);
-            if (!val.empty()) cfg.registryRead.push_back(std::move(val));
-        }
-
-        // --- Registry write keys ---
-        DWORD regWriteCount = ReadRegDword(hKey, L"_reg_write_count");
-        for (DWORD i = 0; i < regWriteCount; i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_reg_write_%lu", i);
-            std::wstring val = ReadRegSz(hKey, name);
-            if (!val.empty()) cfg.registryWrite.push_back(std::move(val));
-        }
-
-        // --- Environment pass-through ---
-        DWORD envPassCount = ReadRegDword(hKey, L"_env_pass_count");
-        for (DWORD i = 0; i < envPassCount; i++) {
-            wchar_t name[32];
-            swprintf(name, 32, L"_env_pass_%lu", i);
-            std::wstring val = ReadRegSz(hKey, name);
-            if (!val.empty()) cfg.envPass.push_back(std::move(val));
-        }
+        if (!ReadIndexedFolderEntries(hKey, L"_allow_count", L"_allow_", L"allow", cfg.folders))
+            cfg.parseError = true;
+        if (!ReadIndexedFolderEntries(hKey, L"_deny_count", L"_deny_", L"deny", cfg.denyFolders))
+            cfg.parseError = true;
+        if (!ReadIndexedStringValues(hKey, L"_reg_read_count", L"_reg_read_", L"registry read", cfg.registryRead))
+            cfg.parseError = true;
+        if (!ReadIndexedStringValues(hKey, L"_reg_write_count", L"_reg_write_", L"registry write", cfg.registryWrite))
+            cfg.parseError = true;
+        if (!ReadIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", L"environment pass", cfg.envPass))
+            cfg.parseError = true;
 
         return cfg;
+    }
+
+    struct ProfileCreateConfig {
+        SandboxConfig config;
+        std::wstring tomlText;
+        bool isAppContainer = false;
+        std::wstring typeStr;
+        std::wstring integrityStr;
+    };
+
+    struct ProfileCreateIdentity {
+        PSID sid = nullptr;
+        std::wstring sidString;
+        std::wstring containerName;
+    };
+
+    struct ProfileCreateGrantPhaseResult {
+        bool ok = false;
+        DWORD grantCount = 0;
+    };
+
+    struct ProfileCreateRollbackStatus {
+        bool grantsRestored = true;
+        bool containerRollbackOk = true;
+        bool desktopCleanOk = true;
+    };
+
+    enum class ProfileCreateTransactionStatus {
+        Ok,
+        AlreadyExists,
+        InternalError
+    };
+
+    inline void FreeProfileCreateSid(ProfileCreateIdentity& identity)
+    {
+        if (!identity.sid)
+            return;
+        FreeSid(identity.sid);
+        identity.sid = nullptr;
+    }
+
+    inline void ClearTrackedAclGrantInventory()
+    {
+        AcquireSRWLockExclusive(&g_aclGrantsLock);
+        g_aclGrants.clear();
+        ReleaseSRWLockExclusive(&g_aclGrantsLock);
+    }
+
+    inline bool ValidateProfileCreateName(const std::wstring& name)
+    {
+        if (name.empty()) {
+            fprintf(stderr, "Error: profile name cannot be empty.\n");
+            return false;
+        }
+
+        for (wchar_t c : name) {
+            if (c == L'\\' || c == L'/' || c == L'|' || c == L'"' || c < 32) {
+                fprintf(stderr, "Error: profile name contains invalid characters.\n");
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    inline bool LoadProfileCreateConfig(const std::wstring& configPath,
+                                        ProfileCreateConfig& createConfig)
+    {
+        createConfig.tomlText = ReadTomlFileText(configPath);
+        if (createConfig.tomlText.empty()) {
+            fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
+            return false;
+        }
+
+        createConfig.config = ParseConfigFileText(createConfig.tomlText);
+        if (createConfig.config.parseError) {
+            fprintf(stderr, "Error: config contains unknown sections or keys.\n");
+            return false;
+        }
+
+        createConfig.isAppContainer =
+            IsAppContainerFamilyTokenMode(createConfig.config.tokenMode);
+        createConfig.typeStr = TokenModeName(createConfig.config.tokenMode);
+        createConfig.integrityStr =
+            (createConfig.config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
+        return true;
+    }
+
+    inline ProfileCreateTransactionStatus BeginProfileCreationTransaction(const std::wstring& name,
+                                                                         HKEY& hKey)
+    {
+        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
+        DWORD disposition = 0;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
+                            0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC, nullptr,
+                            &hKey, &disposition) != ERROR_SUCCESS) {
+            fprintf(stderr, "Error: cannot create registry key for profile.\n");
+            return ProfileCreateTransactionStatus::InternalError;
+        }
+
+        if (disposition == REG_OPENED_EXISTING_KEY) {
+            RegCloseKey(hKey);
+            hKey = nullptr;
+            fprintf(stderr,
+                    "Error: profile '%ls' already exists or is being created. Use --delete-profile first.\n",
+                    name.c_str());
+            return ProfileCreateTransactionStatus::AlreadyExists;
+        }
+
+        HardenRegistryKeyAgainstRestricted(hKey);
+
+        DWORD stagingFlag = 1;
+        bool stageOk = true;
+        stageOk &= TryWriteRegDword(hKey, L"_staging", stagingFlag);
+        stageOk &= TryWriteRegDword(hKey, L"_staging_pid", GetCurrentProcessId());
+        stageOk &= TryWriteRegQword(hKey, L"_staging_ctime", GetCurrentProcessCreationTime());
+        if (stageOk)
+            return ProfileCreateTransactionStatus::Ok;
+
+        fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
+        RegCloseKey(hKey);
+        hKey = nullptr;
+        DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
+        return ProfileCreateTransactionStatus::InternalError;
+    }
+
+    inline bool CreateProfileIdentity(const std::wstring& name,
+                                      const ProfileCreateConfig& createConfig,
+                                      ProfileCreateIdentity& identity)
+    {
+        if (createConfig.isAppContainer) {
+            identity.containerName = std::wstring(kContainerPrefix) + name;
+            PSID containerSid = nullptr;
+            HRESULT hr = CreateAppContainerProfile(
+                identity.containerName.c_str(), L"Sandy Sandbox Profile",
+                L"Persistent sandbox profile",
+                nullptr, 0, &containerSid);
+            if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
+                hr = DeriveAppContainerSidFromAppContainerName(
+                    identity.containerName.c_str(), &containerSid);
+            }
+            if (FAILED(hr) || !containerSid) {
+                fprintf(stderr, "Error: AppContainer profile creation failed (0x%08lX).\n",
+                        (unsigned long)hr);
+                return false;
+            }
+            identity.sid = containerSid;
+        } else {
+            identity.sid = AllocateInstanceSid();
+            if (!identity.sid) {
+                fprintf(stderr, "Error: SID allocation failed (error %lu).\n", GetLastError());
+                return false;
+            }
+        }
+
+        LPWSTR sidText = nullptr;
+        if (ConvertSidToStringSidW(identity.sid, &sidText)) {
+            identity.sidString = sidText;
+            LocalFree(sidText);
+            return true;
+        }
+
+        fprintf(stderr, "Error: SID conversion failed.\n");
+        FreeProfileCreateSid(identity);
+        if (createConfig.isAppContainer && !identity.containerName.empty()) {
+            DeleteAppContainerProfile(identity.containerName.c_str());
+            identity.containerName.clear();
+        }
+        return false;
+    }
+
+    inline void AbortUncommittedProfileCreation(const std::wstring& name,
+                                                ProfileCreateIdentity& identity,
+                                                const wchar_t* contextTag)
+    {
+        if (!identity.containerName.empty())
+            DeleteAppContainerProfile(identity.containerName.c_str());
+        FreeProfileCreateSid(identity);
+        DeleteProfileRegistryState(name, contextTag);
+    }
+
+    inline bool PersistProfileCreateIdentity(HKEY hKey, const ProfileCreateIdentity& identity)
+    {
+        bool ok = TryWriteRegSz(hKey, L"_sid", identity.sidString);
+        if (!identity.containerName.empty())
+            ok &= TryWriteRegSz(hKey, L"_container", identity.containerName);
+
+        if (!ok)
+            fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
+        return ok;
+    }
+
+    inline ProfileCreateGrantPhaseResult ApplyProfileCreateGrantPhase(
+        HKEY hKey,
+        const std::wstring& profileName,
+        const ProfileCreateConfig& createConfig,
+        const ProfileCreateIdentity& identity)
+    {
+        ProfileCreateGrantPhaseResult result;
+        BeginStagingGrantCapture(hKey);
+
+        printf("Applying grants for profile '%ls'...\n", profileName.c_str());
+
+        bool grantOk = ApplyAccessPipeline(identity.sid, createConfig.config);
+        if (!createConfig.isAppContainer && !GrantRegistryAccess(identity.sid, createConfig.config))
+            grantOk = false;
+        if (createConfig.isAppContainer &&
+            createConfig.config.lanMode == LanMode::WithLocalhost &&
+            !EnsureProfileLoopback(identity.containerName)) {
+            g_logger.Log(L"CREATE_PROFILE: profile-owned loopback enable FAILED");
+            grantOk = false;
+        }
+        if (!createConfig.isAppContainer &&
+            createConfig.config.allowDesktop &&
+            !GrantDesktopAccess(identity.sid)) {
+            g_logger.Log(L"CREATE_PROFILE: profile-owned desktop grant FAILED");
+            grantOk = false;
+        }
+        if (!GrantTrackingHealthy()) {
+            g_logger.Log(L"CREATE_PROFILE: grant tracking persistence FAILED - aborting");
+            grantOk = false;
+        }
+
+        if (!grantOk) {
+            AbortStagingGrantCapture();
+            return result;
+        }
+
+        result.ok = true;
+        result.grantCount = EndStagingGrantCapture();
+        return result;
+    }
+
+    inline ProfileCreateRollbackStatus RollbackProfileCreateHostState(
+        HKEY hKey,
+        const ProfileCreateConfig& createConfig,
+        const ProfileCreateIdentity& identity,
+        const wchar_t* contextTag)
+    {
+        ProfileCreateRollbackStatus status;
+        if (!createConfig.isAppContainer &&
+            createConfig.config.allowDesktop &&
+            !identity.sidString.empty()) {
+            status.desktopCleanOk = RevokeDesktopAccessForSid(identity.sidString);
+        }
+
+        status.grantsRestored = RestoreGrantsFromKey(hKey);
+        if (createConfig.isAppContainer && !identity.containerName.empty()) {
+            status.containerRollbackOk = TeardownPersistentProfileContainer(
+                identity.containerName, contextTag);
+        }
+
+        ClearTrackedAclGrantInventory();
+        return status;
+    }
+
+    inline void FinalizeProfileCreateRollback(const std::wstring& name,
+                                              const ProfileCreateRollbackStatus& status,
+                                              const wchar_t* contextTag)
+    {
+        if (!status.grantsRestored || !status.containerRollbackOk || !status.desktopCleanOk) {
+            g_logger.LogFmt(L"%ls: rollback incomplete (acl=%s container=%s desktop=%s), preserving staging key for retry",
+                            contextTag,
+                            status.grantsRestored ? L"OK" : L"FAILED",
+                            status.containerRollbackOk ? L"OK" : L"FAILED",
+                            status.desktopCleanOk ? L"OK" : L"FAILED");
+            fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
+            return;
+        }
+
+        if (!DeleteProfileRegistryState(name, contextTag)) {
+            g_logger.LogFmt(L"%ls: metadata delete failed, preserving staging key for retry",
+                            contextTag);
+            fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
+        }
+    }
+
+    inline bool CommitCreatedProfile(HKEY hKey, const ProfileCreateConfig& createConfig)
+    {
+        bool commitOk = true;
+        commitOk &= TryWriteRegSz(hKey, L"_type", createConfig.typeStr);
+        commitOk &= TryWriteRegSz(hKey, L"_integrity", createConfig.integrityStr);
+        commitOk &= TryWriteRegSz(hKey, L"_created", SandyLogger::Timestamp());
+        commitOk &= TryWriteRegSz(hKey, L"_toml", createConfig.tomlText);
+        commitOk &= WriteConfigToRegistry(hKey, createConfig.config);
+        if (commitOk)
+            commitOk &= (RegDeleteValueW(hKey, L"_staging") == ERROR_SUCCESS);
+
+        if (!commitOk)
+            fprintf(stderr, "Error: profile metadata commit failed. Rolling back.\n");
+        return commitOk;
+    }
+
+    inline void PrintCreatedProfileSummary(const std::wstring& name,
+                                           const ProfileCreateConfig& createConfig,
+                                           const ProfileCreateIdentity& identity,
+                                           DWORD grantCount)
+    {
+        printf("Profile '%ls' created successfully.\n", name.c_str());
+        printf("  Type:      %ls\n", createConfig.typeStr.c_str());
+        if (!createConfig.isAppContainer)
+            printf("  Integrity: %ls\n", createConfig.integrityStr.c_str());
+        printf("  SID:       %ls\n", identity.sidString.c_str());
+        if (!identity.containerName.empty())
+            printf("  Container: %ls\n", identity.containerName.c_str());
+        printf("  Grants:    %lu path(s)\n", (unsigned long)grantCount);
     }
 
     // -----------------------------------------------------------------------
@@ -462,281 +765,61 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline int HandleCreateProfile(const std::wstring& name, const std::wstring& configPath)
     {
-        // Validate name
-        if (name.empty()) {
-            fprintf(stderr, "Error: profile name cannot be empty.\n");
+        if (!ValidateProfileCreateName(name))
             return SandyExit::ConfigError;
-        }
-        // Reject names with backslashes or special chars
-        for (wchar_t c : name) {
-            if (c == L'\\' || c == L'/' || c == L'|' || c == L'"' || c < 32) {
-                fprintf(stderr, "Error: profile name contains invalid characters.\n");
-                return SandyExit::ConfigError;
-            }
-        }
-        // Read TOML file as raw text (for storage) and parse config
-        std::wstring tomlText = ReadTomlFileText(configPath);
-        if (tomlText.empty()) {
-            fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
-            return SandyExit::ConfigError;
-        }
-        SandboxConfig config = ParseConfig(tomlText);
-        if (config.parseError) {
-            fprintf(stderr, "Error: config contains unknown sections or keys.\n");
-            return SandyExit::ConfigError;
-        }
 
-        bool isAppContainer = (config.tokenMode != TokenMode::Restricted);
-        std::wstring sidString;
-        std::wstring containerName;
-        std::wstring typeStr = isAppContainer
-            ? ((config.tokenMode == TokenMode::LPAC) ? L"lpac" : L"appcontainer")
-            : L"restricted";
-        std::wstring integrityStr = (config.integrity == IntegrityLevel::Low) ? L"low" : L"medium";
+        ProfileCreateConfig createConfig;
+        if (!LoadProfileCreateConfig(configPath, createConfig))
+            return SandyExit::ConfigError;
 
-        // --- Stage 1: Create profile registry key FIRST ---
-        // Verify exclusive creation via REG_CREATED_NEW_KEY
-        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
         HKEY hKey = nullptr;
-        DWORD disposition = 0;
-        if (RegCreateKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, nullptr,
-                0, KEY_SET_VALUE | KEY_QUERY_VALUE | WRITE_DAC, nullptr, &hKey, &disposition) != ERROR_SUCCESS) {
-            fprintf(stderr, "Error: cannot create registry key for profile.\n");
-            return SandyExit::InternalError;
-        }
-
-        if (disposition == REG_OPENED_EXISTING_KEY) {
-            RegCloseKey(hKey);
-            fprintf(stderr, "Error: profile '%ls' already exists or is being created. Use --delete-profile first.\n",
-                    name.c_str());
+        ProfileCreateTransactionStatus transactionStatus =
+            BeginProfileCreationTransaction(name, hKey);
+        if (transactionStatus == ProfileCreateTransactionStatus::AlreadyExists)
             return SandyExit::ConfigError;
-        }
-
-        // Harden the new key immediately so that a sandboxed child cannot manipulate its own metadata
-        HardenRegistryKeyAgainstRestricted(hKey);
-
-        // Mark profile as staging — if Sandy crashes between here and
-        // the final commit, cleanup will detect this and roll back.
-        DWORD stagingFlag = 1;
-        bool stageOk = true;
-        stageOk &= TryWriteRegDword(hKey, L"_staging", stagingFlag);
-
-        // F1/R8: Persist creator identity so CleanStagingProfiles can
-        // distinguish a crashed create from an in-progress one.
-        DWORD creatorPid = GetCurrentProcessId();
-        stageOk &= TryWriteRegDword(hKey, L"_staging_pid", creatorPid);
-        ULONGLONG creatorCtime = GetCurrentProcessCreationTime();
-        stageOk &= TryWriteRegQword(hKey, L"_staging_ctime", creatorCtime);
-
-        if (!stageOk) {
-            fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
-            RegCloseKey(hKey);
-            DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
+        if (transactionStatus == ProfileCreateTransactionStatus::InternalError)
             return SandyExit::InternalError;
-        }
 
-        // --- Generate SID ---
-        PSID pSid = nullptr;
-        if (isAppContainer) {
-            // Use deterministic container name based on profile name
-            containerName = std::wstring(kContainerPrefix) + name;
-            PSID pContainerSid = nullptr;
-            HRESULT hr = CreateAppContainerProfile(
-                containerName.c_str(), L"Sandy Sandbox Profile",
-                L"Persistent sandbox profile",
-                nullptr, 0, &pContainerSid);
-            if (HRESULT_CODE(hr) == ERROR_ALREADY_EXISTS) {
-                // Profile exists in Windows but not in our registry — derive SID
-                hr = DeriveAppContainerSidFromAppContainerName(
-                    containerName.c_str(), &pContainerSid);
-            }
-            if (FAILED(hr) || !pContainerSid) {
-                fprintf(stderr, "Error: AppContainer profile creation failed (0x%08lX).\n",
-                        (unsigned long)hr);
-                RegCloseKey(hKey);
-                DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
-                return SandyExit::SetupError;
-            }
-            pSid = pContainerSid;
-        } else {
-            // Restricted Token: generate unique SID from GUID
-            pSid = AllocateInstanceSid();
-            if (!pSid) {
-                fprintf(stderr, "Error: SID allocation failed (error %lu).\n", GetLastError());
-                RegCloseKey(hKey);
-                DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
-                return SandyExit::SetupError;
-            }
-        }
-
-        // Convert SID to string
-        LPWSTR pSidStr = nullptr;
-        if (ConvertSidToStringSidW(pSid, &pSidStr)) {
-            sidString = pSidStr;
-            LocalFree(pSidStr);
-        } else {
-            fprintf(stderr, "Error: SID conversion failed.\n");
-            FreeSid(pSid);
+        ProfileCreateIdentity identity;
+        if (!CreateProfileIdentity(name, createConfig, identity)) {
             RegCloseKey(hKey);
-            if (isAppContainer) DeleteAppContainerProfile(containerName.c_str());
             DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
             return SandyExit::SetupError;
         }
 
-        // Persist SID now so cleanup can find it if we crash during grant application
-        stageOk = true;
-        stageOk &= TryWriteRegSz(hKey, L"_sid", sidString);
-        if (!containerName.empty())
-            stageOk &= TryWriteRegSz(hKey, L"_container", containerName);
-
-        if (!stageOk) {
-            fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
+        if (!PersistProfileCreateIdentity(hKey, identity)) {
             RegCloseKey(hKey);
-            DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
-            if (isAppContainer && !containerName.empty())
-                DeleteAppContainerProfile(containerName.c_str());
-            FreeSid(pSid);
+            AbortUncommittedProfileCreation(name, identity, L"CREATE_PROFILE_STAGE");
             return SandyExit::InternalError;
         }
 
-        // --- Stage 2: Apply grants (persistent — remain on filesystem) ---
-        //
-        // Suppress RecordGrant's normal registry writes — grant records are
-        // written incrementally to the staging profile key instead (crash-safe).
-        // This also resets the metadata-health flag so we fail closed if ACLs
-        // are applied but their cleanup inventory cannot be persisted.
-        BeginStagingGrantCapture(hKey);
-
-        printf("Applying grants for profile '%ls'...\n", name.c_str());
-        bool grantOk = ApplyAccessPipeline(pSid, config, isAppContainer);
-        // F1/R9: Restricted profiles must also apply registry grants
-        if (!isAppContainer) {
-            if (!GrantRegistryAccess(pSid, config))
-                grantOk = false;
-        }
-        // AppContainer localhost is durable profile-owned state and must be
-        // established with the profile rather than treated as a transient run
-        // side effect.
-        if (isAppContainer && config.lanMode == LanMode::WithLocalhost) {
-            if (!EnsureProfileLoopback(containerName)) {
-                g_logger.Log(L"CREATE_PROFILE: profile-owned loopback enable FAILED");
-                grantOk = false;
-            }
-        }
-        // RT desktop is durable profile-owned state — grant at creation,
-        // revoke at deletion.  The ACE uses the profile's persistent SID so
-        // it naturally survives across runs.
-        if (!isAppContainer && config.allowDesktop) {
-            if (!GrantDesktopAccess(pSid)) {
-                g_logger.Log(L"CREATE_PROFILE: profile-owned desktop grant FAILED");
-                grantOk = false;
-            }
-        }
-        if (!GrantTrackingHealthy()) {
-            g_logger.Log(L"CREATE_PROFILE: grant tracking persistence FAILED — aborting");
-            grantOk = false;
-        }
-        if (!grantOk) {
-            // F2/R10: Immediate self-rollback — undo already-applied grants now
-            // instead of deferring to future CleanStagingProfiles().
+        ProfileCreateGrantPhaseResult grantPhase =
+            ApplyProfileCreateGrantPhase(hKey, name, createConfig, identity);
+        if (!grantPhase.ok) {
             fprintf(stderr, "Error: grant application failed (may need Administrator). "
                     "Profile not committed.\n");
-            AbortStagingGrantCapture();
-            // Revoke profile-owned desktop ACEs (RT only, best-effort during rollback)
-            if (!isAppContainer && config.allowDesktop && !sidString.empty())
-                RevokeDesktopAccessForSid(sidString);
-            // Roll back ACLs — SIDs are unique, so rollback is always complete
-            bool grantsRestored = RestoreGrantsFromKey(hKey);
-            bool containerRollbackOk = true;
-            if (isAppContainer && !containerName.empty()) {
-                containerRollbackOk = TeardownPersistentProfileContainer(
-                    containerName, L"CREATE_PROFILE_ROLLBACK");
-            }
-            AcquireSRWLockExclusive(&g_aclGrantsLock);
-            g_aclGrants.clear();
-            ReleaseSRWLockExclusive(&g_aclGrantsLock);
+            ProfileCreateRollbackStatus rollbackStatus = RollbackProfileCreateHostState(
+                hKey, createConfig, identity, L"CREATE_PROFILE_ROLLBACK");
             RegCloseKey(hKey);
-            if (grantsRestored && containerRollbackOk) {
-                // Rollback complete — safe to delete staging key
-                if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_ROLLBACK")) {
-                    g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: metadata delete failed, preserving staging key");
-                    fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
-                }
-            } else {
-                // Preserve staging metadata until both ACL and container rollback are complete.
-                g_logger.LogFmt(L"CREATE_PROFILE_ROLLBACK: rollback incomplete (acl=%s container=%s), preserving staging key for retry",
-                                grantsRestored ? L"OK" : L"FAILED",
-                                containerRollbackOk ? L"OK" : L"FAILED");
-                fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
-            }
-            FreeSid(pSid);
+            FinalizeProfileCreateRollback(name, rollbackStatus, L"CREATE_PROFILE_ROLLBACK");
+            FreeProfileCreateSid(identity);
             return SandyExit::SetupError;
         }
 
-        DWORD grantIdx = EndStagingGrantCapture();
-
-        // --- Stage 3: Persist metadata + grant records to open key ---
-        // (_sid and _container were written before Stage 2 for crash recovery)
-        bool commitOk = true;
-        commitOk &= TryWriteRegSz(hKey, L"_type", typeStr);
-        commitOk &= TryWriteRegSz(hKey, L"_integrity", integrityStr);
-        commitOk &= TryWriteRegSz(hKey, L"_created", SandyLogger::Timestamp());
-        commitOk &= TryWriteRegSz(hKey, L"_toml", tomlText);  // reference only
-        commitOk &= WriteConfigToRegistry(hKey, config);
-
-        // Grant records are already in the profile key (written incrementally
-        // during Stage 2 via g_stagingProfileKey).
-
-        // Remove staging marker — profile is now fully committed
-        if (commitOk)
-            commitOk &= (RegDeleteValueW(hKey, L"_staging") == ERROR_SUCCESS);
-
-        if (!commitOk) {
-            fprintf(stderr, "Error: profile metadata commit failed. Rolling back.\n");
-            // Revoke profile-owned desktop ACEs (RT only, best-effort during rollback)
-            if (!isAppContainer && config.allowDesktop && !sidString.empty())
-                RevokeDesktopAccessForSid(sidString);
-            bool grantsRestored = RestoreGrantsFromKey(hKey);
-            bool containerRollbackOk = true;
-            if (isAppContainer && !containerName.empty()) {
-                containerRollbackOk = TeardownPersistentProfileContainer(
-                    containerName, L"CREATE_PROFILE_COMMIT_ROLLBACK");
-            }
-            AcquireSRWLockExclusive(&g_aclGrantsLock);
-            g_aclGrants.clear();
-            ReleaseSRWLockExclusive(&g_aclGrantsLock);
+        if (!CommitCreatedProfile(hKey, createConfig)) {
+            ProfileCreateRollbackStatus rollbackStatus = RollbackProfileCreateHostState(
+                hKey, createConfig, identity, L"CREATE_PROFILE_COMMIT_ROLLBACK");
             RegCloseKey(hKey);
-            if (grantsRestored && containerRollbackOk) {
-                if (!DeleteProfileRegistryState(name, L"CREATE_PROFILE_COMMIT_ROLLBACK")) {
-                    g_logger.Log(L"CREATE_PROFILE_COMMIT: metadata delete failed, preserving staging key for retry");
-                    fprintf(stderr, "  Profile metadata preserved for --cleanup retry.\n");
-                }
-            } else {
-                g_logger.LogFmt(L"CREATE_PROFILE_COMMIT: rollback incomplete (acl=%s container=%s), preserving staging key for retry",
-                                grantsRestored ? L"OK" : L"FAILED",
-                                containerRollbackOk ? L"OK" : L"FAILED");
-                fprintf(stderr, "  Staging key preserved for --cleanup retry.\n");
-            }
-            FreeSid(pSid);
+            FinalizeProfileCreateRollback(name, rollbackStatus,
+                                          L"CREATE_PROFILE_COMMIT_ROLLBACK");
+            FreeProfileCreateSid(identity);
             return SandyExit::InternalError;
         }
 
         RegCloseKey(hKey);
-        FreeSid(pSid);
-
-        // Clear in-memory grant list (ACLs stay on disk, records are in Profiles)
-        AcquireSRWLockExclusive(&g_aclGrantsLock);
-        g_aclGrants.clear();
-        ReleaseSRWLockExclusive(&g_aclGrantsLock);
-
-        printf("Profile '%ls' created successfully.\n", name.c_str());
-        printf("  Type:      %ls\n", typeStr.c_str());
-        if (!isAppContainer)
-            printf("  Integrity: %ls\n", integrityStr.c_str());
-        printf("  SID:       %ls\n", sidString.c_str());
-        if (!containerName.empty())
-            printf("  Container: %ls\n", containerName.c_str());
-        printf("  Grants:    %lu path(s)\n", (unsigned long)grantIdx);
+        FreeProfileCreateSid(identity);
+        ClearTrackedAclGrantInventory();
+        PrintCreatedProfileSummary(name, createConfig, identity, grantPhase.grantCount);
         return 0;
     }
 
@@ -747,142 +830,163 @@ namespace Sandbox {
     // For each, revokes ACLs from grant records, deletes the AC profile
     // if present, and removes the incomplete registry key.
     // -----------------------------------------------------------------------
+    struct StagingRollbackStatus {
+        bool grantsRestored = true;
+        bool containerCleanOk = true;
+        bool desktopCleanOk = true;
+    };
+
+    inline bool ShouldRollbackStagingProfile(const SavedProfileRegistrySummary& summary)
+    {
+        HKEY hSub = nullptr;
+        if (!OpenSavedProfileRegistryKey(summary.name, KEY_READ, hSub))
+            return false;
+
+        bool shouldRollback = false;
+        DWORD creatorPid = 0;
+        ULONGLONG creatorCtime = 0;
+        if (!ReadStagingPidAndCtime(hSub, creatorPid, creatorCtime)) {
+            g_logger.LogFmt(L"STAGING_SKIP: profile '%s' staging identity incomplete (writer in progress)",
+                            summary.name.c_str());
+        } else if (IsProcessAlive(creatorPid, creatorCtime)) {
+            g_logger.LogFmt(L"STAGING_SKIP: profile '%s' creator PID %lu still alive",
+                            summary.name.c_str(), creatorPid);
+        } else {
+            shouldRollback = true;
+        }
+
+        RegCloseKey(hSub);
+        return shouldRollback;
+    }
+
+    inline std::vector<std::wstring> CollectRollbackEligibleStagingProfiles()
+    {
+        std::vector<std::wstring> stagingNames;
+        for (const auto& summary : EnumSavedProfileRegistrySummaries()) {
+            if (!summary.staging)
+                continue;
+            if (ShouldRollbackStagingProfile(summary))
+                stagingNames.push_back(summary.name);
+        }
+        return stagingNames;
+    }
+
+    inline bool CleanupStagingProfileDesktop(HKEY hKey, const std::wstring& name)
+    {
+        std::wstring profileType = ReadRegSz(hKey, L"_type");
+        std::wstring profileSid = ReadRegSz(hKey, L"_sid");
+        bool hadDesktop = (ReadRegDword(hKey, L"_allow_desktop") != 0);
+        if (profileType != L"restricted" || !hadDesktop || profileSid.empty())
+            return true;
+
+        bool ok = RevokeDesktopAccessForSid(profileSid);
+        if (!ok) {
+            g_logger.LogFmt(L"STAGING_CLEANUP: desktop revocation FAILED for profile '%s'",
+                            name.c_str());
+        }
+        return ok;
+    }
+
+    inline bool CleanupStagingProfileContainer(HKEY hKey)
+    {
+        std::wstring containerName = ReadRegSz(hKey, L"_container");
+        if (containerName.empty())
+            return true;
+        return TeardownPersistentProfileContainer(containerName, L"STAGING_CLEANUP");
+    }
+
+    inline bool RollbackStagingProfileHostState(HKEY hKey,
+                                                const std::wstring& name,
+                                                StagingRollbackStatus& status)
+    {
+        status.grantsRestored = RestoreGrantsFromKey(hKey);
+        status.desktopCleanOk = CleanupStagingProfileDesktop(hKey, name);
+        status.containerCleanOk = CleanupStagingProfileContainer(hKey);
+        return status.grantsRestored && status.containerCleanOk && status.desktopCleanOk;
+    }
+
+    inline void LogIncompleteStagingRollback(const std::wstring& name,
+                                             const StagingRollbackStatus& status)
+    {
+        g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rollback incomplete (acl=%s container=%s desktop=%s), preserving metadata",
+                        name.c_str(),
+                        status.grantsRestored ? L"OK" : L"FAILED",
+                        status.containerCleanOk ? L"OK" : L"FAILED",
+                        status.desktopCleanOk ? L"OK" : L"FAILED");
+        printf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
+               name.c_str());
+    }
+
+    inline bool FinalizeStagingRollbackMetadata(const std::wstring& name)
+    {
+        if (!DeleteProfileRegistryState(name, L"STAGING_CLEANUP")) {
+            g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' metadata delete failed, preserving metadata",
+                            name.c_str());
+            printf("  [STAGING] Profile '%ls' metadata delete failed — preserved for retry.\n",
+                   name.c_str());
+            return false;
+        }
+
+        g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rolled back", name.c_str());
+        printf("  [STAGING] Profile '%ls' rolled back.\n", name.c_str());
+        return true;
+    }
+
+    inline void RollbackStagingProfile(const std::wstring& name)
+    {
+        g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' left in staging — rolling back", name.c_str());
+        printf("  [STAGING] Rolling back incomplete profile '%ls'...\n", name.c_str());
+
+        HKEY hKey = nullptr;
+        if (OpenSavedProfileRegistryKey(name, KEY_READ, hKey)) {
+            StagingRollbackStatus status;
+            bool rollbackComplete = RollbackStagingProfileHostState(hKey, name, status);
+            RegCloseKey(hKey);
+
+            if (!rollbackComplete) {
+                LogIncompleteStagingRollback(name, status);
+                return;
+            }
+        }
+
+        FinalizeStagingRollbackMetadata(name);
+    }
+
     inline void CleanStagingProfiles()
     {
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kProfilesParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD numKeys = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &numKeys,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> allNames;
-        for (DWORD i = 0; i < numKeys; i++) {
-            wchar_t nm[256]; DWORD nl = 256;
-            if (RegEnumKeyExW(hParent, i, nm, &nl, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                allNames.push_back(nm);
-        }
-        RegCloseKey(hParent);
-
-        std::vector<std::wstring> stagingNames;
-        for (const auto& nm : allNames) {
-            HKEY hSub = nullptr;
-            std::wstring subKey = std::wstring(kProfilesParentKey) + L"\\" + nm;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, subKey.c_str(), 0,
-                              KEY_READ, &hSub) != ERROR_SUCCESS)
-                continue;
-
-            DWORD staging = 0, sz = sizeof(staging);
-            if (RegQueryValueExW(hSub, L"_staging", nullptr, nullptr,
-                                 reinterpret_cast<BYTE*>(&staging), &sz) == ERROR_SUCCESS
-                && staging == 1) {
-                // F1/R8: Atomic read of staging creator identity.
-                // If either value is missing, treat as "writer still in progress".
-                DWORD creatorPid = 0; ULONGLONG creatorCtime = 0;
-                if (!ReadStagingPidAndCtime(hSub, creatorPid, creatorCtime)) {
-                    g_logger.LogFmt(L"STAGING_SKIP: profile '%s' staging identity incomplete (writer in progress)",
-                                    nm.c_str());
-                } else if (IsProcessAlive(creatorPid, creatorCtime)) {
-                    g_logger.LogFmt(L"STAGING_SKIP: profile '%s' creator PID %lu still alive",
-                                    nm.c_str(), creatorPid);
-                } else {
-                    stagingNames.push_back(nm);
-                }
-            }
-            RegCloseKey(hSub);
-        }
-
-        for (const auto& name : stagingNames) {
-            g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' left in staging — rolling back", name.c_str());
-            printf("  [STAGING] Rolling back incomplete profile '%ls'...\n", name.c_str());
-
-            std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
-                              KEY_READ, &hKey) == ERROR_SUCCESS) {
-                // Revoke ACLs recorded in the profile key
-                bool grantsRestored = RestoreGrantsFromKey(hKey);
-                bool containerCleanOk = true;
-                bool desktopCleanOk = true;
-
-                // Revoke desktop ACEs for restricted profiles with desktop = true
-                std::wstring profileType = ReadRegSz(hKey, L"_type");
-                std::wstring profileSid = ReadRegSz(hKey, L"_sid");
-                bool hadDesktop = (ReadRegDword(hKey, L"_allow_desktop") != 0);
-                if (profileType == L"restricted" && hadDesktop && !profileSid.empty()) {
-                    desktopCleanOk = RevokeDesktopAccessForSid(profileSid);
-                    if (!desktopCleanOk)
-                        g_logger.LogFmt(L"STAGING_CLEANUP: desktop revocation FAILED for profile '%s'",
-                                        name.c_str());
-                }
-
-                // Delete AppContainer profile if present
-                std::wstring containerName = ReadRegSz(hKey, L"_container");
-                if (!containerName.empty()) {
-                    containerCleanOk = TeardownPersistentProfileContainer(
-                        containerName, L"STAGING_CLEANUP");
-                }
-                RegCloseKey(hKey);
-
-                // Preserve metadata for retry until durable host state
-                // has been fully reverted.
-                if (!grantsRestored || !containerCleanOk || !desktopCleanOk) {
-                    g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rollback incomplete (acl=%s container=%s desktop=%s), preserving metadata",
-                                    name.c_str(),
-                                    grantsRestored ? L"OK" : L"FAILED",
-                                    containerCleanOk ? L"OK" : L"FAILED",
-                                    desktopCleanOk ? L"OK" : L"FAILED");
-                    printf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
-                           name.c_str());
-                    continue;
-                }
-            }
-
-            // Delete the incomplete profile registry key
-            if (!DeleteProfileRegistryState(name, L"STAGING_CLEANUP")) {
-                g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' metadata delete failed, preserving metadata",
-                                name.c_str());
-                printf("  [STAGING] Profile '%ls' metadata delete failed — preserved for retry.\n",
-                       name.c_str());
-                continue;
-            }
-            g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rolled back", name.c_str());
-            printf("  [STAGING] Profile '%ls' rolled back.\n", name.c_str());
-        }
+        for (const auto& name : CollectRollbackEligibleStagingProfiles())
+            RollbackStagingProfile(name);
     }
 
     // -----------------------------------------------------------------------
     // LoadSavedProfile — read a named profile from registry.
-    // Returns false if not found.
+    // Distinguishes missing profiles from present-but-invalid ones so callers
+    // can report corruption honestly instead of collapsing both into "not found".
     // -----------------------------------------------------------------------
-    inline bool LoadSavedProfile(const std::wstring& name, SavedProfile& out)
+    inline SavedProfileLoadStatus LoadSavedProfile(const std::wstring& name, SavedProfile& out)
     {
-        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
         HKEY hKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
-                          KEY_READ, &hKey) != ERROR_SUCCESS)
-            return false;
+        if (!OpenSavedProfileRegistryKey(name, KEY_READ, hKey))
+            return SavedProfileLoadStatus::NotFound;
+
+        SavedProfileRegistrySummary summary;
+        ReadSavedProfileRegistrySummary(hKey, name, summary);
 
         // P1c: Reject profiles still in staging state — they were never
         // fully committed and may contain incomplete/corrupt config.
-        DWORD staging = 0, stagingSz = sizeof(staging);
-        if (RegQueryValueExW(hKey, L"_staging", nullptr, nullptr,
-                             reinterpret_cast<BYTE*>(&staging), &stagingSz) == ERROR_SUCCESS
-            && staging == 1) {
+        if (summary.staging) {
             g_logger.LogFmt(L"PROFILE_LOAD: profile '%s' is still in staging — rejecting",
                             name.c_str());
             RegCloseKey(hKey);
-            return false;
+            return SavedProfileLoadStatus::Invalid;
         }
 
         out.name = name;
-        out.type = ReadRegSz(hKey, L"_type");
+        out.type = summary.type;
         out.integrity = ReadRegSz(hKey, L"_integrity");
-        out.sidString = ReadRegSz(hKey, L"_sid");
-        out.containerName = ReadRegSz(hKey, L"_container");
-        out.created = ReadRegSz(hKey, L"_created");
+        out.sidString = summary.sidString;
+        out.containerName = summary.containerName;
+        out.created = summary.created;
         out.tomlText = ReadRegSz(hKey, L"_toml");
 
         // Read config from discrete registry values (no TOML parsing)
@@ -890,8 +994,13 @@ namespace Sandbox {
         RegCloseKey(hKey);
         // Reject profiles with missing mandatory fields or corrupt config
         if (out.sidString.empty() || out.type.empty() || out.config.parseError)
-            return false;
-        return true;
+            return SavedProfileLoadStatus::Invalid;
+        if (_wcsicmp(out.type.c_str(), TokenModeName(out.config.tokenMode)) != 0) {
+            g_logger.LogFmt(L"PROFILE_LOAD: _type ('%s') mismatches _token_mode ('%s') — rejecting profile",
+                            out.type.c_str(), TokenModeName(out.config.tokenMode));
+            return SavedProfileLoadStatus::Invalid;
+        }
+        return SavedProfileLoadStatus::Ok;
     }
 
     // -----------------------------------------------------------------------
@@ -900,16 +1009,15 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline int HandleDeleteProfile(const std::wstring& name)
     {
-        std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
         HKEY hKey = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0,
-                          KEY_READ, &hKey) != ERROR_SUCCESS) {
+        if (!OpenSavedProfileRegistryKey(name, KEY_READ, hKey)) {
             fprintf(stderr, "Error: profile '%ls' not found.\n", name.c_str());
             return SandyExit::ConfigError;
         }
 
-        // Read container name for AppContainer cleanup
-        std::wstring containerName = ReadRegSz(hKey, L"_container");
+        SavedProfileRegistrySummary summary;
+        ReadSavedProfileRegistrySummary(hKey, name, summary);
+        const std::wstring& containerName = summary.containerName;
 
         // F2/R8: Type-agnostic liveness guard — refuse deletion when any
         // live instance is using this profile (covers both AC and RT modes)
@@ -961,11 +1069,10 @@ namespace Sandbox {
         }
 
         // Read profile metadata needed for profile-owned teardown
-        std::wstring profileType = ReadRegSz(hKey, L"_type");
-        std::wstring profileSid = ReadRegSz(hKey, L"_sid");
-        bool hadDesktop = (ReadRegDword(hKey, L"_allow_desktop") != 0);
-        std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
-        bool hadLoopback = (lanModeStr == L"with_localhost");
+        const std::wstring& profileType = summary.type;
+        const std::wstring& profileSid = summary.sidString;
+        bool hadDesktop = summary.allowDesktop;
+        bool hadLoopback = (summary.lanMode == L"with_localhost");
 
         // Revoke profile-owned desktop ACEs (RT profiles with desktop = true)
         // Done before filesystem ACL rollback — desktop/loopback cleanup is
@@ -1028,53 +1135,32 @@ namespace Sandbox {
         std::wstring name;
         std::wstring created;
         std::wstring type;
+        bool invalid = false;
     };
 
     inline std::vector<ProfileSummary> EnumSavedProfiles()
     {
         std::vector<ProfileSummary> result;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kProfilesParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return result;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD numKeys = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &numKeys,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> allNames;
-        for (DWORD i = 0; i < numKeys; i++) {
-            wchar_t nm[256]; DWORD nl = 256;
-            if (RegEnumKeyExW(hParent, i, nm, &nl, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                allNames.push_back(nm);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& nm : allNames) {
+        for (const auto& summary : EnumSavedProfileRegistrySummaries()) {
             ProfileSummary ps;
-            ps.name = nm;
+            ps.name = summary.name;
+            ps.created = summary.created;
+            ps.type = summary.type.empty() ? L"unknown" : summary.type;
 
-            // Read creation date and type from subkey
-            std::wstring subKey = std::wstring(kProfilesParentKey) + L"\\" + nm;
-            HKEY hSub = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, subKey.c_str(), 0,
-                              KEY_READ, &hSub) == ERROR_SUCCESS) {
-                // P3: Skip staging profiles — incomplete create-profile
-                DWORD staging = 0, ssz = sizeof(staging);
-                RegQueryValueExW(hSub, L"_staging", nullptr, nullptr,
-                                 reinterpret_cast<BYTE*>(&staging), &ssz);
-                if (staging == 1) {
-                    RegCloseKey(hSub);
-                    continue;
-                }
-                ps.created = ReadRegSz(hSub, L"_created");
-                ps.type = ReadRegSz(hSub, L"_type");
-                RegCloseKey(hSub);
-                // P2a: Skip entries with missing _type — ghost profiles from a
-                // crash between RegCreateKeyExW and _type write in Stage 3.
-                if (ps.type.empty())
-                    continue;
-            }
+            // Skip live staging entries. Non-staging keys with missing
+            // metadata are surfaced as invalid instead of disappearing.
+            if (summary.staging)
+                continue;
+
+            SavedProfile prof;
+            SavedProfileLoadStatus loadStatus = LoadSavedProfile(summary.name, prof);
+            if (loadStatus == SavedProfileLoadStatus::NotFound)
+                continue;
+            if (loadStatus == SavedProfileLoadStatus::Ok)
+                ps.type = TokenModeName(prof.config.tokenMode);
+            else
+                ps.invalid = true;
+
             result.push_back(std::move(ps));
         }
         return result;
@@ -1086,60 +1172,29 @@ namespace Sandbox {
     inline int HandleProfileInfo(const std::wstring& name)
     {
         SavedProfile prof;
-        if (!LoadSavedProfile(name, prof)) {
+        SavedProfileLoadStatus loadStatus = LoadSavedProfile(name, prof);
+        if (loadStatus == SavedProfileLoadStatus::NotFound) {
             fprintf(stderr, "Error: profile '%ls' not found.\n", name.c_str());
+            return SandyExit::ConfigError;
+        }
+        if (loadStatus == SavedProfileLoadStatus::Invalid) {
+            fprintf(stderr, "Error: profile '%ls' is corrupted or incomplete. Recreate it or delete it.\n",
+                    name.c_str());
             return SandyExit::ConfigError;
         }
 
         printf("=== Profile: %ls ===\n", prof.name.c_str());
         printf("Created:     %ls\n", prof.created.c_str());
-        printf("Type:        %ls\n", prof.type.c_str());
-        if (prof.type == L"restricted")
+        printf("Type:        %ls\n", TokenModeName(prof.config.tokenMode));
+        if (IsRestrictedTokenMode(prof.config.tokenMode))
             printf("Integrity:   %ls\n", prof.integrity.c_str());
         printf("SID:         %ls\n", prof.sidString.c_str());
         if (!prof.containerName.empty())
             printf("Container:   %ls\n", prof.containerName.c_str());
 
-        // Config summary
         if (!prof.config.parseError) {
             printf("\nConfiguration:\n");
-            int allowCount = (int)prof.config.folders.size();
-            int denyCount = (int)prof.config.denyFolders.size();
-            printf("  Allow paths:  %d\n", allowCount);
-            for (const auto& f : prof.config.folders)
-                printf("    [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
-            if (denyCount > 0) {
-                printf("  Deny paths:   %d\n", denyCount);
-                for (const auto& f : prof.config.denyFolders)
-                    printf("    [%-7ls] %ls\n", AccessTag(f.access), f.path.c_str());
-            }
-
-            // Privileges
-            printf("  Privileges:\n");
-            if (prof.type == L"appcontainer" || prof.type == L"lpac") {
-                printf("    network         = %s\n", prof.config.allowNetwork ? "true" : "false");
-                printf("    lan             = %s\n",
-                    prof.config.lanMode == LanMode::WithLocalhost ? "'with localhost'" :
-                    prof.config.lanMode == LanMode::WithoutLocalhost ? "'without localhost'" : "false");
-            } else {
-                printf("    named_pipes     = %s\n", prof.config.allowNamedPipes ? "true" : "false");
-            }
-            printf("    stdin           = %s\n",
-                   prof.config.stdinMode == L"NUL" ? "false" : "true");
-            printf("    clipboard_read  = %s\n", prof.config.allowClipboardRead ? "true" : "false");
-            printf("    clipboard_write = %s\n", prof.config.allowClipboardWrite ? "true" : "false");
-            printf("    child_processes = %s\n", prof.config.allowChildProcesses ? "true" : "false");
-
-            // Limits
-            if (prof.config.timeoutSeconds || prof.config.memoryLimitMB || prof.config.maxProcesses) {
-                printf("  Limits:\n");
-                if (prof.config.timeoutSeconds)
-                    printf("    timeout         = %lu sec\n", prof.config.timeoutSeconds);
-                if (prof.config.memoryLimitMB)
-                    printf("    memory          = %zu MB\n", prof.config.memoryLimitMB);
-                if (prof.config.maxProcesses)
-                    printf("    processes       = %lu max\n", prof.config.maxProcesses);
-            }
+            PrintResolvedConfig(prof.config);
         }
 
         return 0;

@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 
 echo ================================================================
-echo  Sandy CLI — Full Test Suite
+echo  Sandy CLI ? Full Test Suite
 echo ================================================================
 for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 set PASS=0
@@ -39,10 +39,14 @@ for %%F in (
     test_resilience.bat
     test_stress.bat
     test_profile.bat
+    test_status_saved_profile_integrity.bat
     test_removed_features.bat
     test_grant_matrix.bat
     test_clean.bat
     test_dryrun.bat
+    test_string_mode_semantics.bat
+    test_config_scalar_guards.bat
+    test_config_path_guards.bat
     test_fixes_p1.bat
     test_sneaky.bat
     test_collude4.bat
@@ -64,7 +68,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 35
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 39
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

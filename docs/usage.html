@@ -151,7 +151,7 @@
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Working <span class="accent">Directory</span></h2>
-    <p class="section-lead"><code>workdir</code> is either set explicitly in config or inherited from Sandy's own current working directory. The target executable path does not change the default working directory.</p>
+    <p class="section-lead"><code>workdir</code> is either set explicitly in config as an absolute directory path or inherited from Sandy's own current working directory. The target executable path does not change the default working directory.</p>
   </div>
 </section>
 
@@ -189,7 +189,7 @@
           <tr><td class="td-flag"><code>--print-config</code></td><td>Print resolved config to stdout with all defaults filled in — requires <code>-c</code> or <code>-s</code></td></tr>
           <tr><td class="td-flag"><code>--print-container-toml</code></td><td>Print the default AppContainer TOML template to stdout</td></tr>
           <tr><td class="td-flag"><code>--print-restricted-toml</code></td><td>Print the default Restricted Token TOML template to stdout</td></tr>
-          <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show active instances, stale state, saved profiles, and summary counts — optionally as JSON</td></tr>
+          <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show instances, retry containers, cleanup tasks, saved profiles, and summary counts — optionally as JSON</td></tr>
           <tr><td class="td-flag"><code>--cleanup</code></td><td>Restore stale state left by a crashed run — removes orphaned ACLs, loopback exemptions, scheduled tasks, and transient AppContainer profiles</td></tr>
           <tr><td class="td-flag"><code>--explain &lt;code&gt;</code></td><td>Decode a numeric exit code — distinguishes Sandy codes (125–131), NTSTATUS, and Win32 error codes</td></tr>
 

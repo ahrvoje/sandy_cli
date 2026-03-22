@@ -11,6 +11,7 @@
 #include "SandboxACL.h"
 #include "SandboxRecoveryLedger.h"
 #include "SandboxRegistry.h"
+#include "SandboxProfileRegistry.h"
 #include <set>
 #include <atomic>
 
@@ -349,50 +350,42 @@ namespace Sandbox {
     // GrantLedgerEntry — resolved snapshot of one Grants\<instanceId> subkey.
     //
     // Liveness semantics are defined HERE, not in callers:
-    //   isCommitted=false → treat as alive (fail closed, writer initializing)
-    //   isCommitted=true  → isAlive = IsProcessAlive(pid, ctime)
+    //   isCommitted=false → Incomplete (fail closed, writer initializing)
+    //   isCommitted=true  → Active or Stale based on PID + creation time
     // -----------------------------------------------------------------------
     struct GrantLedgerEntry {
         std::wstring instanceId;
         DWORD        pid = 0;
         ULONGLONG    ctime = 0;
-        bool         isAlive = false;
         bool         isCommitted = false;
+        RecoveryLedgerLiveness liveness = RecoveryLedgerLiveness::Incomplete;
         std::wstring container;
         std::wstring profileName;
         bool         profileMode = false;
     };
 
+    inline RecoveryLedgerLiveness ResolveRecoveryLedgerLiveness(bool isCommitted,
+                                                                DWORD pid,
+                                                                ULONGLONG ctime)
+    {
+        if (!isCommitted)
+            return RecoveryLedgerLiveness::Incomplete;
+        return IsProcessAlive(pid, ctime)
+            ? RecoveryLedgerLiveness::Active
+            : RecoveryLedgerLiveness::Stale;
+    }
+
     inline std::vector<GrantLedgerEntry> SnapshotGrantLedgers()
     {
         std::vector<GrantLedgerEntry> entries;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kGrantsParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return entries;
-
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& subKey : subKeys) {
+        for (const auto& subKey : EnumRecoveryLedgerInstanceIds(RecoveryLedgerKind::Grants)) {
             GrantLedgerEntry e;
             e.instanceId = subKey;
 
-            std::wstring fullKey = GetRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey);
             HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS) {
+            if (!OpenRecoveryLedgerKey(RecoveryLedgerKind::Grants, subKey, KEY_READ, hKey)) {
                 // Key disappeared between snapshot and open — treat as stale
+                e.liveness = RecoveryLedgerLiveness::Stale;
                 entries.push_back(std::move(e));
                 continue;
             }
@@ -409,7 +402,7 @@ namespace Sandbox {
             RegCloseKey(hKey);
 
             // Liveness: uncommitted = alive (fail closed), committed = check
-            e.isAlive = e.isCommitted ? IsProcessAlive(e.pid, e.ctime) : true;
+            e.liveness = ResolveRecoveryLedgerLiveness(e.isCommitted, e.pid, e.ctime);
             entries.push_back(std::move(e));
         }
         return entries;
@@ -423,40 +416,21 @@ namespace Sandbox {
         std::wstring instanceId;
         DWORD        pid = 0;
         ULONGLONG    ctime = 0;
-        bool         isAlive = false;
         bool         isCommitted = false;
+        RecoveryLedgerLiveness liveness = RecoveryLedgerLiveness::Incomplete;
         std::wstring container;
     };
 
     inline std::vector<TransientContainerEntry> SnapshotTransientContainerLedgers()
     {
         std::vector<TransientContainerEntry> entries;
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, kTransientContainersParentKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return entries;
-
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[128];
-            DWORD nameLen = 128;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                              nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& subKey : subKeys) {
+        for (const auto& subKey : EnumRecoveryLedgerInstanceIds(RecoveryLedgerKind::TransientContainerRetry)) {
             TransientContainerEntry e;
             e.instanceId = subKey;
 
-            std::wstring fullKey = GetTransientContainerRegKey(subKey);
             HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS) {
+            if (!OpenRecoveryLedgerKey(RecoveryLedgerKind::TransientContainerRetry, subKey, KEY_READ, hKey)) {
+                e.liveness = RecoveryLedgerLiveness::Stale;
                 entries.push_back(std::move(e));
                 continue;
             }
@@ -465,7 +439,7 @@ namespace Sandbox {
             e.container = ReadRegSz(hKey, L"_container");
             RegCloseKey(hKey);
 
-            e.isAlive = e.isCommitted ? IsProcessAlive(e.pid, e.ctime) : true;
+            e.liveness = ResolveRecoveryLedgerLiveness(e.isCommitted, e.pid, e.ctime);
             entries.push_back(std::move(e));
         }
         return entries;
@@ -806,6 +780,17 @@ namespace Sandbox {
         auto entries = SnapshotTransientContainerLedgers();
 
         for (const auto& e : entries) {
+            if (e.liveness == RecoveryLedgerLiveness::Active) {
+                g_logger.LogFmt(L"TRANSIENT_RETRY_SKIP: %ls still owned by live instance %ls",
+                                e.container.c_str(), e.instanceId.c_str());
+                continue;
+            }
+            if (e.liveness == RecoveryLedgerLiveness::Incomplete) {
+                g_logger.LogFmt(L"TRANSIENT_RETRY_SKIP: retry metadata incomplete for instance %ls (fail closed)",
+                                e.instanceId.c_str());
+                continue;
+            }
+
             if (e.container.empty()) {
                 ClearTransientContainerCleanup(e.instanceId);
                 continue;
@@ -910,7 +895,7 @@ namespace Sandbox {
     {
         std::set<std::wstring> live;
         for (const auto& e : SnapshotGrantLedgers()) {
-            if (e.isAlive && !e.container.empty())
+            if (RecoveryLedgerBlocksCleanup(e.liveness) && !e.container.empty())
                 live.insert(NormalizeLookupKey(e.container));
         }
         return live;
@@ -924,7 +909,7 @@ namespace Sandbox {
     {
         std::set<std::wstring> live;
         for (const auto& e : SnapshotGrantLedgers()) {
-            if (e.isAlive && !e.profileName.empty())
+            if (RecoveryLedgerBlocksCleanup(e.liveness) && !e.profileName.empty())
                 live.insert(NormalizeLookupKey(e.profileName));
         }
         return live;
@@ -942,37 +927,9 @@ namespace Sandbox {
     inline std::set<std::wstring> GetSavedProfileContainerNames()
     {
         std::set<std::wstring> names;
-        static const wchar_t* profilesKey = L"Software\\Sandy\\Profiles";
-        HKEY hParent = nullptr;
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, profilesKey, 0,
-                          KEY_READ | KEY_ENUMERATE_SUB_KEYS, &hParent) != ERROR_SUCCESS)
-            return names;
-
-        // P1: Snapshot subkey names first to avoid index-shift races.
-        DWORD subKeyCount = 0;
-        RegQueryInfoKeyW(hParent, nullptr, nullptr, nullptr, &subKeyCount,
-                         nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
-        std::vector<std::wstring> subKeys;
-        for (DWORD idx = 0; idx < subKeyCount; idx++) {
-            wchar_t name[256];
-            DWORD nameLen = 256;
-            if (RegEnumKeyExW(hParent, idx, name, &nameLen,
-                    nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-                subKeys.push_back(name);
-        }
-        RegCloseKey(hParent);
-
-        for (const auto& subKey : subKeys) {
-            std::wstring fullKey = std::wstring(profilesKey) + L"\\" + subKey;
-            HKEY hKey = nullptr;
-            if (RegOpenKeyExW(HKEY_CURRENT_USER, fullKey.c_str(), 0,
-                              KEY_READ, &hKey) != ERROR_SUCCESS)
-                continue;
-
-            std::wstring container = ReadRegSz(hKey, L"_container");
-            if (!container.empty())
-                names.insert(NormalizeLookupKey(container));
-            RegCloseKey(hKey);
+        for (const auto& entry : EnumSavedProfileRegistrySummaries()) {
+            if (!entry.containerName.empty())
+                names.insert(NormalizeLookupKey(entry.containerName));
         }
         return names;
     }
@@ -986,6 +943,14 @@ namespace Sandbox {
     inline void RevokeAllGrants()
     {
         if (g_cleanedUp.exchange(true)) return;
+
+        // Serialize the entire cleanup sequence across Sandy instances.
+        // Individual RemoveSidFromDacl calls already acquire this mutex,
+        // but Windows named mutexes are recursive (same-thread reacquisition
+        // succeeds), so this outer lock prevents interleaving of multi-path
+        // cleanup where SetNamedSecurityInfoW auto-inheritance from one
+        // instance can interfere with another's concurrent revocations.
+        AclMutexGuard cleanupLock(kAclGlobalMutex);
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
@@ -1038,6 +1003,11 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline bool RestoreGrantsFromKey(HKEY hKey)
     {
+        // Serialize the entire stale-recovery cleanup across Sandy instances.
+        // Same rationale as the outer lock in RevokeAllGrants: prevents
+        // interleaving of multi-path ACE removal and auto-inheritance.
+        AclMutexGuard cleanupLock(kAclGlobalMutex);
+
         bool allOk = true;
         DWORD valueCount = 0;
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
@@ -1110,12 +1080,14 @@ namespace Sandbox {
         // Separate live vs stale using pre-resolved liveness
         std::vector<const GrantLedgerEntry*> staleEntries;
         for (const auto& e : snapshot) {
-            if (e.isAlive) {
-                g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> ALIVE (PID=" +
-                              std::to_wstring(e.pid) + L")").c_str());
-            } else {
+            if (e.liveness == RecoveryLedgerLiveness::Stale) {
                 staleEntries.push_back(&e);
                 g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> DEAD (PID=" +
+                              std::to_wstring(e.pid) + L")").c_str());
+            } else if (e.liveness == RecoveryLedgerLiveness::Incomplete) {
+                g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> INCOMPLETE (fail closed)").c_str());
+            } else {
+                g_logger.Log((L"STALE_CHECK: " + e.instanceId + L" -> ALIVE (PID=" +
                               std::to_wstring(e.pid) + L")").c_str());
             }
         }

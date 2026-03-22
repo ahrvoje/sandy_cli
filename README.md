@@ -57,7 +57,7 @@ sandy.exe --profile-info <name>                     (show profile details)
 sandy.exe --print-container-toml          (print default appcontainer config)
 sandy.exe --print-restricted-toml         (print default restricted config)
 sandy.exe --cleanup                       (restore stale state from crashed runs)
-sandy.exe --status [--json]                (show active instances and stale state)
+sandy.exe --status [--json]                (show instances, retry containers, cleanup tasks, and summary counts)
 sandy.exe --explain <code>                 (decode exit code: Sandy, NTSTATUS, Win32)
 sandy.exe --dry-run -c <config.toml> [-x <exec>]              (validate + show plan, no changes)
 sandy.exe --dry-run --create-profile <name> -c <config.toml>  (preview profile creation, no changes)
@@ -81,7 +81,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--print-container-toml` | Print default AppContainer config to stdout |
 | `--print-restricted-toml` | Print default Restricted Token config to stdout |
 | `--cleanup` | Restore stale state from crashed runs (liveness-gated: preserves live instances) |
-| `--status [--json]` | Show active instances, stale state, saved profiles, and summary counts |
+| `--status [--json]` | Show instances, retry containers, cleanup tasks, saved profiles, and summary counts |
 | `--json` | JSON output (with `--status`, includes summary counts) |
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
 | `--dry-run`, `--check` | Validate config + show planned changes (no system modifications). Also supported with `--create-profile` to preview what would be created. |
@@ -129,7 +129,7 @@ See [`sandy_config.toml`](sandy_config.toml) for the default template, [`sandy_c
 token = 'appcontainer'    # or 'lpac' or 'restricted'
 integrity = 'low'         # restricted only: 'low' or 'medium' (required)
 strict = false            # restricted only: exclude user SID from restricting list (default: false)
-workdir = 'C:\projects'   # child working directory (default: inherit Sandy's current working directory)
+workdir = 'C:\projects'   # absolute child working directory (default: inherit Sandy's current working directory)
 ```
 
 | Key | Values | Modes | Description |
@@ -137,7 +137,7 @@ workdir = 'C:\projects'   # child working directory (default: inherit Sandy's cu
 | `token` | `'appcontainer'`, `'lpac'`, `'restricted'` | all | Sandbox isolation model *(required)* |
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
 | `strict` | `true`, `false` | restricted | Exclude user SID from restricting list · Default: `false`. When `true`, user-owned resources require explicit `[allow.*]` grants |
-| `workdir` | path | both | Child process working directory (default: `'inherit'` — Sandy's current working directory) |
+| `workdir` | absolute path | both | Child process working directory (default: `'inherit'` — Sandy's current working directory) |
 
 ### `[allow.deep]` / `[allow.this]` — File and folder grants
 
@@ -260,7 +260,7 @@ child_processes = true    # default: true
 | `lan` | appcontainer / lpac | `false` | `false` • `'without localhost'` • `'with localhost'` — LAN and loopback control (see below) |
 | `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
 | `desktop` | restricted | `true` | Grant WinSta0 + Desktop access for interactive use |
-| `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or a file path |
+| `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or an absolute file path |
 | `clipboard_read` | all | `false` | Allow reading from the clipboard |
 | `clipboard_write` | all | `false` | Allow writing to the clipboard |
 | `child_processes` | all | `true` | Allow spawning child processes (kernel-enforced) |
@@ -334,7 +334,7 @@ processes = 10      # max total active processes (default: 0)
 > **Resource limits are strictly enforced (fail-closed).** If a resource limit (memory, process count, or clipboard restriction) is configured but cannot be applied to the job object, Sandy will terminate the child and exit with code 129 (setup error). This includes scenarios where `SetInformationJobObject` fails as well as cases where the job cannot be assigned to the child process. The sandbox never runs with unenforced limits.
 
 > [!NOTE]
-> **Effective enforcement visibility.** `--status` reports active and stale instances, scheduled tasks, AppContainer profiles, and saved profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.
+> **Effective enforcement visibility.** `--status` reports instance state, transient retry-container metadata, scheduled tasks, AppContainer profiles, and saved profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.
 
 ### Config availability summary
 
@@ -627,8 +627,8 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 ### Status output notes
 
-- `--status` prints both active and stale state for persisted grants, scheduled tasks, Sandy AppContainer profiles, and saved profiles.
-- `--status --json` includes a top-level `summary` object with counts for instances, stale instances, scheduled tasks, profiles, and saved profiles.
+- `--status` prints instance state, transient retry-container state, cleanup-task ownership state, Sandy AppContainer profiles, and saved profiles.
+- `--status --json` includes a top-level `summary` object with counts for instances, retry containers, retained/orphaned cleanup tasks, profiles, and saved profiles.
 
 > [!IMPORTANT]
 > If Sandy is killed via `taskkill /F` or power is lost, run `sandy.exe --cleanup` manually or wait for the next logon (the scheduled task handles it automatically).

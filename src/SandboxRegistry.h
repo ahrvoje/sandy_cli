@@ -78,6 +78,14 @@ namespace Sandbox {
         return val;
     }
 
+    inline bool TryReadRegDword(HKEY hKey, const wchar_t* name, DWORD& out)
+    {
+        DWORD size = sizeof(out), type = 0;
+        return RegQueryValueExW(hKey, name, nullptr, &type,
+                                reinterpret_cast<BYTE*>(&out), &size) == ERROR_SUCCESS
+            && type == REG_DWORD;
+    }
+
     // -----------------------------------------------------------------------
     // REG_SZ enumeration — read value by index, skipping metadata ('_' prefix)
     // -----------------------------------------------------------------------

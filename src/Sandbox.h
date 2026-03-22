@@ -78,6 +78,8 @@ namespace Sandbox {
         GrantScope   scope = GrantScope::Deep;
     };
 
+    using AccessPipeline = std::vector<PipelineEntry>;
+
     static int PathDepth(const std::wstring& p) {
         std::wstring normalized = NormalizeFsPath(p);
         int d = 0;
@@ -103,20 +105,23 @@ namespace Sandbox {
         return normalizedChild[normalizedParent.size()] == L'\\';
     }
 
-    inline bool ApplyAccessPipeline(PSID pSid, const SandboxConfig& config, bool isAppContainer)
+    inline void AppendPipelineEntries(const std::vector<FolderEntry>& entries,
+                                      bool isDeny,
+                                      AccessPipeline& pipeline)
     {
-        // 1. Build pipeline
-        std::vector<PipelineEntry> pipeline;
-        for (const auto& e : config.folders) {
+        for (const auto& e : entries) {
             if (e.path.empty()) continue;
-            pipeline.push_back({ e.path, e.access, false, PathDepth(e.path), e.scope });
+            pipeline.push_back({ e.path, e.access, isDeny, PathDepth(e.path), e.scope });
         }
-        for (const auto& e : config.denyFolders) {
-            if (e.path.empty()) continue;
-            pipeline.push_back({ e.path, e.access, true, PathDepth(e.path), e.scope });
-        }
+    }
 
-        // 2. Stable sort: by depth ascending, deny before allow at same depth
+    inline AccessPipeline BuildAccessPipeline(const SandboxConfig& config)
+    {
+        AccessPipeline pipeline;
+        pipeline.reserve(config.folders.size() + config.denyFolders.size());
+        AppendPipelineEntries(config.folders, false, pipeline);
+        AppendPipelineEntries(config.denyFolders, true, pipeline);
+
         std::stable_sort(pipeline.begin(), pipeline.end(),
             [](const PipelineEntry& a, const PipelineEntry& b) {
                 if (a.depth != b.depth) return a.depth < b.depth;
@@ -124,23 +129,46 @@ namespace Sandbox {
                 if (a.isDeny != b.isDeny) return a.isDeny;
                 return false;
             });
+        return pipeline;
+    }
 
-        // 3. Log the sorted plan
-        g_logger.LogFmt(L"PIPELINE: sorted %zu entries by path depth:", pipeline.size());
-        // Pre-scan: collect deny paths for annotation
-        std::vector<std::wstring> preDenyPaths;
-        for (const auto& e : pipeline) {
-            if (e.isDeny) {
-                preDenyPaths.push_back(e.path);
-            }
+    inline bool IsPathUnderAny(const std::wstring& candidate,
+                               const std::vector<std::wstring>& parents)
+    {
+        for (const auto& parent : parents) {
+            if (IsPathUnder(candidate, parent))
+                return true;
         }
+        return false;
+    }
+
+    inline std::vector<std::wstring> CollectDenyPaths(const AccessPipeline& pipeline)
+    {
+        std::vector<std::wstring> denyPaths;
+        for (const auto& entry : pipeline) {
+            if (entry.isDeny)
+                denyPaths.push_back(entry.path);
+        }
+        return denyPaths;
+    }
+
+    inline std::wstring SidToStringOrEmpty(PSID pSid)
+    {
+        std::wstring sidStr;
+        LPWSTR s = nullptr;
+        if (ConvertSidToStringSidW(pSid, &s)) {
+            sidStr = s;
+            LocalFree(s);
+        }
+        return sidStr;
+    }
+
+    inline void LogAccessPipelinePlan(const AccessPipeline& pipeline)
+    {
+        g_logger.LogFmt(L"PIPELINE: sorted %zu entries by path depth:", pipeline.size());
+        std::vector<std::wstring> preDenyPaths = CollectDenyPaths(pipeline);
         for (const auto& e : pipeline) {
-            bool underDeny = false;
-            if (!e.isDeny) {
-                for (const auto& dp : preDenyPaths) {
-                    if (IsPathUnder(e.path, dp)) { underDeny = true; break; }
-                }
-            }
+            bool underDeny = !e.isDeny && IsPathUnderAny(e.path, preDenyPaths);
             if (e.isDeny) {
                 g_logger.LogFmt(L"    DENY  [%-7s] %s",
                     AccessTag(e.access), e.path.c_str());
@@ -155,68 +183,84 @@ namespace Sandbox {
                     AccessTag(e.access), e.path.c_str());
             }
         }
+    }
 
-        // 4. Execute pipeline
+    inline bool ApplyDenyPipelineEntry(PSID pSid,
+                                       const PipelineEntry& entry,
+                                       std::vector<std::wstring>& activeDenyPaths)
+    {
+        DWORD rc = DenyObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback,
+                                    SE_FILE_OBJECT, entry.scope);
+        if (rc != ERROR_SUCCESS) {
+            g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
+                            AccessTag(entry.access), entry.path.c_str(),
+                            rc, GetSystemErrorMessage(rc).c_str());
+            return false;
+        }
+
+        g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
+                        AccessTag(entry.access), entry.path.c_str(),
+                        AccessMask(entry.access));
+        activeDenyPaths.push_back(entry.path);
+        return true;
+    }
+
+    inline bool ApplyAllowPipelineEntry(PSID pSid,
+                                        const PipelineEntry& entry,
+                                        const std::wstring& sidStr,
+                                        const std::vector<std::wstring>& activeDenyPaths)
+    {
+        bool underDeny = IsPathUnderAny(entry.path, activeDenyPaths);
+        if (underDeny) {
+            bool isThis = (entry.scope == GrantScope::This);
+            if (!sidStr.empty()) {
+                g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
+                                entry.path.c_str(), isThis ? L"dir only" : L"subtree");
+                RemoveSidFromDacl(entry.path, sidStr, SE_FILE_OBJECT,
+                                  DaclProtectionIntent::ForceProtected,
+                                  isThis, AceRemovalMode::DenyOnly);
+            } else {
+                g_logger.LogFmt(L"STRIP_DENY: skipped for %s (SID conversion failed)",
+                                entry.path.c_str());
+            }
+        }
+
+        DWORD rc = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback,
+                                     SE_FILE_OBJECT, entry.scope);
+        if (rc != ERROR_SUCCESS) {
+            g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
+                            AccessTag(entry.access), entry.path.c_str(),
+                            rc, GetSystemErrorMessage(rc).c_str());
+            return false;
+        }
+
+        g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
+                        AccessTag(entry.access), entry.path.c_str(),
+                        AccessMask(entry.access));
+        return true;
+    }
+
+    inline bool ExecuteAccessPipeline(PSID pSid, const AccessPipeline& pipeline)
+    {
         bool allOk = true;
         std::vector<std::wstring> activeDenyPaths;
-        // Convert SID to string once (for RemoveSidFromDacl calls)
-        std::wstring sidStr;
-        {
-            LPWSTR s = nullptr;
-            if (ConvertSidToStringSidW(pSid, &s)) {
-                sidStr = s;
-                LocalFree(s);
-            }
-        }
+        std::wstring sidStr = SidToStringOrEmpty(pSid);
 
-        for (const auto& e : pipeline) {
-            if (e.isDeny) {
-                // Apply deny
-                DWORD rc = DenyObjectAccess(pSid, e.path, e.access, RecordGrantCallback,
-                                            SE_FILE_OBJECT, e.scope);
-                bool ok = (rc == ERROR_SUCCESS);
-                if (!ok) allOk = false;
-                if (ok) {
-                    g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
-                        AccessTag(e.access), e.path.c_str(), AccessMask(e.access));
-                    activeDenyPaths.push_back(e.path);
-                } else {
-                    g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
-                        AccessTag(e.access), e.path.c_str(),
-                        rc, GetSystemErrorMessage(rc).c_str());
-                }
-            } else {
-                // Check if this allow is under an active deny
-                bool underDeny = false;
-                for (const auto& dp : activeDenyPaths) {
-                    if (IsPathUnder(e.path, dp)) { underDeny = true; break; }
-                }
-
-                // Strip deny ACEs if needed
-                if (underDeny && !sidStr.empty()) {
-                    bool isThis = (e.scope == GrantScope::This);
-                    g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
-                        e.path.c_str(), isThis ? L"dir only" : L"subtree");
-                    RemoveSidFromDacl(e.path, sidStr, SE_FILE_OBJECT,
-                                     DaclProtectionIntent::ForceProtected, isThis, AceRemovalMode::DenyOnly);
-                }
-
-                // Apply allow
-                DWORD rc = GrantObjectAccess(pSid, e.path, e.access, RecordGrantCallback,
-                                             SE_FILE_OBJECT, e.scope);
-                bool ok = (rc == ERROR_SUCCESS);
-                if (!ok) allOk = false;
-                if (ok) {
-                    g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
-                        AccessTag(e.access), e.path.c_str(), AccessMask(e.access));
-                } else {
-                    g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
-                        AccessTag(e.access), e.path.c_str(),
-                        rc, GetSystemErrorMessage(rc).c_str());
-                }
-            }
+        for (const auto& entry : pipeline) {
+            bool ok = entry.isDeny
+                ? ApplyDenyPipelineEntry(pSid, entry, activeDenyPaths)
+                : ApplyAllowPipelineEntry(pSid, entry, sidStr, activeDenyPaths);
+            if (!ok)
+                allOk = false;
         }
         return allOk;
+    }
+
+    inline bool ApplyAccessPipeline(PSID pSid, const SandboxConfig& config)
+    {
+        AccessPipeline pipeline = BuildAccessPipeline(config);
+        LogAccessPipelinePlan(pipeline);
+        return ExecuteAccessPipeline(pSid, pipeline);
     }
 
     // -----------------------------------------------------------------------
@@ -353,6 +397,37 @@ namespace Sandbox {
         bool         deleteContainerOnExit = false;
     };
 
+    struct ResolvedRunIdentity {
+        PSID         pSid = nullptr;
+        HANDLE       hRestrictedToken = nullptr;
+        std::wstring containerName;
+    };
+
+    struct LaunchPreparationState {
+        CapabilityState       caps = {};
+        SECURITY_CAPABILITIES sc = {};
+        AttributeListState    attrs = {};
+        std::vector<wchar_t>  envBlock;
+        HANDLE                hStdin = nullptr;
+        HANDLE                hStdinFile = nullptr;
+    };
+
+    enum class ChildStartStatus {
+        Ready,
+        LaunchFailed,
+        JobAssignmentFailed,
+        WatchdogFailed
+    };
+
+    struct ManagedChildState {
+        ChildStartStatus     status = ChildStartStatus::LaunchFailed;
+        DWORD                launchError = 0;
+        PROCESS_INFORMATION  pi{};
+        HANDLE               hJob = nullptr;
+        TimeoutContext       timeoutCtx{};
+        HANDLE               hTimeoutThread = nullptr;
+    };
+
     inline void ResetEmergencyCleanupState()
     {
         AcquireSRWLockExclusive(&g_emergencyCleanupStateLock);
@@ -377,6 +452,363 @@ namespace Sandbox {
         EmergencyCleanupState snapshot = g_emergencyCleanupState;
         ReleaseSRWLockShared(&g_emergencyCleanupStateLock);
         return snapshot;
+    }
+
+    inline bool ResolveRunIdentity(const SandboxConfig& config,
+                                   const ExecutionIdentity& identity,
+                                   SandboxGuard& guard,
+                                   ResolvedRunIdentity& resolved)
+    {
+        resolved.containerName = identity.containerName;
+        if (identity.pSid) {
+            resolved.pSid = identity.pSid;
+            resolved.hRestrictedToken = identity.hToken;
+            return true;
+        }
+
+        auto setup = (config.tokenMode == TokenMode::Restricted)
+            ? SetupRestrictedToken(config, guard)
+            : SetupAppContainer(resolved.containerName, guard);
+        if (!setup.ok)
+            return false;
+
+        resolved.pSid = setup.pSid;
+        resolved.hRestrictedToken = setup.hRestrictedToken;
+        return true;
+    }
+
+    inline int AbortBeforeLaunch(bool isAppContainer,
+                                 const ExecutionIdentity& identity,
+                                 const std::wstring& containerName,
+                                 SandboxGuard& guard,
+                                 int exitCode,
+                                 const wchar_t* reason,
+                                 const wchar_t* containerContext = L"ABORT_BEFORE_LAUNCH")
+    {
+        if (isAppContainer && identity.deleteContainerOnExit && !containerName.empty())
+            TeardownTransientContainerForCurrentRun(containerName, containerContext);
+
+        guard.RunAll();
+        FinalizeCleanupTaskForCurrentRun();
+        g_logger.Log(reason);
+        g_logger.Stop();
+        return exitCode;
+    }
+
+    inline bool ApplyRunOwnedGrantPhase(PSID pSid,
+                                        const SandboxConfig& config,
+                                        const ExecutionIdentity& identity,
+                                        bool isRestricted,
+                                        const std::wstring& containerName,
+                                        SandboxGuard& guard)
+    {
+        if (identity.grantsPreexisting) {
+            g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
+            return true;
+        }
+
+        InitializeRunLedger(containerName);
+        // P2: Create cleanup task AFTER the ledger exists so concurrent
+        // DeleteStaleCleanupTasks won't discard our freshly created task.
+        CreateCleanupTask(g_instanceId);
+        ULONGLONG tGrantStart = GetTickCount64();
+        ResetGrantTrackingHealth();
+        guard.Add([]() { RevokeAllGrants(); });
+
+        bool grantFailed = false;
+        if (!ApplyAccessPipeline(pSid, config))
+            grantFailed = true;
+
+        if (isRestricted && !GrantRegistryAccess(pSid, config))
+            grantFailed = true;
+
+        if (!GrantTrackingHealthy()) {
+            g_logger.Log(L"WARNING: grant tracking persistence failed (cleanup inventory incomplete)");
+            grantFailed = true;
+        }
+
+        if (grantFailed) {
+            g_logger.Log(L"ERROR: grant setup incomplete — aborting before launch");
+            return false;
+        }
+
+        g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
+        return true;
+    }
+
+    inline bool EnsureRestrictedDesktopAccess(PSID pSid,
+                                              const SandboxConfig& config,
+                                              const ExecutionIdentity& identity,
+                                              SandboxGuard& guard)
+    {
+        if (!config.allowDesktop) {
+            g_logger.Log(L"DESKTOP: disabled (desktop = false)");
+            return true;
+        }
+
+        if (identity.persistentProfile) {
+            g_logger.Log(L"DESKTOP: using profile-owned ACEs (no per-run grant)");
+            return true;
+        }
+
+        if (!GrantDesktopAccess(pSid))
+            return false;
+
+        g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
+        guard.Add([]() { RevokeDesktopAccess(); });
+        return true;
+    }
+
+    inline bool EnsureAppContainerLoopback(const SandboxConfig& config,
+                                           const ExecutionIdentity& identity,
+                                           const std::wstring& containerName,
+                                           SandboxGuard& guard)
+    {
+        if (config.lanMode != LanMode::WithLocalhost)
+            return true;
+
+        if (identity.persistentProfile) {
+            g_logger.Log(L"LOOPBACK: using profile-owned exemption (no per-run check)");
+            return true;
+        }
+
+        bool ok = EnableRunLoopback(containerName);
+        g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
+        if (ok)
+            guard.Add([]() { DisableLoopback(); });
+        return ok;
+    }
+
+    inline bool PrepareLaunchState(const SandboxConfig& config,
+                                   const std::wstring& exePath,
+                                   const std::wstring& exeArgs,
+                                   bool isRestricted,
+                                   bool isAppContainer,
+                                   PSID pSid,
+                                   SandboxGuard& guard,
+                                   LaunchPreparationState& state)
+    {
+        if (isAppContainer) {
+            state.caps = BuildCapabilities(config);
+            if (state.caps.failed) {
+                g_logger.Log(L"ERROR: capability SID allocation failed — aborting before launch");
+                FreeCapabilities(state.caps);
+                return false;
+            }
+            state.sc.AppContainerSid = pSid;
+            state.sc.Capabilities = state.caps.capCount > 0 ? state.caps.caps : nullptr;
+            state.sc.CapabilityCount = state.caps.capCount;
+            guard.Add([&state]() { FreeCapabilities(state.caps); });
+        }
+
+        state.attrs = BuildAttributeList(config, isAppContainer ? &state.sc : nullptr, isRestricted);
+        if (!state.attrs.valid)
+            return false;
+        guard.Add([&state]() { FreeAttributeList(state.attrs); });
+
+        LogStdinMode(config.stdinMode);
+        state.envBlock = BuildEnvironmentBlock(config);
+        LogEnvironmentState(config);
+        if (!g_logger.IsActive())
+            PrintConfigSummary(config, exePath, exeArgs);
+
+        return SetupStdinHandle(config.stdinMode, state.hStdin, state.hStdinFile);
+    }
+
+    inline bool ValidateRestrictedTokenIntegrity(const SandboxConfig& config,
+                                                 HANDLE hRestrictedToken)
+    {
+        if (!hRestrictedToken)
+            return true;
+
+        DWORD ilSize = 0;
+        GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, nullptr, 0, &ilSize);
+        if (ilSize == 0)
+            return true;
+
+        std::vector<BYTE> ilBuf(ilSize);
+        auto* pTIL = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(ilBuf.data());
+        if (!GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, pTIL, ilSize, &ilSize))
+            return true;
+
+        DWORD actualIL = *GetSidSubAuthority(pTIL->Label.Sid,
+                         *GetSidSubAuthorityCount(pTIL->Label.Sid) - 1);
+        DWORD expectedIL = (config.integrity == IntegrityLevel::Low)
+                           ? SECURITY_MANDATORY_LOW_RID
+                           : SECURITY_MANDATORY_MEDIUM_RID;
+        if (actualIL != expectedIL) {
+            g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
+                            expectedIL, actualIL);
+            return false;
+        }
+
+        g_logger.LogFmt(L"TOKEN_VALIDATE: OK (IL=0x%04X)", actualIL);
+        return true;
+    }
+
+    inline int HandleLaunchFailure(DWORD launchErr,
+                                   bool isAppContainer,
+                                   const ExecutionIdentity& identity,
+                                   const std::wstring& containerName,
+                                   SandboxGuard& guard)
+    {
+        g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
+        g_logger.LogSummary(launchErr, false, 0);
+
+        bool notFound = (launchErr == ERROR_FILE_NOT_FOUND ||
+                         launchErr == ERROR_PATH_NOT_FOUND);
+        return AbortBeforeLaunch(isAppContainer, identity, containerName, guard,
+                                 notFound ? SandyExit::NotFound : SandyExit::CannotExec,
+                                 L"CLEANUP: complete (launch failure)",
+                                 L"LAUNCH_FAILURE");
+    }
+
+    inline int AbortAfterChildLaunch(bool isAppContainer,
+                                     const ExecutionIdentity& identity,
+                                     const std::wstring& containerName,
+                                     SandboxGuard& guard,
+                                     PROCESS_INFORMATION& pi,
+                                     HANDLE hJob,
+                                     DWORD terminateCode,
+                                     const wchar_t* cleanupReason,
+                                     const wchar_t* containerContext,
+                                     int sandyExit = SandyExit::SetupError)
+    {
+        g_childProcess = nullptr;
+        g_childJob = nullptr;
+        AbortLaunchedChild(pi, hJob, terminateCode);
+        if (isAppContainer && identity.deleteContainerOnExit)
+            TeardownTransientContainerForCurrentRun(containerName, containerContext);
+        guard.RunAll();
+        FinalizeCleanupTaskForCurrentRun();
+        g_logger.Log(cleanupReason);
+        g_logger.Stop();
+        return sandyExit;
+    }
+
+    inline void CloseLaunchStdinHandle(LaunchPreparationState& prep)
+    {
+        if (prep.hStdinFile) {
+            CloseHandle(prep.hStdinFile);
+            prep.hStdinFile = nullptr;
+        }
+    }
+
+    inline ManagedChildState StartManagedChild(const SandboxConfig& config,
+                                               const std::wstring& exeFolder,
+                                               const std::wstring& exePath,
+                                               const std::wstring& exeArgs,
+                                               bool isRestricted,
+                                               HANDLE hRestrictedToken,
+                                               LaunchPreparationState& prep)
+    {
+        ManagedChildState child;
+
+        bool launched = LaunchChildProcess(
+            isRestricted,
+            isRestricted ? hRestrictedToken : nullptr,
+            prep.attrs.pAttrList, prep.envBlock, exeFolder, exePath, exeArgs,
+            prep.hStdin, child.pi);
+        DWORD launchError = launched ? ERROR_SUCCESS : GetLastError();
+        CloseLaunchStdinHandle(prep);
+
+        if (!launched) {
+            child.status = ChildStartStatus::LaunchFailed;
+            child.launchError = launchError;
+            return child;
+        }
+
+        child.hJob = AssignJobObject(config, child.pi.hProcess);
+        if (NeedJobTracking(config) && !child.hJob) {
+            child.status = ChildStartStatus::JobAssignmentFailed;
+            return child;
+        }
+
+        g_childProcess = child.pi.hProcess;
+        g_childJob = child.hJob;
+
+        ResumeThread(child.pi.hThread);
+        g_logger.Log(L"CHILD: resumed");
+        CloseHandleIfValid(child.pi.hThread);
+
+        child.timeoutCtx = { child.pi.hProcess, child.hJob, config.timeoutSeconds, false };
+        child.hTimeoutThread = StartTimeoutWatchdog(child.timeoutCtx);
+        if (config.timeoutSeconds > 0 && !child.hTimeoutThread) {
+            child.status = ChildStartStatus::WatchdogFailed;
+            return child;
+        }
+
+        child.status = ChildStartStatus::Ready;
+        return child;
+    }
+
+    inline DWORD WaitForManagedChild(const SandboxConfig& config, ManagedChildState& child)
+    {
+        return WaitForChildExit(child.pi.hProcess,
+                                child.hJob,
+                                child.hTimeoutThread, child.timeoutCtx,
+                                config.timeoutSeconds,
+                                config.allowChildProcesses);
+    }
+
+    inline void LogChildExitClassification(DWORD exitCode,
+                                           bool timedOut,
+                                           DWORD timeoutSeconds)
+    {
+        g_logger.LogSummary(exitCode, timedOut, timeoutSeconds);
+        if (timedOut)
+            g_logger.Log(L"EXIT_CLASS: TIMEOUT");
+        else if (IsCrashExitCode(exitCode))
+            g_logger.LogFmt(L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
+        else if (exitCode != 0)
+            g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
+        else
+            g_logger.Log(L"EXIT_CLASS: CLEAN");
+    }
+
+    inline int MapChildExitToSandyExit(DWORD exitCode, bool timedOut)
+    {
+        if (timedOut)
+            return SandyExit::Timeout;
+        if (IsCrashExitCode(exitCode))
+            return SandyExit::ChildCrash;
+        return static_cast<int>(exitCode);
+    }
+
+    inline int FinalizeCompletedRun(bool isAppContainer,
+                                    const ExecutionIdentity& identity,
+                                    const std::wstring& containerName,
+                                    SandboxGuard& guard,
+                                    PROCESS_INFORMATION& pi,
+                                    HANDLE hJob,
+                                    DWORD exitCode,
+                                    const TimeoutContext& timeoutCtx,
+                                    DWORD timeoutSeconds)
+    {
+        LogChildExitClassification(exitCode, timeoutCtx.timedOut, timeoutSeconds);
+
+        g_childProcess = nullptr;  // clear before close — emergency path must not use stale handle
+        g_childJob = nullptr;
+        ReleaseLaunchedChildHandles(pi, hJob);
+
+        if (identity.persistentProfile)
+            g_logger.Log(L"CLEANUP: starting (persistent profile ownership)");
+        else
+            g_logger.Log(L"CLEANUP: starting");
+        DWORD cleanupStart = GetTickCount();
+
+        if (isAppContainer && identity.deleteContainerOnExit)
+            TeardownTransientContainerForCurrentRun(containerName, L"NORMAL_CLEANUP");
+
+        // Run all guard cleanups explicitly (RevokeAllGrants, RevokeDesktopAccess,
+        // DisableLoopback, FreeCapabilities, FreeAttributeList, FreeSid, CloseHandle)
+        // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
+        guard.RunAll();
+
+        FinalizeCleanupTaskForCurrentRun();
+        g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
+        g_logger.Stop();
+        return MapChildExitToSandyExit(exitCode, timeoutCtx.timedOut);
     }
 
     // =====================================================================
@@ -408,104 +840,44 @@ namespace Sandbox {
         // PHASE 1: SETUP — create token/SID, log mode
         // =================================================================
 
-        PSID pSid = nullptr;
-        HANDLE hRestrictedToken = nullptr;
-        std::wstring containerName = identity.containerName;
+        ResolvedRunIdentity resolved;
+        if (!ResolveRunIdentity(config, identity, guard, resolved))
+            return SandyExit::SetupError;
 
-        if (identity.pSid) {
-            pSid = identity.pSid;
-            hRestrictedToken = identity.hToken;
-        } else {
-            auto setup = isAppContainer
-                ? SetupAppContainer(containerName, guard)
-                : SetupRestrictedToken(config, guard);
-            if (!setup.ok) return SandyExit::SetupError;
-            pSid = setup.pSid;
-            hRestrictedToken = setup.hRestrictedToken;
-        }
-
-        ConfigureEmergencyCleanupState(containerName, identity.deleteContainerOnExit,
+        ConfigureEmergencyCleanupState(resolved.containerName, identity.deleteContainerOnExit,
                                        identity.persistentProfile);
 
         g_logger.LogFmt(L"WORKDIR: %s", exeFolder.c_str());
-
-        auto AbortBeforeLaunch = [&](int exitCode, const wchar_t* reason) -> int {
-            if (isAppContainer && identity.deleteContainerOnExit && !containerName.empty()) {
-                TeardownTransientContainerForCurrentRun(containerName, L"ABORT_BEFORE_LAUNCH");
-            }
-            guard.RunAll();
-            FinalizeCleanupTaskForCurrentRun();
-            g_logger.Log(reason);
-            g_logger.Stop();
-            return exitCode;
-        };
 
         // =================================================================
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
         // =================================================================
 
-        if (identity.grantsPreexisting) {
-            g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
-        } else {
-            InitializeRunLedger(containerName);
-            // P2: Create cleanup task AFTER the ledger exists so concurrent
-            // DeleteStaleCleanupTasks won't discard our freshly created task.
-            CreateCleanupTask(g_instanceId);
-            ULONGLONG tGrantStart = GetTickCount64();
-            ResetGrantTrackingHealth();
-            guard.Add([]() { RevokeAllGrants(); });
-
-            // Apply depth-sorted access pipeline (allow + deny, most specific wins)
-            // TOML is the sole grant source — no implicit auto-grants.
-            bool grantFailed = false;
-            if (!ApplyAccessPipeline(pSid, config, isAppContainer))
-                grantFailed = true;
-
-            // Step 2c: [RT] Grant registry access
-            if (isRestricted) {
-                if (!GrantRegistryAccess(pSid, config))
-                    grantFailed = true;
-            }
-            if (!GrantTrackingHealthy()) {
-                g_logger.Log(L"WARNING: grant tracking persistence failed (cleanup inventory incomplete)");
-                grantFailed = true;
-            }
-
-            if (grantFailed) {
-                g_logger.Log(L"ERROR: grant setup incomplete — aborting before launch");
-                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (grant setup failure)");
-            }
-
-            g_logger.LogFmt(L"TIMING: grants applied in %llums", GetTickCount64() - tGrantStart);
+        if (!ApplyRunOwnedGrantPhase(resolved.pSid, config, identity, isRestricted,
+                                     resolved.containerName, guard)) {
+            return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                     SandyExit::SetupError,
+                                     L"CLEANUP: complete (grant setup failure)");
         }
 
         // Desktop and loopback — profile-owned grants are set at creation,
         // transient grants are managed per-run.
 
         // [RT] Desktop access
-        if (isRestricted && config.allowDesktop) {
-            if (identity.persistentProfile) {
-                g_logger.Log(L"DESKTOP: using profile-owned ACEs (no per-run grant)");
-            } else {
-                if (!GrantDesktopAccess(pSid))
-                    return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (desktop grant failure)");
-                g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
-                guard.Add([]() { RevokeDesktopAccess(); });
+        if (isRestricted) {
+            if (!EnsureRestrictedDesktopAccess(resolved.pSid, config, identity, guard)) {
+                return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         SandyExit::SetupError,
+                                         L"CLEANUP: complete (desktop grant failure)");
             }
-        } else if (isRestricted) {
-            g_logger.Log(L"DESKTOP: disabled (desktop = false)");
         }
 
         // [AC] Loopback
-        if (isAppContainer && config.lanMode == LanMode::WithLocalhost) {
-            if (identity.persistentProfile) {
-                g_logger.Log(L"LOOPBACK: using profile-owned exemption (no per-run check)");
-            } else {
-                bool ok = EnableRunLoopback(containerName);
-                g_logger.Log(ok ? L"LOOPBACK: enabled" : L"LOOPBACK: FAILED");
-                if (!ok)
-                    return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (loopback setup failure)");
-                guard.Add([]() { DisableLoopback(); });
+        if (isAppContainer) {
+            if (!EnsureAppContainerLoopback(config, identity, resolved.containerName, guard)) {
+                return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         SandyExit::SetupError,
+                                         L"CLEANUP: complete (loopback setup failure)");
             }
         }
 
@@ -513,41 +885,17 @@ namespace Sandbox {
         // PHASE 3: PREPARE — capabilities, env, pipes
         // =================================================================
 
-        // Step 3a: [AC] Build capabilities (network SIDs)
-        CapabilityState caps = {};
-        SECURITY_CAPABILITIES sc{};
-        if (isAppContainer) {
-            caps = BuildCapabilities(config);
-            // P3: Abort if any requested capability SID failed to allocate.
-            if (caps.failed) {
-                g_logger.Log(L"ERROR: capability SID allocation failed — aborting before launch");
-                FreeCapabilities(caps);
-                return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (capability failure)");
-            }
-            sc.AppContainerSid = pSid;
-            sc.Capabilities = caps.capCount > 0 ? caps.caps : nullptr;
-            sc.CapabilityCount = caps.capCount;
-            guard.Add([&caps]() { FreeCapabilities(caps); });
+        LaunchPreparationState prep;
+        if (!PrepareLaunchState(config, exePath, exeArgs, isRestricted, isAppContainer,
+                                resolved.pSid, guard, prep)) {
+            const wchar_t* reason = (isAppContainer && prep.caps.failed)
+                ? L"CLEANUP: complete (capability failure)"
+                : (!prep.attrs.valid)
+                    ? L"CLEANUP: complete (attribute list failure)"
+                    : L"CLEANUP: complete (stdin setup failure)";
+            return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                     SandyExit::SetupError, reason);
         }
-
-        // Step 3b: Build attribute list
-        AttributeListState attrs = BuildAttributeList(config,
-            isAppContainer ? &sc : nullptr, isRestricted);
-        if (!attrs.valid)
-            return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (attribute list failure)");
-        guard.Add([&attrs]() { FreeAttributeList(attrs); });
-
-        // Step 3c: Log stdin, build environment, print config summary
-        LogStdinMode(config.stdinMode);
-        std::vector<wchar_t> envBlock = BuildEnvironmentBlock(config);
-        LogEnvironmentState(config);
-        if (!g_logger.IsActive())
-            PrintConfigSummary(config, exePath, exeArgs, isRestricted);
-
-        // Step 3d: Setup stdin handle
-        HANDLE hStdin = nullptr, hStdinFile = nullptr;
-        if (!SetupStdinHandle(config.stdinMode, hStdin, hStdinFile))
-            return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (stdin setup failure)");
 
         // =================================================================
         // PHASE 4: LAUNCH & RUN
@@ -560,166 +908,43 @@ namespace Sandbox {
         // Verify the restricted token's integrity level matches the configured
         // value before handing it to CreateProcessAsUser.  Catches any subtle
         // mutation that could have occurred during Phases 2-3.
-        if (isRestricted && hRestrictedToken) {
-            DWORD ilSize = 0;
-            GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, nullptr, 0, &ilSize);
-            if (ilSize > 0) {
-                std::vector<BYTE> ilBuf(ilSize);
-                auto* pTIL = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(ilBuf.data());
-                if (GetTokenInformation(hRestrictedToken, TokenIntegrityLevel, pTIL, ilSize, &ilSize)) {
-                    DWORD actualIL = *GetSidSubAuthority(pTIL->Label.Sid,
-                                     *GetSidSubAuthorityCount(pTIL->Label.Sid) - 1);
-                    DWORD expectedIL = (config.integrity == IntegrityLevel::Low)
-                                       ? SECURITY_MANDATORY_LOW_RID
-                                       : SECURITY_MANDATORY_MEDIUM_RID;
-                    if (actualIL != expectedIL) {
-                        g_logger.LogFmt(L"TOKEN_VALIDATE: FAILED — expected IL 0x%04X, got 0x%04X. Aborting launch.",
-                                        expectedIL, actualIL);
-                        if (hStdinFile) CloseHandle(hStdinFile);
-                        return AbortBeforeLaunch(SandyExit::SetupError, L"CLEANUP: complete (token validation failure)");
-                    }
-                    g_logger.LogFmt(L"TOKEN_VALIDATE: OK (IL=0x%04X)", actualIL);
-                }
-            }
+        if (isRestricted && !ValidateRestrictedTokenIntegrity(config, resolved.hRestrictedToken)) {
+            CloseLaunchStdinHandle(prep);
+            return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                     SandyExit::SetupError,
+                                     L"CLEANUP: complete (token validation failure)");
         }
 
-        // Step 4a: Launch the child process (suspended, console passthrough)
-        HANDLE hJob = nullptr;
-        PROCESS_INFORMATION pi{};
-        bool launched = LaunchChildProcess(
-            isRestricted,
-            isRestricted ? hRestrictedToken : nullptr,
-            attrs.pAttrList, envBlock, exeFolder, exePath, exeArgs,
-            hStdin, pi);
-
-        // Close stdin file handle (parent doesn't need it)
-        if (hStdinFile) CloseHandle(hStdinFile);
-
-        if (!launched) {
-            DWORD launchErr = GetLastError();
-            g_logger.Log(L"LAUNCH: FAILED (see LAUNCH_FAILED above)");
-            g_logger.LogSummary(launchErr, false, 0);
-            if (isAppContainer && identity.deleteContainerOnExit)
-                TeardownTransientContainerForCurrentRun(containerName, L"LAUNCH_FAILURE");
-            guard.RunAll();
-            FinalizeCleanupTaskForCurrentRun();
-            g_logger.Log(L"CLEANUP: complete (launch failure)");
-            g_logger.Stop();
-            // POSIX convention: 127 = not found, 126 = cannot execute
-            bool notFound = (launchErr == ERROR_FILE_NOT_FOUND ||
-                             launchErr == ERROR_PATH_NOT_FOUND);
-            return notFound ? SandyExit::NotFound : SandyExit::CannotExec;
+        ManagedChildState child = StartManagedChild(config, exeFolder, exePath, exeArgs,
+                                                    isRestricted, resolved.hRestrictedToken, prep);
+        if (child.status == ChildStartStatus::LaunchFailed) {
+            return HandleLaunchFailure(child.launchError, isAppContainer, identity,
+                                       resolved.containerName, guard);
         }
-
-        auto AbortAfterChildLaunch = [&](DWORD terminateCode,
-                                         const wchar_t* cleanupReason,
-                                         const wchar_t* containerContext,
-                                         int sandyExit = SandyExit::SetupError) -> int {
-            g_childProcess = nullptr;
-            g_childJob = nullptr;
-            AbortLaunchedChild(pi, hJob, terminateCode);
-            if (isAppContainer && identity.deleteContainerOnExit)
-                TeardownTransientContainerForCurrentRun(containerName, containerContext);
-            guard.RunAll();
-            FinalizeCleanupTaskForCurrentRun();
-            g_logger.Log(cleanupReason);
-            g_logger.Stop();
-            return sandyExit;
-        };
-
-        // Step 4b: Assign job object for resource limits
-        hJob = AssignJobObject(config, pi.hProcess);
-        bool jobNeeded = NeedJobTracking(config);
-        if (jobNeeded && !hJob) {
+        if (child.status == ChildStartStatus::JobAssignmentFailed) {
             g_logger.Log(L"ERROR: job object assignment failed — aborting (limits NOT enforced)");
-            return AbortAfterChildLaunch(SandyExit::SetupError,
+            return AbortAfterChildLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         child.pi, child.hJob, SandyExit::SetupError,
                                          L"CLEANUP: complete (job assignment failure)",
                                          L"JOB_ASSIGN_FAILURE");
         }
 
-        // Expose child handle for emergency cleanup (Ctrl+C / SEH)
-        g_childProcess = pi.hProcess;
-        g_childJob = hJob;
-
-        // Step 4c: Resume child and start timeout watchdog
-        ResumeThread(pi.hThread);
-        g_logger.Log(L"CHILD: resumed");
-        CloseHandleIfValid(pi.hThread);
-
-        TimeoutContext timeoutCtx = { pi.hProcess, hJob, config.timeoutSeconds, false };
-        HANDLE hTimeoutThread = StartTimeoutWatchdog(timeoutCtx);
-
         // F4/R8: Fail closed — if timeout is configured but watchdog couldn't
         // start, abort launch.  The child is already resumed but we terminate
         // it immediately to prevent running without time limits.
-        if (config.timeoutSeconds > 0 && !hTimeoutThread) {
+        if (child.status == ChildStartStatus::WatchdogFailed) {
             g_logger.Log(L"ERROR: timeout configured but watchdog thread failed — aborting");
-            return AbortAfterChildLaunch(SandyExit::SetupError,
+            return AbortAfterChildLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         child.pi, child.hJob, SandyExit::SetupError,
                                          L"CLEANUP: complete (watchdog failure)",
                                          L"WATCHDOG_FAILURE");
         }
 
         // Step 4e: Wait for child exit (console passthrough — no pipe relay)
-        DWORD exitCode = WaitForChildExit(pi.hProcess,
-                                           hJob,
-                                           hTimeoutThread, timeoutCtx,
-                                           config.timeoutSeconds,
-                                           config.allowChildProcesses);
-
-
-        // =================================================================
-        // PHASE 5: CLEANUP (guard handles grants, SID, token, caps, attrs)
-        // =================================================================
-
-        // Step 5a: Log summary and classify the exit
-        g_logger.LogSummary(exitCode, timeoutCtx.timedOut, config.timeoutSeconds);
-        if (timeoutCtx.timedOut)
-            g_logger.Log(L"EXIT_CLASS: TIMEOUT");
-        else if (IsCrashExitCode(exitCode))
-            g_logger.LogFmt(L"EXIT_CLASS: CRASH (0x%08X)", exitCode);
-        else if (exitCode != 0)
-            g_logger.LogFmt(L"EXIT_CLASS: ERROR (code=%ld)", (long)exitCode);
-        else
-            g_logger.Log(L"EXIT_CLASS: CLEAN");
-
-        // Step 5b: Close process and job handles
-        g_childProcess = nullptr;  // clear before close — emergency path must not use stale handle
-        g_childJob = nullptr;
-        ReleaseLaunchedChildHandles(pi, hJob);
-
-        // Step 5c: Mode-specific cleanup
-        if (identity.persistentProfile)
-            g_logger.Log(L"CLEANUP: starting (persistent profile ownership)");
-        else
-            g_logger.Log(L"CLEANUP: starting");
-        DWORD cleanupStart = GetTickCount();
-
-        if (isAppContainer && identity.deleteContainerOnExit) {
-            TeardownTransientContainerForCurrentRun(containerName, L"NORMAL_CLEANUP");
-        }
-
-        // Run all guard cleanups explicitly (RevokeAllGrants, RevokeDesktopAccess,
-        // DisableLoopback, FreeCapabilities, FreeAttributeList, FreeSid, CloseHandle)
-        // This must finish BEFORE DeleteCleanupTask so our own grants subkey is gone.
-        guard.RunAll();
-
-        FinalizeCleanupTaskForCurrentRun();
-        g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
-        g_logger.Stop();
-
-        // Map child exit code to Sandy exit code:
-        //   timeout  → SandyExit::Timeout (7)
-        //   crash    → SandyExit::ChildCrash (9)
-        //   normal   → child's exit code as-is
-        int sandyExit;
-        if (timeoutCtx.timedOut)
-            sandyExit = SandyExit::Timeout;
-        else if (IsCrashExitCode(exitCode))
-            sandyExit = SandyExit::ChildCrash;
-        else
-            sandyExit = static_cast<int>(exitCode);
-
-        return sandyExit;
+        DWORD exitCode = WaitForManagedChild(config, child);
+        return FinalizeCompletedRun(isAppContainer, identity, resolved.containerName, guard,
+                                    child.pi, child.hJob, exitCode, child.timeoutCtx,
+                                    config.timeoutSeconds);
     }
 
     // Forward declaration — defined in SandboxSavedProfile.h
