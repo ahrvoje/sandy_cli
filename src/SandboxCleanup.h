@@ -363,12 +363,22 @@ namespace Sandbox {
             if (RegOpenKeyExW(HKEY_CURRENT_USER, fullSidKey.c_str(), 0,
                               KEY_READ, &hSub) != ERROR_SUCCESS)
                 continue;
-            wchar_t moniker[256] = {};
-            DWORD mSize = sizeof(moniker);
-            if (RegQueryValueExW(hSub, L"Moniker", nullptr, nullptr,
-                    reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS) {
-                if (_wcsnicmp(moniker, L"Sandy_", 6) == 0)
-                    profiles.push_back(moniker);
+            // Use a buffer with room for an extra NUL so that values stored
+            // without a terminating NUL can still be read as a wstring.
+            wchar_t moniker[257] = {};
+            DWORD mSize = sizeof(moniker) - sizeof(wchar_t);  // leave last cell as guaranteed NUL
+            DWORD type = 0;
+            if (RegQueryValueExW(hSub, L"Moniker", nullptr, &type,
+                    reinterpret_cast<BYTE*>(moniker), &mSize) == ERROR_SUCCESS &&
+                (type == REG_SZ || type == REG_EXPAND_SZ)) {
+                // mSize is in bytes, including NUL if present. Bound wstring
+                // construction explicitly so we never read past what the
+                // registry actually returned.
+                size_t wcharCount = mSize / sizeof(wchar_t);
+                std::wstring value(moniker, wcharCount);
+                while (!value.empty() && value.back() == L'\0') value.pop_back();
+                if (_wcsnicmp(value.c_str(), L"Sandy_", 6) == 0)
+                    profiles.push_back(std::move(value));
             }
             RegCloseKey(hSub);
         }

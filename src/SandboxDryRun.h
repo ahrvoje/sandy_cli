@@ -129,17 +129,9 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
 {
     printf("=== Sandy Dry Run: create-profile '%ls' ===\n\n", name.c_str());
 
-    // --- Validate name ---
-    if (name.empty()) {
-        fprintf(stderr, "Error: profile name cannot be empty.\n");
+    // --- Validate name (same rules as HandleCreateProfile) ---
+    if (!ValidateProfileCreateName(name))
         return SandyExit::ConfigError;
-    }
-    for (wchar_t c : name) {
-        if (c == L'\\' || c == L'/' || c == L'|' || c == L'"' || c < 32) {
-            fprintf(stderr, "Error: profile name contains invalid characters.\n");
-            return SandyExit::ConfigError;
-        }
-    }
 
     // --- Duplicate check ---
     if (ProfileExists(name)) {

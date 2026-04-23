@@ -88,12 +88,18 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // REG_SZ enumeration — read value by index, skipping metadata ('_' prefix)
+    //
+    // Value-name buffer is sized well above any name Sandy itself writes
+    // (numeric indexes, short metadata).  Windows registry value names can
+    // be up to 16,383 characters; a future feature that uses longer names
+    // would need to switch to a dynamic buffer or truncate.
     // -----------------------------------------------------------------------
     inline bool ReadRegSzEnum(HKEY hKey, DWORD index,
                               std::wstring& name, std::wstring& data)
     {
-        wchar_t vname[64];
-        DWORD vnameLen = 64;
+        constexpr DWORD kMaxValueName = 256;
+        wchar_t vname[kMaxValueName];
+        DWORD vnameLen = kMaxValueName;
         DWORD dataSize = 0, dataType = 0;
         if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, &dataType,
                           nullptr, &dataSize) != ERROR_SUCCESS)
@@ -101,7 +107,7 @@ namespace Sandbox {
         if (vname[0] == L'_' || dataType != REG_SZ) return false;
 
         data.assign(dataSize / sizeof(wchar_t), L'\0');
-        vnameLen = 64;
+        vnameLen = kMaxValueName;
         if (RegEnumValueW(hKey, index, vname, &vnameLen, nullptr, nullptr,
                           reinterpret_cast<BYTE*>(&data[0]), &dataSize) != ERROR_SUCCESS)
             return false;

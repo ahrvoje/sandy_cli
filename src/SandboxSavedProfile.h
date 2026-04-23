@@ -494,6 +494,13 @@ namespace Sandbox {
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
     }
 
+    // AppContainer profile names (moniker "Sandy_<name>") are limited by
+    // CreateAppContainerProfile to ~64 chars with a conservative character
+    // set.  Reject unsupported names at validation time so the failure path
+    // is a clean error message rather than a raw HRESULT from Windows.
+    //
+    // Allowed: alphanumeric, '.', '_', '-'.  First char must be alphanumeric.
+    // Length: 1..58 chars (leaving 6 chars for the "Sandy_" prefix).
     inline bool ValidateProfileCreateName(const std::wstring& name)
     {
         if (name.empty()) {
@@ -501,9 +508,25 @@ namespace Sandbox {
             return false;
         }
 
+        constexpr size_t kMaxProfileNameChars = 58;
+        if (name.size() > kMaxProfileNameChars) {
+            fprintf(stderr,
+                    "Error: profile name exceeds %zu-character limit (got %zu).\n",
+                    kMaxProfileNameChars, name.size());
+            return false;
+        }
+
+        if (!iswalnum(name.front())) {
+            fprintf(stderr, "Error: profile name must start with an alphanumeric character.\n");
+            return false;
+        }
+
         for (wchar_t c : name) {
-            if (c == L'\\' || c == L'/' || c == L'|' || c == L'"' || c < 32) {
-                fprintf(stderr, "Error: profile name contains invalid characters.\n");
+            bool ok = iswalnum(c) || c == L'.' || c == L'_' || c == L'-';
+            if (!ok) {
+                fprintf(stderr,
+                        "Error: profile name contains invalid characters (first: '%lc'). "
+                        "Allowed: letters, digits, '.', '_', '-'.\n", c);
                 return false;
             }
         }

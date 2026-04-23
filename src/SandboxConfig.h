@@ -51,8 +51,17 @@ namespace Sandbox {
             return {};
 
         DWORD fileSize = GetFileSize(hFile, nullptr);
-        if (fileSize == 0 || fileSize == INVALID_FILE_SIZE) {
+        if (fileSize == INVALID_FILE_SIZE) {
             CloseHandle(hFile);
+            return {};
+        }
+        if (fileSize == 0) {
+            // Distinguish empty file from a missing file / read failure so the
+            // user gets a targeted diagnostic instead of a generic
+            // "Config contains unknown sections" message.
+            CloseHandle(hFile);
+            fprintf(stderr, "Error: Config file is empty: %ls\n", configPath.c_str());
+            fprintf(stderr, "  A config must include at least a [sandbox] section with 'token'.\n");
             return {};
         }
 

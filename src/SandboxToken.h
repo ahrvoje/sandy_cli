@@ -305,7 +305,9 @@ namespace Sandbox {
                                           const wchar_t* objName,
                                           bool isDesktop)
     {
-        AclMutexGuard aclLock(L"Local\\\\Sandy_Desktop");
+        // Single backslash after "Local\" — Windows kernel object namespace
+        // rejects additional backslashes inside the name.
+        AclMutexGuard aclLock(L"Local\\Sandy_Desktop");
 
         PSECURITY_DESCRIPTOR pSD = nullptr;
         PACL pOldDacl = nullptr;
@@ -381,7 +383,7 @@ namespace Sandbox {
                                                const wchar_t* logPrefix,
                                                bool includeSidInResult)
     {
-        AclMutexGuard aclLock(L"Local\\\\Sandy_Desktop");
+        AclMutexGuard aclLock(L"Local\\Sandy_Desktop");
 
         PSID pTargetSid = nullptr;
         if (!ConvertStringSidToSidW(sidString.c_str(), &pTargetSid)) {

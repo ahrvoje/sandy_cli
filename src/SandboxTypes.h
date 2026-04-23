@@ -92,14 +92,21 @@ namespace Sandbox {
         }
         // Canonicalize absolute filesystem paths (drive letter or UNC)
         // to resolve . and .. segments.  GetFullPathNameW is purely lexical
-        // for absolute paths — no filesystem I/O occurs.
+        // for absolute paths — no filesystem I/O occurs.  Must handle
+        // extended-limit paths (up to ~32K) so PathDepth/IsPathUnder don't
+        // operate on un-canonicalized input for long configured paths.
         bool isAbsFs = (path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
                        (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\');
         if (isAbsFs) {
-            wchar_t resolved[MAX_PATH];
-            DWORD len = GetFullPathNameW(path.c_str(), MAX_PATH, resolved, nullptr);
-            if (len > 0 && len < MAX_PATH)
-                path = resolved;
+            DWORD needed = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+            if (needed > 0) {
+                std::vector<wchar_t> buf(needed);
+                DWORD len = GetFullPathNameW(path.c_str(),
+                                             static_cast<DWORD>(buf.size()),
+                                             buf.data(), nullptr);
+                if (len > 0 && len < buf.size())
+                    path.assign(buf.data(), len);
+            }
         }
         // Strip trailing backslashes — they break IsPathUnder prefix matching.
         // Preserve root paths like "C:\" (3 chars: drive letter + colon + backslash).
@@ -534,11 +541,19 @@ namespace Sandbox {
         void WritePrivilegesSectionUnlocked(const std::wstring& ts,
                                             const SandboxConfig& config)
         {
+            bool isRT = IsRestrictedTokenMode(config.tokenMode);
             fwprintf(logFile, L"[%s] PRIVILEGES:\n", ts.c_str());
-            if (config.strict)
+            // Mode-specific keys — README defines these per mode.  Logging
+            // keys that do not apply to the active mode is misleading when
+            // auditing sessions later.
+            if (isRT && config.strict)
                 fwprintf(logFile, L"[%s]     strict          = yes\n", ts.c_str());
-            fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(),
-                     config.allowNamedPipes ? L"yes" : L"no");
+            if (isRT) {
+                fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(),
+                         config.allowNamedPipes ? L"yes" : L"no");
+                fwprintf(logFile, L"[%s]     desktop         = %s\n", ts.c_str(),
+                         config.allowDesktop ? L"yes" : L"no");
+            }
             fwprintf(logFile, L"[%s]     stdin           = %s\n", ts.c_str(),
                      StdinLogValue(config));
             fwprintf(logFile, L"[%s]     clipboard       = read=%s write=%s\n", ts.c_str(),
@@ -549,11 +564,12 @@ namespace Sandbox {
             fwprintf(logFile, L"[%s]     environment     = %s\n", ts.c_str(),
                      config.envInherit ? L"inherit" : L"filtered");
 
-            if (config.allowNetwork)
-                fwprintf(logFile, L"[%s]     network         = yes\n", ts.c_str());
-            if (config.lanMode != LanMode::Off)
+            if (!isRT) {
+                fwprintf(logFile, L"[%s]     network         = %s\n", ts.c_str(),
+                         config.allowNetwork ? L"yes" : L"no");
                 fwprintf(logFile, L"[%s]     lan             = %ls\n", ts.c_str(),
                          LanModePhrase(config.lanMode));
+            }
         }
 
         void WriteLimitsSectionUnlocked(const std::wstring& ts,
@@ -656,11 +672,12 @@ namespace Sandbox {
         // Formatted log — dynamically sizes the buffer when needed.
         // Falls back to a fixed stack buffer for the common case, but avoids
         // silent detail loss for larger diagnostics.
+        //
+        // No outer `active` gate: Log()/RecordFormattingDiagnostic re-check
+        // under the lock and are no-ops when inactive.  The vformat cost is
+        // bounded and far cheaper than the redundant lock + unlock + relock
+        // the previous gate incurred.
         void LogFmt(const wchar_t* fmt, ...) {
-            AcquireSRWLockExclusive(&lock);
-            if (!active) { ReleaseSRWLockExclusive(&lock); return; }
-            ReleaseSRWLockExclusive(&lock);
-
             va_list args;
             va_start(args, fmt);
             std::wstring message;

@@ -89,9 +89,16 @@ inline std::string WideToUtf8(const std::wstring& wide) {
 inline std::wstring ConvertLiteralNewlines(const std::wstring& s) {
     std::wstring out;
     out.reserve(s.size());
-    bool inSQ = false, inDQ = false;
+    bool inSQ = false, inDQ = false, inComment = false;
     for (size_t i = 0; i < s.size(); i++) {
-        if (!inDQ && s[i] == L'\'')  { inSQ = !inSQ; out += s[i]; }
+        if (inComment) {
+            // TOML comments run to end of line. A converted newline inside a
+            // comment would split the comment into two lines, corrupting the
+            // next token — so we pass comment bytes through untouched.
+            if (s[i] == L'\n' || s[i] == L'\r') inComment = false;
+            out += s[i];
+        }
+        else if (!inDQ && s[i] == L'\'')  { inSQ = !inSQ; out += s[i]; }
         else if (!inSQ && s[i] == L'"') {
             // Count consecutive backslashes before this quote.
             // Odd count = escaped quote (\"); even count = real quote (\\")
@@ -99,6 +106,10 @@ inline std::wstring ConvertLiteralNewlines(const std::wstring& s) {
             size_t j = i;
             while (j > 0 && s[j - 1] == L'\\') { bsCount++; j--; }
             if (bsCount % 2 == 0) inDQ = !inDQ;
+            out += s[i];
+        }
+        else if (!inSQ && !inDQ && s[i] == L'#') {
+            inComment = true;
             out += s[i];
         }
         else if (!inSQ && !inDQ &&

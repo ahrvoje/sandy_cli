@@ -29,7 +29,7 @@ inline void PrintUsage(const char* version)
         "  sandy.exe --profile-info <name>                     (show profile details)\n"
         "  sandy.exe --print-container-toml          (print default appcontainer config)\n"
         "  sandy.exe --print-restricted-toml         (print default restricted config)\n"
-        "  sandy.exe --cleanup                       (restore stale state, preserves live instances)\n"
+        "  sandy.exe --cleanup                       (restore stale state from crashed runs)\n"
         "  sandy.exe --status [--json]                (show instances, retry containers, cleanup tasks, and summary counts)\n"
         "  sandy.exe --explain <code>                 (decode exit code: Sandy, NTSTATUS, Win32)\n"
         "  sandy.exe --dry-run -c <config.toml> [-x <exec>]          (validate + show plan, no changes)\n"

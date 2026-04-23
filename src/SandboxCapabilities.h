@@ -114,11 +114,22 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // AttributeListState — holds the allocated attribute list buffer.
     // Caller must call FreeAttributeList() when done.
+    //
+    // Non-copyable: pAttrList points inside attrBuf.  A copy would clone the
+    // vector (new address) but leave pAttrList pointing at the original,
+    // dangling on the copy.  Move is safe because std::vector move preserves
+    // the underlying buffer address.
     // -----------------------------------------------------------------------
     struct AttributeListState {
         LPPROC_THREAD_ATTRIBUTE_LIST pAttrList = nullptr;
         std::vector<BYTE>           attrBuf;
         bool                        valid = false;
+
+        AttributeListState() = default;
+        AttributeListState(const AttributeListState&) = delete;
+        AttributeListState& operator=(const AttributeListState&) = delete;
+        AttributeListState(AttributeListState&&) = default;
+        AttributeListState& operator=(AttributeListState&&) = default;
     };
 
     // -----------------------------------------------------------------------

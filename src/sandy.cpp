@@ -10,7 +10,7 @@
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
 
-constexpr const char* kVersion = "0.999";
+constexpr const char* kVersion = "0.9991";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
@@ -92,18 +92,70 @@ struct RunMainOptions
     bool printConfig = false;
 };
 
-static bool HandleStandaloneCliAction(const std::wstring& arg, int argc, int& exitCode)
+// Preamble options — -l <path>, -L, -q — consumed before any info action.
+// Lets info commands (--cleanup, --delete-profile, --status, etc.) opt into
+// session logging without being rejected as "must be used alone".
+struct CliPreamble
 {
-    bool isStandalone = (arg == L"-v" || arg == L"--version" ||
-                         arg == L"-h" || arg == L"--help" ||
-                         arg == L"--cleanup" ||
-                         arg == L"--print-container-toml" ||
-                         arg == L"--print-restricted-toml");
-    if (!isStandalone)
+    std::wstring logPath;
+    bool         logStamp = false;
+    bool         quiet    = false;
+};
+
+// Extract preamble options from argv and return the remaining arg tokens.
+// Returns false on malformed preamble (missing value for -l).
+static bool ExtractCliPreamble(int argc, wchar_t* argv[],
+                               CliPreamble& preamble,
+                               std::vector<std::wstring>& rest,
+                               int& exitCode)
+{
+    for (int i = 1; i < argc; i++) {
+        std::wstring arg = argv[i];
+        if (arg == L"-q" || arg == L"--quiet") {
+            preamble.quiet = true;
+        } else if (arg == L"-L" || arg == L"--log-stamp") {
+            preamble.logStamp = true;
+        } else if (arg == L"-l" || arg == L"--log") {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: %ls requires a path argument.\n", arg.c_str());
+                exitCode = SandyExit::InternalError;
+                return false;
+            }
+            preamble.logPath = argv[++i];
+        } else {
+            rest.push_back(std::move(arg));
+        }
+    }
+    return true;
+}
+
+static std::wstring StampLogPath(const std::wstring& path);  // forward decl
+
+static void ApplyPreambleLogging(const CliPreamble& preamble)
+{
+    if (preamble.logPath.empty())
+        return;
+    std::wstring path = preamble.logStamp ? StampLogPath(preamble.logPath)
+                                          : preamble.logPath;
+    g_logger.Start(path);
+}
+
+// Info actions that take no extra tokens beyond the preamble.
+static bool DispatchZeroArgInfoAction(const std::wstring& arg,
+                                      const std::vector<std::wstring>& rest,
+                                      const CliPreamble& preamble,
+                                      int& exitCode)
+{
+    bool isInfo = (arg == L"-v" || arg == L"--version" ||
+                   arg == L"-h" || arg == L"--help" ||
+                   arg == L"--cleanup" ||
+                   arg == L"--print-container-toml" ||
+                   arg == L"--print-restricted-toml");
+    if (!isInfo)
         return false;
 
-    if (argc > 2) {
-        fprintf(stderr, "Error: %ls must be used alone, without other options.\n",
+    if (rest.size() != 1) {
+        fprintf(stderr, "Error: %ls must be used alone (apart from -l, -L, -q).\n",
                 arg.c_str());
         exitCode = SandyExit::InternalError;
         return true;
@@ -122,74 +174,84 @@ static bool HandleStandaloneCliAction(const std::wstring& arg, int argc, int& ex
         PrintRestrictedToml();
         exitCode = 0;
     } else {
+        ApplyPreambleLogging(preamble);
         exitCode = HandleCleanup();
+        g_logger.Stop();
+    }
+    return true;
+}
+
+static bool DispatchStatusAction(const std::vector<std::wstring>& rest,
+                                 const CliPreamble& preamble,
+                                 int& exitCode)
+{
+    bool hasStatus = false;
+    bool hasJson = false;
+    for (const auto& tok : rest) {
+        if (tok == L"--status")      hasStatus = true;
+        else if (tok == L"--json")   hasJson = true;
+        else                         return false;  // unknown token — caller handles
+    }
+    if (!hasStatus)
+        return false;
+
+    if (rest.size() != (hasJson ? 2u : 1u)) {
+        fprintf(stderr, "Error: --status only accepts --json as companion (apart from -l, -L, -q).\n");
+        exitCode = SandyExit::InternalError;
+        return true;
     }
 
+    ApplyPreambleLogging(preamble);
+    exitCode = HandleStatus(hasJson);
+    g_logger.Stop();
     return true;
+}
+
+static bool DispatchOneArgInfoAction(const std::vector<std::wstring>& rest,
+                                     const CliPreamble& preamble,
+                                     int& exitCode)
+{
+    static const wchar_t* kCommands[] = {
+        L"--explain", L"--profile-info", L"--delete-profile"
+    };
+    for (const auto* cmd : kCommands) {
+        if (rest.size() < 1 || rest.front() != cmd)
+            continue;
+        if (rest.size() != 2) {
+            fprintf(stderr, "Error: %ls requires exactly one argument (apart from -l, -L, -q).\n",
+                    cmd);
+            exitCode = SandyExit::InternalError;
+            return true;
+        }
+        ApplyPreambleLogging(preamble);
+        if (rest.front() == L"--explain")
+            exitCode = HandleExplain(rest[1].c_str());
+        else if (rest.front() == L"--profile-info")
+            exitCode = HandleProfileInfo(rest[1]);
+        else
+            exitCode = HandleDeleteProfile(rest[1]);
+        g_logger.Stop();
+        return true;
+    }
+    return false;
 }
 
 static bool HandleImmediateCliAction(int argc, wchar_t* argv[], int& exitCode)
 {
-    for (int i = 1; i < argc; i++) {
-        std::wstring arg = argv[i];
-        if (HandleStandaloneCliAction(arg, argc, exitCode))
-            return true;
+    CliPreamble preamble;
+    std::vector<std::wstring> rest;
+    if (!ExtractCliPreamble(argc, argv, preamble, rest, exitCode))
+        return true;  // malformed — exitCode set
+    if (rest.empty())
+        return false;
 
-        if (arg == L"--status") {
-            if (argc > 3) {
-                fprintf(stderr, "Error: --status only accepts --json as companion.\n");
-                exitCode = SandyExit::InternalError;
-                return true;
-            }
-
-            bool json = false;
-            if (argc == 3) {
-                int other = (i == 1) ? 2 : 1;
-                if (std::wstring(argv[other]) != L"--json") {
-                    fprintf(stderr, "Error: --status only accepts --json as companion.\n");
-                    exitCode = SandyExit::InternalError;
-                    return true;
-                }
-                json = true;
-            }
-
-            exitCode = HandleStatus(json);
-            return true;
-        }
-
-        if (arg == L"--explain") {
-            if (argc != 3 || i + 1 >= argc) {
-                fprintf(stderr, "Error: --explain requires exactly one argument.\n");
-                exitCode = SandyExit::InternalError;
-                return true;
-            }
-
-            exitCode = HandleExplain(argv[i + 1]);
-            return true;
-        }
-
-        if (arg == L"--profile-info") {
-            if (argc != 3 || i + 1 >= argc) {
-                fprintf(stderr, "Error: --profile-info requires exactly one argument.\n");
-                exitCode = SandyExit::InternalError;
-                return true;
-            }
-
-            exitCode = HandleProfileInfo(argv[i + 1]);
-            return true;
-        }
-
-        if (arg == L"--delete-profile") {
-            if (argc != 3 || i + 1 >= argc) {
-                fprintf(stderr, "Error: --delete-profile requires exactly one argument.\n");
-                exitCode = SandyExit::InternalError;
-                return true;
-            }
-
-            exitCode = HandleDeleteProfile(argv[i + 1]);
-            return true;
-        }
-    }
+    // Single-arg info commands match the FIRST remaining token.
+    if (DispatchZeroArgInfoAction(rest.front(), rest, preamble, exitCode))
+        return true;
+    if (DispatchStatusAction(rest, preamble, exitCode))
+        return true;
+    if (DispatchOneArgInfoAction(rest, preamble, exitCode))
+        return true;
 
     return false;
 }

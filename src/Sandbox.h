@@ -674,9 +674,12 @@ namespace Sandbox {
                                      const wchar_t* containerContext,
                                      int sandyExit = SandyExit::SetupError)
     {
+        // Terminate BEFORE clearing the emergency globals.  If a CTRL_C fires
+        // between the clear and the terminate, the handler would see nullptrs
+        // and skip killing the child that is still alive.
+        AbortLaunchedChild(pi, hJob, terminateCode);
         g_childProcess = nullptr;
         g_childJob = nullptr;
-        AbortLaunchedChild(pi, hJob, terminateCode);
         if (isAppContainer && identity.deleteContainerOnExit)
             TeardownTransientContainerForCurrentRun(containerName, containerContext);
         guard.RunAll();
@@ -1054,6 +1057,10 @@ namespace Sandbox {
             DisableLoopback();
         } else {
             g_logger.Log(L"EMERGENCY_CLEANUP: skipping grant/desktop/loopback (profile-owned)");
+            // Clear this run's live-state ledger so the next run's stale sweep
+            // sees a dead-instance record to reap rather than an apparently-live
+            // entry pointing at our soon-to-exit PID.
+            ClearLiveState();
         }
         if (cleanupState.deleteContainerOnExit && !cleanupState.containerName.empty())
             TeardownTransientContainerForCurrentRun(cleanupState.containerName, L"EMERGENCY_CLEANUP");
