@@ -297,7 +297,14 @@ namespace Sandbox {
         // Without it we cannot distinguish a reused PID from the original process.
         if (storedCreationTime == 0) return false;
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
-        if (!h) return false;
+        if (!h) {
+            // ERROR_ACCESS_DENIED proves the PID exists but is not openable
+            // from this context (elevation boundary, protected process).
+            // Treat as alive: deferring stale cleanup is recoverable, but
+            // declaring a live instance dead destroys its grants/container
+            // mid-run.  Other open failures (invalid PID) mean dead.
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
 
         // Zombie check — signaled = terminated
         if (WaitForSingleObject(h, 0) != WAIT_TIMEOUT) {
@@ -959,10 +966,19 @@ namespace Sandbox {
         // use SetNamedSecurityInfoW (skipTreeSet=false) so inherited copies of
         // the deep ACE are removed from children via auto-inheritance.
         std::set<std::wstring> pathsNeedingTreeSet;
+        // Deep deny paths — a this-scope allow under one of these is a
+        // carve-out.  Its children carry ACE copies stamped through the carve
+        // dir before the strip made it PROTECTED, and the deny root's own
+        // tree-set prunes at that protection boundary.  Cleanup of the carve
+        // must therefore tree-set so auto-inheritance recomputes the children
+        // and prunes the orphaned inherited copies.
+        std::vector<std::wstring> deepDenyPaths;
         for (const auto& g : g_aclGrants) {
             if (!g.wasThis) {
                 std::wstring key = g.path + L"|" + (g.wasDenied ? L"D" : L"A");
                 pathsNeedingTreeSet.insert(key);
+                if (g.wasDenied)
+                    deepDenyPaths.push_back(g.path);
             }
         }
 
@@ -974,9 +990,11 @@ namespace Sandbox {
             if (processed.count(dedupKey)) continue;
             processed.insert(dedupKey);
 
-            // skipTreeSet=true only when ALL entries for this key are this-scope.
+            // skipTreeSet=true only when ALL entries for this key are this-scope
+            // AND the path is not a carve-out under a deep deny.
             // If any entry is deep, must use SetNamedSecurityInfoW to cascade.
-            bool skipTree = it->wasThis && !pathsNeedingTreeSet.count(dedupKey);
+            bool isCarveOut = !it->wasDenied && IsPathStrictlyUnderAny(it->path, deepDenyPaths);
+            bool skipTree = it->wasThis && !pathsNeedingTreeSet.count(dedupKey) && !isCarveOut;
             int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
                                    it->wasDenied ? DaclProtectionIntent::ForceUnprotected
                                                  : DaclProtectionIntent::PreserveExisting,
@@ -1015,7 +1033,11 @@ namespace Sandbox {
 
         // Pre-scan: detect paths that have deep (non-this) entries.
         // Same fix as RevokeAllGrants: dual-scope paths must use tree-set.
+        // Deep deny paths are collected so this-scope carve-outs under a deny
+        // also tree-set (children carry stamped copies pruned only via
+        // auto-inheritance recompute — see RevokeAllGrants).
         std::set<std::wstring> deepPaths;
+        std::vector<std::wstring> deepDenyPaths;
         for (DWORD pre = 0; pre < valueCount; pre++) {
             std::wstring pvname, pdata;
             if (!ReadRegSzEnum(hKey, pre, pvname, pdata)) continue;
@@ -1023,6 +1045,8 @@ namespace Sandbox {
             if (!ParseGrantRecord(pdata, pr, nullptr)) continue;
             if (!pr.wasThis) {
                 deepPaths.insert(pr.path + L"|" + (pr.wasDenied ? L"D" : L"A"));
+                if (pr.wasDenied)
+                    deepDenyPaths.push_back(pr.path);
             }
         }
 
@@ -1046,7 +1070,8 @@ namespace Sandbox {
 
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
 
-            bool skipTree = rec.wasThis && !deepPaths.count(dedupKey);
+            bool isCarveOut = !rec.wasDenied && IsPathStrictlyUnderAny(rec.path, deepDenyPaths);
+            bool skipTree = rec.wasThis && !deepPaths.count(dedupKey) && !isCarveOut;
             AceRemovalResult removal = RemoveSidFromDaclDetailed(rec.path, rec.sidString, objType,
                                                                  rec.wasDenied ? DaclProtectionIntent::ForceUnprotected
                                                                                : DaclProtectionIntent::PreserveExisting,

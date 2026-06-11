@@ -650,11 +650,22 @@ namespace Sandbox {
         DeleteProfileRegistryState(name, contextTag);
     }
 
-    inline bool PersistProfileCreateIdentity(HKEY hKey, const ProfileCreateIdentity& identity)
+    inline bool PersistProfileCreateIdentity(HKEY hKey,
+                                             const ProfileCreateConfig& createConfig,
+                                             const ProfileCreateIdentity& identity)
     {
         bool ok = TryWriteRegSz(hKey, L"_sid", identity.sidString);
         if (!identity.containerName.empty())
             ok &= TryWriteRegSz(hKey, L"_container", identity.containerName);
+
+        // Desktop ACEs are granted during the staging grant phase, but staging
+        // rollback reads _type/_allow_desktop to decide whether to revoke them.
+        // Persist both BEFORE the grant phase so a crash mid-create cannot
+        // orphan desktop/WinSta ACEs that rollback can no longer see.
+        // CommitCreatedProfile rewrites the same values on success.
+        ok &= TryWriteRegSz(hKey, L"_type", createConfig.typeStr);
+        ok &= TryWriteRegDword(hKey, L"_allow_desktop",
+                               createConfig.config.allowDesktop ? 1 : 0);
 
         if (!ok)
             fprintf(stderr, "Error: cannot persist staging metadata for profile creation.\n");
@@ -810,7 +821,7 @@ namespace Sandbox {
             return SandyExit::SetupError;
         }
 
-        if (!PersistProfileCreateIdentity(hKey, identity)) {
+        if (!PersistProfileCreateIdentity(hKey, createConfig, identity)) {
             RegCloseKey(hKey);
             AbortUncommittedProfileCreation(name, identity, L"CREATE_PROFILE_STAGE");
             return SandyExit::InternalError;

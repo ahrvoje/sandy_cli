@@ -118,11 +118,45 @@ and auto-inheritance propagation.
 Deny is **not supported**. The kernel ignores `DENY_ACCESS` ACEs for AppContainer
 SIDs (`S-1-15-2-*`). Config validation rejects `[deny.*]` for AC mode.
 
+# Allow/Deny Same-Path Precedence — Carve-Out Rule
+
+The depth-sorted pipeline applies deny before allow at each depth, then an
+allow may **strip** a deny so a more-specific allow can take effect. The strip
+decision lives in `ShouldStripDenyForAllow` (`Sandbox.h`) and is governed by
+**relative specificity**, not by path-prefix alone:
+
+| Allow vs deny on the path | Strip? | Rationale |
+|---|---|---|
+| allow is a **strict descendant** of a deny | ✅ strip (subtree if `.deep`, dir-only if `.this`) | normal carve-out |
+| `allow.this` **equals** a `deny.deep` path | ✅ strip **dir-only** | single-object allow is more specific than the recursive deny for that object; descendants keep the deny |
+| `allow.deep` **equals** any deny path | ❌ no strip | equal specificity → deny wins (Windows deny-before-allow) |
+| `allow.*` **equals** a `deny.this` path | ❌ no strip | equal specificity → deny wins |
+
+> [!CAUTION]
+> The strip must use **strict-descendant** matching plus the single
+> `allow.this`-over-`deny.deep` exception above. Using inclusive
+> "at-or-under" matching (the original bug) lets a same-path `allow.deep`
+> silently discard an explicit same-path deny — a security hole (the sandbox
+> grants access the user explicitly denied). `IsPathStrictlyUnder` /
+> `PathEqualsAny` exist for exactly this distinction; do not revert to
+> `IsPathUnder` (inclusive) at the strip site.
+
+> [!CAUTION]
+> `GrantObjectAccess` must preserve a SID's existing explicit deny ACEs across
+> the grant. `SetEntriesInAclW(GRANT_ACCESS)` keeps at most one ACE per trustee
+> and collapses away a same-SID deny; `PrependExplicitDeniesForSid` restores
+> them (exactly once — it also drops any duplicate the merge happened to keep)
+> in canonical deny-before-allow order. Without this, a same-path deny that was
+> *not* stripped still vanishes when the allow is applied.
+
 # Regression Guards
 
 - **Never** write a `DENY_ACCESS` ACE for an AppContainer SID (kernel ignores them).
 - **Never** use `REVOKE_ACCESS` as a substitute for deny.
 - **Never** use `PROTECTED_DACL` for deny enforcement (causes SID-agnostic side effects).
+- **Never** strip a deny on the exact allow path unless the allow is `.this` and
+  the deny is `.deep` (see Same-Path Precedence). A same-path `allow.deep` that
+  strips its deny is a security regression.
 
 # Multi-Owner ACL Safety — ACE-Level Removal
 

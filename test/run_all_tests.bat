@@ -19,6 +19,8 @@ for %%F in (
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
+    test_carveout.bat
+    test_deny_precedence_rt.bat
 
 
     test_new_levels.bat
@@ -68,7 +70,7 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 39
+echo  RESULTS: !PASS! passed, !FAIL! failed out of 40
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

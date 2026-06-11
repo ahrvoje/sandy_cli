@@ -102,13 +102,16 @@ namespace Sandbox {
         void Acquire(const wchar_t* name)
         {
             hMutex = CreateMutexW(nullptr, FALSE, name);
-            if (hMutex) {
-                DWORD wait = WaitForSingleObject(hMutex, INFINITE);
-                if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
-                    g_logger.LogFmt(L"ACL_MUTEX: wait failed acquiring %ls (result %lu)", name, wait);
-                    CloseHandle(hMutex);
-                    hMutex = nullptr;
-                }
+            if (!hMutex) {
+                g_logger.LogFmt(L"ACL_MUTEX: CreateMutexW failed for %ls (error %lu) — proceeding unserialized",
+                                name, GetLastError());
+                return;
+            }
+            DWORD wait = WaitForSingleObject(hMutex, INFINITE);
+            if (wait != WAIT_OBJECT_0 && wait != WAIT_ABANDONED) {
+                g_logger.LogFmt(L"ACL_MUTEX: wait failed acquiring %ls (result %lu)", name, wait);
+                CloseHandle(hMutex);
+                hMutex = nullptr;
             }
         }
     };
@@ -280,6 +283,13 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) return false;
 
+        // NULL DACL (FAT volumes, explicitly null-DACL objects) holds no ACEs
+        // to roll back — and GetAclInformation would dereference null.
+        if (!pOldDacl) {
+            LocalFree(pSD);
+            return true;
+        }
+
         ACL_SIZE_INFORMATION aclInfo = {};
         if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
             LocalFree(pSD);
@@ -327,7 +337,15 @@ namespace Sandbox {
             else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
                 pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
             if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) continue;
-            AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
+            if (!AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
+                // Writing a DACL missing unrelated ACEs would destroy other
+                // principals' access — abort and leave the original untouched.
+                g_logger.LogFmt(L"ROLLBACK_ACE: %s -> ABORTED (AddAce failed, error %lu)",
+                                path.c_str(), GetLastError());
+                LocalFree(pNewDacl);
+                LocalFree(pSD);
+                return false;
+            }
         }
 
         // Use centralized DACL write — preserves PROTECTED_DACL if already set
@@ -339,6 +357,88 @@ namespace Sandbox {
         g_logger.LogFmt(L"ROLLBACK_ACE: %s -> %s (%d ACEs)",
                         path.c_str(), rc == ERROR_SUCCESS ? L"OK" : L"FAILED", removed);
         return rc == ERROR_SUCCESS;
+    }
+
+    // -----------------------------------------------------------------------
+    // PrependExplicitDeniesForSid — restore a SID's explicit deny ACEs that
+    // SetEntriesInAclW dropped when merging in a grant.
+    //
+    // SetEntriesInAclW keeps at most one ACE per trustee, so GRANT_ACCESS for
+    // a SID collapses away any same-SID DENY ACE already on the object (e.g. a
+    // same-path [deny.*] rule applied moments earlier).  Passing the deny back
+    // in the same call does not help — the merge still resolves to the grant.
+    //
+    // This rebuilds the merged DACL with the source DACL's explicit (non-
+    // inherited) deny ACEs for `pSid` prepended, yielding canonical
+    // deny-before-allow so an explicit same-object deny wins, as Windows
+    // requires.  The source denies are authoritative: any same-SID explicit
+    // deny the merge happened to KEEP is dropped from the copied tail so the
+    // result holds each deny exactly once (no duplicates).  Returns a new DACL
+    // the caller must LocalFree, or nullptr when there is nothing to restore
+    // (caller keeps the merged DACL) or on error.
+    // -----------------------------------------------------------------------
+    inline PACL PrependExplicitDeniesForSid(PACL pMergedDacl, PACL pSourceDacl, PSID pSid)
+    {
+        if (!pMergedDacl || !pSourceDacl) return nullptr;
+
+        ACL_SIZE_INFORMATION srcInfo = {};
+        ACL_SIZE_INFORMATION mergedInfo = {};
+        if (!GetAclInformation(pSourceDacl, &srcInfo, sizeof(srcInfo), AclSizeInformation) ||
+            !GetAclInformation(pMergedDacl, &mergedInfo, sizeof(mergedInfo), AclSizeInformation))
+            return nullptr;
+
+        auto isExplicitDenyForSid = [&](PACE_HEADER pAceHdr) -> bool {
+            if (pAceHdr->AceType != ACCESS_DENIED_ACE_TYPE) return false;
+            if (pAceHdr->AceFlags & INHERITED_ACE) return false;  // ancestor-owned
+            PSID pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+            return EqualSid(pAceSid, pSid);
+        };
+
+        // Size the rebuilt ACL: prepended denies + every ACE already merged.
+        DWORD newAclSize = sizeof(ACL);
+        bool haveDeny = false;
+        for (DWORD i = 0; i < srcInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pSourceDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) return nullptr;
+            if (isExplicitDenyForSid(pAceHdr)) { newAclSize += pAceHdr->AceSize; haveDeny = true; }
+        }
+        if (!haveDeny) return nullptr;  // nothing dropped — keep merged DACL
+
+        // Tail = merged ACEs minus any same-SID explicit deny the merge kept
+        // (those are re-added once from the source above — avoid duplicates).
+        for (DWORD i = 0; i < mergedInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pMergedDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) return nullptr;
+            if (isExplicitDenyForSid(pAceHdr)) continue;
+            newAclSize += pAceHdr->AceSize;
+        }
+
+        PACL pFinal = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+        if (!pFinal || !InitializeAcl(pFinal, newAclSize, ACL_REVISION)) {
+            if (pFinal) LocalFree(pFinal);
+            return nullptr;
+        }
+
+        // Explicit denies first (canonical), then the merged ACEs.
+        for (DWORD i = 0; i < srcInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pSourceDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)) ||
+                !isExplicitDenyForSid(pAceHdr)) continue;
+            if (!AddAce(pFinal, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
+                LocalFree(pFinal);
+                return nullptr;
+            }
+        }
+        for (DWORD i = 0; i < mergedInfo.AceCount; i++) {
+            PACE_HEADER pAceHdr = nullptr;
+            if (!GetAce(pMergedDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) { LocalFree(pFinal); return nullptr; }
+            if (isExplicitDenyForSid(pAceHdr)) continue;  // re-added once from source
+            if (!AddAce(pFinal, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
+                LocalFree(pFinal);
+                return nullptr;
+            }
+        }
+        return pFinal;
     }
 
     // -----------------------------------------------------------------------
@@ -382,10 +482,18 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) return rc;
 
-        // 2. Build new DACL
-        PACL pNewDacl = nullptr;
-        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
+        // 2. Build new DACL.  SetEntriesInAclW merges per-trustee and collapses
+        //    away this SID's existing explicit deny ACEs; restore them in
+        //    canonical position so deny-before-allow holds when an allow and a
+        //    deny target the same object.
+        PACL pMergedDacl = nullptr;
+        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pMergedDacl);
         if (rc != ERROR_SUCCESS) { LocalFree(pSD); return rc; }
+
+        PACL pNewDacl = pMergedDacl;
+        PACL pRebuiltDacl = PrependExplicitDeniesForSid(pMergedDacl, pOldDacl, pSid);
+        if (pRebuiltDacl)
+            pNewDacl = pRebuiltDacl;
 
         // 3. (moved below — record only after ACL application succeeds)
 
@@ -396,7 +504,8 @@ namespace Sandbox {
         bool directoryOnly = (scope == GrantScope::This);
         rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
                                DaclProtectionIntent::PreserveExisting, directoryOnly);
-        LocalFree(pNewDacl);
+        LocalFree(pMergedDacl);
+        if (pRebuiltDacl) LocalFree(pRebuiltDacl);
         LocalFree(pSD);
 
         // 3. Record the grant AFTER successful ACL application
@@ -578,6 +687,14 @@ namespace Sandbox {
             return result;
         }
 
+        // NULL DACL (FAT volumes, explicitly null-DACL objects) holds no ACEs
+        // to remove — and GetAclInformation would dereference null.
+        if (!pOldDacl) {
+            LocalFree(pSD);
+            LocalFree(pTargetSid);
+            return result;
+        }
+
         // Walk ACE list, build new DACL without matching ACEs
         ACL_SIZE_INFORMATION aclInfo = {};
         if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
@@ -658,7 +775,18 @@ namespace Sandbox {
 
             if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid))
                 continue;  // skip — this is ours or a trapped SID
-            AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize);
+            if (!AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
+                // Writing a DACL missing unrelated ACEs would destroy other
+                // principals' access — abort and leave the original untouched.
+                result.error = GetLastError();
+                g_logger.LogFmt(L"ACL_REMOVE: %s -> ABORTED (AddAce failed, 0x%08X: %s)",
+                                path.c_str(), result.error,
+                                GetSystemErrorMessage(result.error).c_str());
+                LocalFree(pNewDacl);
+                LocalFree(pSD);
+                LocalFree(pTargetSid);
+                return result;
+            }
         }
 
         LocalFree(pTargetSid);

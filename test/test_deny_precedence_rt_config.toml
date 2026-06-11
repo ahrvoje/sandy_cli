@@ -1,0 +1,30 @@
+# Same-path deny precedence test — Restricted Token mode
+#
+# A *very* common intent: grant broad access to a working tree, then layer an
+# explicit deny on the SAME path to protect one access class (defense-in-depth
+# / read-only / no-delete).  Windows semantics put explicit deny ahead of
+# allow, so the deny must win.
+#
+# FOLDER TREE:
+#   test_deny_prec/
+#     readzone/   [allow.deep all] + [deny.deep read]   -> read MUST be denied
+#     writezone/  [allow.deep all] + [deny.deep write]  -> write MUST be denied
+#     scripts/    [allow.deep read]
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+
+[allow.deep]
+read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deny_prec\scripts']
+all  = ['C:\Users\H\test_deny_prec\readzone', 'C:\Users\H\test_deny_prec\writezone']
+
+[deny.deep]
+read  = ['C:\Users\H\test_deny_prec\readzone']
+write = ['C:\Users\H\test_deny_prec\writezone']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

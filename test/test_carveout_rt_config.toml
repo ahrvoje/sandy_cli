@@ -1,0 +1,38 @@
+# Carve-out test — Restricted Token mode
+#
+# Exercises the STRIP_DENY pipeline path: allow grants nested UNDER a deny.
+# The pipeline must strip inherited deny ACEs from the allow target before
+# granting — subtree strip for allow.deep, dir-only strip for allow.this.
+#
+# FOLDER TREE:
+#   test_carveout/
+#     arena/                [allow.deep] all
+#       open/               (inherits all — sanity zone)
+#       blocked/            [deny.deep] all → everything below denied...
+#         inner/            (inherits deny)
+#         carve/            [allow.deep] write → deep carve-out (subtree strip)
+#           sub/            (strip + grant propagate here)
+#         slot/             [allow.this] all → dir-only carve-out (dir strip)
+#           inner/          (keeps inherited deny — strip must not recurse)
+#     scripts/              [allow.deep] read
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[allow.deep]
+read  = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_carveout\scripts']
+all   = ['C:\Users\H\test_carveout\arena']
+write = ['C:\Users\H\test_carveout\arena\blocked\carve']
+
+[allow.this]
+all = ['C:\Users\H\test_carveout\arena\blocked\slot']
+
+[deny.deep]
+all = ['C:\Users\H\test_carveout\arena\blocked']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 30

@@ -118,11 +118,22 @@ namespace Sandbox {
             restrictSids.push_back({ pAuthUsersSid, 0 });
 
         // --- Enumerate privileges -> delete all except SeChangeNotifyPrivilege ---
+        // Fail closed: if the privilege list cannot be read, the restricted
+        // token would silently keep ALL parent privileges (deletePrivs empty).
         DWORD privSize = 0;
         GetTokenInformation(hToken, TokenPrivileges, nullptr, 0, &privSize);
         std::vector<BYTE> privBuf(privSize);
         auto* pPrivs = reinterpret_cast<TOKEN_PRIVILEGES*>(privBuf.data());
-        GetTokenInformation(hToken, TokenPrivileges, pPrivs, privSize, &privSize);
+        if (privSize == 0 ||
+            !GetTokenInformation(hToken, TokenPrivileges, pPrivs, privSize, &privSize)) {
+            g_logger.LogFmt(L"ERROR: TokenPrivileges query failed (error %lu)", GetLastError());
+            if (pAuthUsersSid) FreeSid(pAuthUsersSid);
+            FreeSid(pUsersSid);
+            FreeSid(pEveryoneSid);
+            FreeSid(pRestrictedSid);
+            CloseHandle(hToken);
+            return nullptr;
+        }
 
         LUID changeNotifyLuid{};
         if (!LookupPrivilegeValueW(nullptr, SE_CHANGE_NOTIFY_NAME, &changeNotifyLuid)) {
@@ -159,7 +170,10 @@ namespace Sandbox {
         // Low (0x1000): strongest isolation, blocks writes to Medium objects.
         //   May break apps that depend on api-ms-win-core-path API set.
         // Medium: inherits parent's level; relies solely on restricting SIDs.
+        // Fail closed: a token left at the parent's integrity level is weaker
+        // than configured — don't hand it back as if Low had been applied.
         if (ok && hRestricted && il == IntegrityLevel::Low) {
+            bool ilSet = false;
             SID_IDENTIFIER_AUTHORITY mlAuth = SECURITY_MANDATORY_LABEL_AUTHORITY;
             PSID pLowSid = nullptr;
             if (AllocateAndInitializeSid(&mlAuth, 1, SECURITY_MANDATORY_LOW_RID,
@@ -167,9 +181,15 @@ namespace Sandbox {
                 TOKEN_MANDATORY_LABEL tml = {};
                 tml.Label.Sid = pLowSid;
                 tml.Label.Attributes = SE_GROUP_INTEGRITY;
-                SetTokenInformation(hRestricted, TokenIntegrityLevel,
-                    &tml, sizeof(tml) + GetLengthSid(pLowSid));
+                ilSet = SetTokenInformation(hRestricted, TokenIntegrityLevel,
+                    &tml, sizeof(tml) + GetLengthSid(pLowSid)) != 0;
                 FreeSid(pLowSid);
+            }
+            if (!ilSet) {
+                g_logger.LogFmt(L"ERROR: setting Low integrity level failed (error %lu)", GetLastError());
+                CloseHandle(hRestricted);
+                hRestricted = nullptr;
+                ok = FALSE;
             }
         }
 
@@ -185,12 +205,17 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // Desktop ACL tracking — store SID string, remove only our ACEs on cleanup
+    //
+    // Lock-guarded: normal pipeline cleanup (main thread) and emergency
+    // cleanup (console-ctrl handler thread) can both reach RevokeDesktopAccess
+    // after a Ctrl+C terminates the child and unblocks the main wait.
     // -----------------------------------------------------------------------
     struct DesktopGrant {
         std::wstring sidString;  // SID of principal we granted
         bool isDesktop;          // true = Desktop, false = WinSta
     };
     inline std::vector<DesktopGrant> g_desktopGrants;
+    inline SRWLOCK                   g_desktopGrantsLock = SRWLOCK_INIT;
 
     // -----------------------------------------------------------------------
     // Desktop ACL test hook — enabled only in unit-style test builds.
@@ -292,11 +317,15 @@ namespace Sandbox {
 
     inline void TrackDesktopGrant(const std::wstring& sidString, bool isDesktop)
     {
+        AcquireSRWLockExclusive(&g_desktopGrantsLock);
         for (const auto& grant : g_desktopGrants) {
-            if (grant.sidString == sidString && grant.isDesktop == isDesktop)
+            if (grant.sidString == sidString && grant.isDesktop == isDesktop) {
+                ReleaseSRWLockExclusive(&g_desktopGrantsLock);
                 return;
+            }
         }
         g_desktopGrants.push_back({ sidString, isDesktop });
+        ReleaseSRWLockExclusive(&g_desktopGrantsLock);
     }
 
     inline bool ApplyDesktopGrantToObject(HANDLE hObj,
@@ -495,18 +524,24 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline bool RevokeDesktopAccess()
     {
-        if (g_desktopGrants.empty()) return true;
+        // Snapshot-and-clear under the lock: whichever thread (normal or
+        // emergency cleanup) gets here first owns the revocation; the other
+        // sees an empty list and returns.
+        std::vector<DesktopGrant> grants;
+        AcquireSRWLockExclusive(&g_desktopGrantsLock);
+        grants.swap(g_desktopGrants);
+        ReleaseSRWLockExclusive(&g_desktopGrantsLock);
+        if (grants.empty()) return true;
 
         bool allOk = true;
 
-        for (auto it = g_desktopGrants.rbegin(); it != g_desktopGrants.rend(); ++it) {
+        for (auto it = grants.rbegin(); it != grants.rend(); ++it) {
             bool ok = it->isDesktop
                 ? RevokeDefaultDesktopAccess(it->sidString, L"DESKTOP_REVOKE", false)
                 : RevokeWindowStationAccess(it->sidString, L"DESKTOP_REVOKE", false);
             if (!ok)
                 allOk = false;
         }
-        g_desktopGrants.clear();
         return allOk;
     }
 

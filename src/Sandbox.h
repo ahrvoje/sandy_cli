@@ -16,6 +16,7 @@
 #include "SandboxCapabilities.h"
 #include "SandboxEnvironment.h"
 #include "SandboxProcess.h"
+#include <atomic>
 
 
 namespace Sandbox {
@@ -25,8 +26,10 @@ namespace Sandbox {
     // Global launch ownership handles for emergency cleanup coordination.
     // The process handle tracks the root process; the job handle tracks the
     // whole sandbox-owned process tree when descendants are allowed.
-    inline HANDLE g_childProcess = nullptr;
-    inline HANDLE g_childJob = nullptr;
+    // Atomic: written by the main pipeline thread, read concurrently by the
+    // console-ctrl handler thread (Ctrl+C / close events).
+    inline std::atomic<HANDLE> g_childProcess{ nullptr };
+    inline std::atomic<HANDLE> g_childJob{ nullptr };
 
     // Emergency cleanup only needs the transient AppContainer teardown target.
     // Run-ledger presence and cleanup-task retention are derived from the
@@ -90,20 +93,8 @@ namespace Sandbox {
         return d;
     }
 
-    // Check if `child` is at or under `parent` (case-insensitive, backslash boundary)
-    static bool IsPathUnder(const std::wstring& child, const std::wstring& parent) {
-        std::wstring normalizedChild = NormalizeFsPath(child);
-        std::wstring normalizedParent = NormalizeFsPath(parent);
-        if (normalizedChild.size() < normalizedParent.size()) return false;
-        if (_wcsnicmp(normalizedChild.c_str(), normalizedParent.c_str(), normalizedParent.size()) != 0) return false;
-        // Exact match
-        if (normalizedChild.size() == normalizedParent.size()) return true;
-        // Parent ends with backslash (drive root like "C:\") — every prefix
-        // match is already a proper child because the separator is built in.
-        if (!normalizedParent.empty() && normalizedParent.back() == L'\\') return true;
-        // Normal case: child continues with a backslash boundary
-        return normalizedChild[normalizedParent.size()] == L'\\';
-    }
+    // IsPathUnder / IsPathUnderAny — defined in SandboxTypes.h (also used by
+    // grant cleanup in SandboxGrants.h for carve-out detection).
 
     inline void AppendPipelineEntries(const std::vector<FolderEntry>& entries,
                                       bool isDeny,
@@ -132,16 +123,6 @@ namespace Sandbox {
         return pipeline;
     }
 
-    inline bool IsPathUnderAny(const std::wstring& candidate,
-                               const std::vector<std::wstring>& parents)
-    {
-        for (const auto& parent : parents) {
-            if (IsPathUnder(candidate, parent))
-                return true;
-        }
-        return false;
-    }
-
     inline std::vector<std::wstring> CollectDenyPaths(const AccessPipeline& pipeline)
     {
         std::vector<std::wstring> denyPaths;
@@ -163,12 +144,44 @@ namespace Sandbox {
         return sidStr;
     }
 
+    inline std::vector<std::wstring> CollectDeepDenyPaths(const AccessPipeline& pipeline)
+    {
+        std::vector<std::wstring> deepDenyPaths;
+        for (const auto& entry : pipeline) {
+            if (entry.isDeny && entry.scope == GrantScope::Deep)
+                deepDenyPaths.push_back(entry.path);
+        }
+        return deepDenyPaths;
+    }
+
+    // ShouldStripDenyForAllow — does this allow entry carve a deny out of its
+    // target?  Two cases, matching the documented "most specific wins" rule:
+    //   1. The allow path is strictly UNDER a deny (proper descendant) — the
+    //      normal subtree/dir carve-out, any allow scope.
+    //   2. The allow is THIS-scope and its path exactly equals a DEEP deny —
+    //      a single-object allow is more specific than the recursive deny for
+    //      that object, so it carves the object (dir only) while descendants
+    //      keep the deny.
+    // A same-path DEEP allow never strips (equal specificity → deny wins), and
+    // an allow over a same-path THIS deny never strips (equal specificity).
+    inline bool ShouldStripDenyForAllow(const PipelineEntry& entry,
+                                        const std::vector<std::wstring>& activeDenyPaths,
+                                        const std::vector<std::wstring>& activeDeepDenyPaths)
+    {
+        if (IsPathStrictlyUnderAny(entry.path, activeDenyPaths))
+            return true;
+        return entry.scope == GrantScope::This &&
+               PathEqualsAny(entry.path, activeDeepDenyPaths);
+    }
+
     inline void LogAccessPipelinePlan(const AccessPipeline& pipeline)
     {
         g_logger.LogFmt(L"PIPELINE: sorted %zu entries by path depth:", pipeline.size());
         std::vector<std::wstring> preDenyPaths = CollectDenyPaths(pipeline);
+        std::vector<std::wstring> preDeepDenyPaths = CollectDeepDenyPaths(pipeline);
         for (const auto& e : pipeline) {
-            bool underDeny = !e.isDeny && IsPathUnderAny(e.path, preDenyPaths);
+            bool underDeny = !e.isDeny &&
+                ShouldStripDenyForAllow(e, preDenyPaths, preDeepDenyPaths);
             if (e.isDeny) {
                 g_logger.LogFmt(L"    DENY  [%-7s] %s",
                     AccessTag(e.access), e.path.c_str());
@@ -187,7 +200,8 @@ namespace Sandbox {
 
     inline bool ApplyDenyPipelineEntry(PSID pSid,
                                        const PipelineEntry& entry,
-                                       std::vector<std::wstring>& activeDenyPaths)
+                                       std::vector<std::wstring>& activeDenyPaths,
+                                       std::vector<std::wstring>& activeDeepDenyPaths)
     {
         DWORD rc = DenyObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback,
                                     SE_FILE_OBJECT, entry.scope);
@@ -202,15 +216,22 @@ namespace Sandbox {
                         AccessTag(entry.access), entry.path.c_str(),
                         AccessMask(entry.access));
         activeDenyPaths.push_back(entry.path);
+        if (entry.scope == GrantScope::Deep)
+            activeDeepDenyPaths.push_back(entry.path);
         return true;
     }
 
     inline bool ApplyAllowPipelineEntry(PSID pSid,
                                         const PipelineEntry& entry,
                                         const std::wstring& sidStr,
-                                        const std::vector<std::wstring>& activeDenyPaths)
+                                        const std::vector<std::wstring>& activeDenyPaths,
+                                        const std::vector<std::wstring>& activeDeepDenyPaths)
     {
-        bool underDeny = IsPathUnderAny(entry.path, activeDenyPaths);
+        // Strip a deny only when this allow is more specific than it (a strict
+        // descendant, or a single-object THIS allow over a recursive DEEP deny
+        // on the same path).  An equal-specificity same-path deny must win, so
+        // a same-path DEEP allow never strips — see ShouldStripDenyForAllow.
+        bool underDeny = ShouldStripDenyForAllow(entry, activeDenyPaths, activeDeepDenyPaths);
         if (underDeny) {
             bool isThis = (entry.scope == GrantScope::This);
             if (!sidStr.empty()) {
@@ -244,12 +265,13 @@ namespace Sandbox {
     {
         bool allOk = true;
         std::vector<std::wstring> activeDenyPaths;
+        std::vector<std::wstring> activeDeepDenyPaths;
         std::wstring sidStr = SidToStringOrEmpty(pSid);
 
         for (const auto& entry : pipeline) {
             bool ok = entry.isDeny
-                ? ApplyDenyPipelineEntry(pSid, entry, activeDenyPaths)
-                : ApplyAllowPipelineEntry(pSid, entry, sidStr, activeDenyPaths);
+                ? ApplyDenyPipelineEntry(pSid, entry, activeDenyPaths, activeDeepDenyPaths)
+                : ApplyAllowPipelineEntry(pSid, entry, sidStr, activeDenyPaths, activeDeepDenyPaths);
             if (!ok)
                 allOk = false;
         }
@@ -356,7 +378,10 @@ namespace Sandbox {
             g_logger.LogFmt(L"ERROR: restricted token creation failed (error %lu)", GetLastError());
             return r;
         }
-        guard.Add([&r]() { if (r.hRestrictedToken) CloseHandle(r.hRestrictedToken); });
+        // Capture the handle by value — `r` is a local returned by value, so a
+        // by-reference capture would dangle by the time the guard runs.
+        HANDLE hRestrictedToken = r.hRestrictedToken;
+        guard.Add([hRestrictedToken]() { CloseHandle(hRestrictedToken); });
 
         LPWSTR sidStr = nullptr;
         if (ConvertSidToStringSidW(pGrantSid, &sidStr)) {

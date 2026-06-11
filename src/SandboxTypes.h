@@ -122,6 +122,72 @@ namespace Sandbox {
         return value;
     }
 
+    // Check if `child` is at or under `parent` (case-insensitive, backslash boundary)
+    inline bool IsPathUnder(const std::wstring& child, const std::wstring& parent) {
+        std::wstring normalizedChild = NormalizeFsPath(child);
+        std::wstring normalizedParent = NormalizeFsPath(parent);
+        if (normalizedChild.size() < normalizedParent.size()) return false;
+        if (_wcsnicmp(normalizedChild.c_str(), normalizedParent.c_str(), normalizedParent.size()) != 0) return false;
+        // Exact match
+        if (normalizedChild.size() == normalizedParent.size()) return true;
+        // Parent ends with backslash (drive root like "C:\") — every prefix
+        // match is already a proper child because the separator is built in.
+        if (!normalizedParent.empty() && normalizedParent.back() == L'\\') return true;
+        // Normal case: child continues with a backslash boundary
+        return normalizedChild[normalizedParent.size()] == L'\\';
+    }
+
+    inline bool IsPathUnderAny(const std::wstring& candidate,
+                               const std::vector<std::wstring>& parents)
+    {
+        for (const auto& parent : parents) {
+            if (IsPathUnder(candidate, parent))
+                return true;
+        }
+        return false;
+    }
+
+    // Like IsPathUnder, but EXCLUDES the exact-match case: true only when
+    // `child` is a *strict* descendant of `parent`.
+    //
+    // Used by deny carve-out logic.  A carve-out strips a deny inherited from
+    // a strict ancestor so an allow on a sub-path can take effect.  When an
+    // allow and a deny target the SAME object, that is not a carve-out — the
+    // explicit deny must win (Windows deny-before-allow), so the strip must
+    // NOT fire on exact match.  Using inclusive ancestry here silently
+    // discards same-path denies and leaks access the user forbade.
+    inline bool IsPathStrictlyUnder(const std::wstring& child, const std::wstring& parent) {
+        if (!IsPathUnder(child, parent)) return false;
+        return NormalizeFsPath(child).size() != NormalizeFsPath(parent).size();
+    }
+
+    inline bool IsPathStrictlyUnderAny(const std::wstring& candidate,
+                                       const std::vector<std::wstring>& parents)
+    {
+        for (const auto& parent : parents) {
+            if (IsPathStrictlyUnder(candidate, parent))
+                return true;
+        }
+        return false;
+    }
+
+    // Case-insensitive equality after normalization — two configured paths
+    // refer to the same filesystem object.
+    inline bool PathsEqual(const std::wstring& a, const std::wstring& b)
+    {
+        return _wcsicmp(NormalizeFsPath(a).c_str(), NormalizeFsPath(b).c_str()) == 0;
+    }
+
+    inline bool PathEqualsAny(const std::wstring& candidate,
+                              const std::vector<std::wstring>& paths)
+    {
+        for (const auto& p : paths) {
+            if (PathsEqual(candidate, p))
+                return true;
+        }
+        return false;
+    }
+
     // Check if an exit code looks like a native process crash.
     // Used to classify child termination without owning host-global dump state.
     inline bool IsCrashExitCode(DWORD exitCode)

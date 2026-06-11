@@ -16,9 +16,14 @@ namespace Sandbox {
 
     // -----------------------------------------------------------------------
     // Loopback exemption — flag tracks runtime state
+    //
+    // Lock-guarded: normal pipeline cleanup (main thread) and emergency
+    // cleanup (console-ctrl handler thread) can both reach DisableLoopback
+    // after a Ctrl+C terminates the child and unblocks the main wait.
     // -----------------------------------------------------------------------
     inline bool g_loopbackGranted = false;
     inline std::wstring g_loopbackContainerName;  // the container name used for loopback
+    inline SRWLOCK g_loopbackStateLock = SRWLOCK_INIT;
 
     // -----------------------------------------------------------------------
     // HasOtherLiveContainerUsers — true when another live Sandy instance is
@@ -213,8 +218,10 @@ namespace Sandbox {
         DWORD exitCode = RunHiddenProcess(cmd, 5000, cniExe);
         bool ok = (exitCode == 0);
         if (ok && trackRunState) {
+            AcquireSRWLockExclusive(&g_loopbackStateLock);
             g_loopbackGranted = true;
             g_loopbackContainerName = containerName;
+            ReleaseSRWLockExclusive(&g_loopbackStateLock);
         }
         return ok;
     }
@@ -257,18 +264,26 @@ namespace Sandbox {
     // Verifiable: exemption no longer appears in CheckNetIsolation -s
     // -----------------------------------------------------------------------
     inline void DisableLoopback() {
-        if (!g_loopbackGranted || g_loopbackContainerName.empty()) return;
-        if (HasOtherLiveContainerUsers(g_loopbackContainerName, g_instanceId)) {
-            g_logger.Log((L"LOOPBACK: preserving (" + g_loopbackContainerName +
-                         L", other live users remain)").c_str());
+        // Snapshot-and-clear under the lock: whichever thread (normal or
+        // emergency cleanup) gets here first owns the removal; the other
+        // sees cleared state and returns.
+        std::wstring containerName;
+        AcquireSRWLockExclusive(&g_loopbackStateLock);
+        if (g_loopbackGranted) {
+            containerName = std::move(g_loopbackContainerName);
             g_loopbackGranted = false;
             g_loopbackContainerName.clear();
+        }
+        ReleaseSRWLockExclusive(&g_loopbackStateLock);
+        if (containerName.empty()) return;
+
+        if (HasOtherLiveContainerUsers(containerName, g_instanceId)) {
+            g_logger.Log((L"LOOPBACK: preserving (" + containerName +
+                         L", other live users remain)").c_str());
             return;
         }
-        g_logger.Log((L"LOOPBACK: disabling (" + g_loopbackContainerName + L")").c_str());
-        RemoveLoopbackExemption(g_loopbackContainerName);
-        g_loopbackGranted = false;
-        g_loopbackContainerName.clear();
+        g_logger.Log((L"LOOPBACK: disabling (" + containerName + L")").c_str());
+        RemoveLoopbackExemption(containerName);
     }
 
     // -----------------------------------------------------------------------
