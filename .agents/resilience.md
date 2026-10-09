@@ -29,7 +29,12 @@ run metadata; the profile continues to own the durable identity.
 - `_ctime`
 - `_container`
 - `_profile_mode` for profile-backed runs
-- numbered grant records for cleanup / rollback
+- `_desktop_sid` when the run granted its SID access to the window station / desktop
+- numbered grant records for cleanup / rollback:
+  `TYPE|PATH|SID[|DENY:1][|THIS:1][|OWNER:I|OWNER:O]`
+
+A grant record is written **before** its DACL change (write-ahead). At every
+instruction boundary the ledger names every ACE that can exist.
 
 `HKCU\Software\Sandy\Profiles\<name>` is durable profile state. It stores:
 - saved config
@@ -59,8 +64,12 @@ If any of those fail, treat the instance as dead for stale recovery.
 
 Both normal startup and `--cleanup` must cover the same failure classes:
 - incomplete staging profiles
-- stale grant ledgers
+- stale grant ledgers (file, registry and desktop ACEs)
 - stale cleanup tasks
+
+Recovery output of a normal run goes to the session log, not to the console
+(`RecoveryPrintf`): from `BeginRunSession` on, stdout belongs to the child.
+`--cleanup` prints the same messages on the console.
 
 The exact ordering may differ for implementation reasons, but the design intent is:
 1. repair interrupted durable transactions
@@ -111,6 +120,14 @@ This means:
 Grants and cleanup use `SetNamedSecurityInfoW` (not `TreeSet`). Windows
 auto-inheritance propagation naturally handles multi-level grant structures.
 
+Windows propagates to the descendants first and writes the rule's root last.
+A kill in the middle of a grant leaves descendants with an inherited ACE and a
+root without it; a kill in the middle of a revoke leaves the opposite. Stale
+recovery covers both: it removes the SID from the root and, when the root
+holds no ACE of the SID, rewrites the root's unchanged DACL to force a new
+propagation (`ACL_REPROPAGATE`). A failed re-propagation is logged and does not
+keep the ledger alive.
+
 Profile-owned ACLs follow the same rule: their SID is unique to the profile,
 so cleanup by that SID is always safe regardless of concurrent runs.
 
@@ -140,7 +157,8 @@ The design must tolerate:
 - machine restart
 - Sandy crash after partially applying ACLs
 - Sandy crash after creating a durable AppContainer but before commit completion
-- root-process exit while descendants still exist
+- root-process exit while descendants still exist (the run, its timeout
+  watchdog and its cleanup all follow the job tree, not the root process)
 
 For each durable mutation, ask:
 - what exact metadata proves ownership?
@@ -172,11 +190,14 @@ and cleanup tasks.
 If applying or revoking an ACL fails, Sandy must not pretend the state is clean.
 
 Rules:
-- record grants only after the ACL change succeeded
+- record a grant **before** the ACL change (write-ahead). A record without an
+  ACE is harmless: cleanup finds nothing to remove. An ACE without a record is
+  a permanent leak.
+- if the record cannot be written, do not change the ACL (`ERROR_WRITE_FAULT`)
 - preserve retry metadata when cleanup was partial or ambiguous
-
-
 - treat persistence failures as setup failures when they would otherwise leave untracked durable state behind
+- a test must never delete a ledger that it did not create: an ACE whose
+  ledger is gone stays on the object forever
 
 Incorrect bookkeeping is a resilience bug even if the immediate filesystem change looked harmless.
 
@@ -211,8 +232,8 @@ runs.
 
 | Signal | Cleanup | Rationale |
 |--------|---------|-----------|
-| `CTRL_C_EVENT` | Full `CleanupSandbox()` | No OS deadline |
-| `CTRL_BREAK_EVENT` | Full `CleanupSandbox()` | No OS deadline |
+| `CTRL_C_EVENT` | Handler ends the child tree; the main thread runs the normal cleanup | No OS deadline |
+| `CTRL_BREAK_EVENT` | Same as `CTRL_C_EVENT` | No OS deadline |
 | `CTRL_CLOSE_EVENT` | Terminate child only | Deadline-limited; defer rest to recovery |
 | `CTRL_LOGOFF_EVENT` | Log only | Handler may not fire; deadline applies if it does |
 | `CTRL_SHUTDOWN_EVENT` | Log only | Same as logoff |
@@ -227,3 +248,25 @@ It fires on next logon and runs `sandy.exe --cleanup`, ensuring deferred
 state is cleaned even if the user never manually runs Sandy again.
 
 **Do not** add full synchronous cleanup to deadline-limited signal paths.
+
+### One cleanup owner
+
+The handler thread never runs cleanup. For Ctrl+C / Ctrl+Break it sets
+`g_shutdownRequested`, ends the child tree (`TerminateRunningChild`) and
+returns `TRUE`. The main thread then leaves its wait, or stops the grant
+pipeline between two paths (`ShutdownRequested()`), runs the one normal
+cleanup path, and `wmain` returns `STATUS_CONTROL_C_EXIT` (0xC000013A).
+
+If the handler returned `FALSE`, or ran cleanup itself, the default handler
+would end the process while the main thread is in the middle of a revoke.
+A second Ctrl+C is the user's way out: the handler then returns `FALSE` and
+recovery finishes the work later.
+
+---
+
+## Cleanup Task
+
+`SandyCleanup_<uuid>` is registered through the Task Scheduler API
+(`ITaskService`) as a logon-trigger task for the current user. This needs no
+elevation. `schtasks.exe /SC ONLOGON` needs an administrator, so a task made
+that way does not exist for a normal user; Sandy does not start `schtasks.exe`.

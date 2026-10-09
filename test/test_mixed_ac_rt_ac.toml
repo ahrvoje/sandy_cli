@@ -5,9 +5,9 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_mixed\scripts', 'C:\Users\H\test_mixed\shared\protected']
-all = ['C:\Users\H\test_mixed\shared\workspace']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_mixed\scripts', '%USERPROFILE%\test_mixed\shared\protected']
+all = ['%USERPROFILE%\test_mixed\shared\workspace']
 
 [environment]
 inherit = true

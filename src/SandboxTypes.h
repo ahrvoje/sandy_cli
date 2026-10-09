@@ -122,72 +122,6 @@ namespace Sandbox {
         return value;
     }
 
-    // Check if `child` is at or under `parent` (case-insensitive, backslash boundary)
-    inline bool IsPathUnder(const std::wstring& child, const std::wstring& parent) {
-        std::wstring normalizedChild = NormalizeFsPath(child);
-        std::wstring normalizedParent = NormalizeFsPath(parent);
-        if (normalizedChild.size() < normalizedParent.size()) return false;
-        if (_wcsnicmp(normalizedChild.c_str(), normalizedParent.c_str(), normalizedParent.size()) != 0) return false;
-        // Exact match
-        if (normalizedChild.size() == normalizedParent.size()) return true;
-        // Parent ends with backslash (drive root like "C:\") — every prefix
-        // match is already a proper child because the separator is built in.
-        if (!normalizedParent.empty() && normalizedParent.back() == L'\\') return true;
-        // Normal case: child continues with a backslash boundary
-        return normalizedChild[normalizedParent.size()] == L'\\';
-    }
-
-    inline bool IsPathUnderAny(const std::wstring& candidate,
-                               const std::vector<std::wstring>& parents)
-    {
-        for (const auto& parent : parents) {
-            if (IsPathUnder(candidate, parent))
-                return true;
-        }
-        return false;
-    }
-
-    // Like IsPathUnder, but EXCLUDES the exact-match case: true only when
-    // `child` is a *strict* descendant of `parent`.
-    //
-    // Used by deny carve-out logic.  A carve-out strips a deny inherited from
-    // a strict ancestor so an allow on a sub-path can take effect.  When an
-    // allow and a deny target the SAME object, that is not a carve-out — the
-    // explicit deny must win (Windows deny-before-allow), so the strip must
-    // NOT fire on exact match.  Using inclusive ancestry here silently
-    // discards same-path denies and leaks access the user forbade.
-    inline bool IsPathStrictlyUnder(const std::wstring& child, const std::wstring& parent) {
-        if (!IsPathUnder(child, parent)) return false;
-        return NormalizeFsPath(child).size() != NormalizeFsPath(parent).size();
-    }
-
-    inline bool IsPathStrictlyUnderAny(const std::wstring& candidate,
-                                       const std::vector<std::wstring>& parents)
-    {
-        for (const auto& parent : parents) {
-            if (IsPathStrictlyUnder(candidate, parent))
-                return true;
-        }
-        return false;
-    }
-
-    // Case-insensitive equality after normalization — two configured paths
-    // refer to the same filesystem object.
-    inline bool PathsEqual(const std::wstring& a, const std::wstring& b)
-    {
-        return _wcsicmp(NormalizeFsPath(a).c_str(), NormalizeFsPath(b).c_str()) == 0;
-    }
-
-    inline bool PathEqualsAny(const std::wstring& candidate,
-                              const std::vector<std::wstring>& paths)
-    {
-        for (const auto& p : paths) {
-            if (PathsEqual(candidate, p))
-                return true;
-        }
-        return false;
-    }
-
     // Check if an exit code looks like a native process crash.
     // Used to classify child termination without owning host-global dump state.
     inline bool IsCrashExitCode(DWORD exitCode)
@@ -428,8 +362,9 @@ namespace Sandbox {
         bool allowNetwork    = false;
         LanMode lanMode      = LanMode::Off;
 
-        bool allowNamedPipes  = false;  // restricted mode: controls named pipe creation
-        bool allowDesktop     = true;   // restricted mode: grant WinSta0 + Desktop access (default true)
+        // restricted mode: true = grant WinSta0 + Desktop access (default);
+        // false = isolate from the desktop with job UI limits
+        bool allowDesktop     = true;
 
         // stdin control: "NUL" = disabled, empty/true = inherit, path = file
         std::wstring stdinMode = L"NUL";
@@ -504,20 +439,28 @@ namespace Sandbox {
         bool Start(const std::wstring& logPath) {
             AcquireSRWLockExclusive(&lock);
 
-            // Numbered rotation (POSIX style): session.log -> session.log.1 -> session.log.2
+            // Numbered rotation: the path the user gave always holds the
+            // newest log.  An existing file moves to the next free numbered
+            // suffix first (session.log.1 is the oldest log).  If it cannot
+            // be moved — a running Sandy still writes to it — this session
+            // takes the next free suffix instead.
             std::wstring finalPath = logPath;
             if (GetFileAttributesW(logPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                std::wstring nextFree;
                 for (int n = 1; ; n++) {
-                    finalPath = logPath + L"." + std::to_wstring(n);
-                    if (GetFileAttributesW(finalPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+                    nextFree = logPath + L"." + std::to_wstring(n);
+                    if (GetFileAttributesW(nextFree.c_str()) == INVALID_FILE_ATTRIBUTES)
                         break;
                 }
+                if (!MoveFileW(logPath.c_str(), nextFree.c_str()))
+                    finalPath = nextFree;
             }
 
-            // Open once with retry, set unbuffered for crash resilience
+            // Open once with retry, set unbuffered for crash resilience.
+            // "N": the handle is not inherited by any child process.
             FILE* f = nullptr;
             for (int attempt = 0; attempt < 3; attempt++) {
-                f = _wfsopen(finalPath.c_str(), L"w, ccs=UTF-8", _SH_DENYWR);
+                f = _wfsopen(finalPath.c_str(), L"wN, ccs=UTF-8", _SH_DENYWR);
                 if (f) break;
                 if (attempt < 2) Sleep(50);
             }
@@ -615,8 +558,6 @@ namespace Sandbox {
             if (isRT && config.strict)
                 fwprintf(logFile, L"[%s]     strict          = yes\n", ts.c_str());
             if (isRT) {
-                fwprintf(logFile, L"[%s]     named_pipes     = %s\n", ts.c_str(),
-                         config.allowNamedPipes ? L"yes" : L"no");
                 fwprintf(logFile, L"[%s]     desktop         = %s\n", ts.c_str(),
                          config.allowDesktop ? L"yes" : L"no");
             }

@@ -8,7 +8,7 @@ description: General coding style, architecture guidelines, and critical dos/don
 
 | File | Covers |
 |------|--------|
-| `.agents/acl_design.md` | ACL grant/deny design, mask math, PROTECTED_DACL, multi-owner safety |
+| `.agents/acl_design.md` | ACL grant/deny design, mask math, DACL protection invariant, multi-owner safety |
 | `.agents/resilience.md` | Cleanup, crash recovery, durable metadata, power-loss handling |
 | `.agents/guidelines.md` | This file — coding rules, tests, architecture, docs |
 
@@ -24,14 +24,17 @@ documented there are **settled facts, not suggestions**. If a design here says
   `{ wchar_t buf[N]; swprintf(...); g_logger.Log(buf); }` pattern.
 - **Never use stdout/stderr for operational logging** if `g_logger` can cover it.
   `printf`/`wprintf` is only for user-facing CLI output (banner, status, help).
+- **During a run, stdout belongs to the child.** Recovery messages go through
+  `RecoveryPrintf`: console for `--cleanup`, session log only for a run.
 
 # Encoding
 
 - **Never use UTF-16 for ANY output** — not stdout, not stderr, not log files.
 - No `_O_U16TEXT`, no `_setmode` to wide mode, no `L"w"` without `ccs=UTF-8`.
 - **Use `printf` with `%ls`** for user-facing output that includes wide strings.
-- **Log files** opened with `_wfsopen`/`_wfopen` **must** use `L"w, ccs=UTF-8"`
-  to ensure `fwprintf` transcodes wide strings to UTF-8 on disk.
+- **Log files** opened with `_wfsopen`/`_wfopen` **must** use `L"wN, ccs=UTF-8"`
+  to ensure `fwprintf` transcodes wide strings to UTF-8 on disk. The `N` makes
+  the handle non-inheritable: the sandboxed child must not get a handle to the log.
 - This is non-negotiable: UTF-16 files break `findstr`, `type`, `cat`, `grep`,
   and every standard text-processing tool.
 
@@ -94,6 +97,9 @@ App. Packages (`ALL APPLICATION PACKAGES`) for stricter default access.
 2. Only Restricted Token mode supports deny rules (real `DENY_ACCESS` ACEs).
 3. Deny uses standard `SetNamedSecurityInfoW` with auto-inheritance — same as
    grants. No `PROTECTED_DACL` or `TreeSet` required.
+4. A deny mask is **not** the allow mask of the level (`DenyMask()` vs
+   `AccessMask()`), and a carve-out is the plain Windows ACE order, not a
+   strip. See `.agents/acl_design.md`.
 
 # Documentation
 
@@ -128,14 +134,13 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 |---------|-----|---------|-------|
 | `[sandbox]` | `strict` | `false` | RT only; excludes user SID from restricting list |
 | `[sandbox]` | `workdir` | `'inherit'` (Sandy's CWD) | |
-| `[allow.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive grants (OI\|CI) |
+| `[allow.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive grants (OI\|CI; `create`: CI only) |
 | `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
 | `[deny.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive denies (RT only) |
 | `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
 | `[privileges]` | `network` | `false` | AC/LPAC only |
 | `[privileges]` | `lan` | `false` | AC/LPAC only; `false` · `'with localhost'` · `'without localhost'` |
-| `[privileges]` | `named_pipes` | `false` | RT only |
-| `[privileges]` | `desktop` | `true` | RT only, WinSta0 + Desktop |
+| `[privileges]` | `desktop` | `true` | RT only. `true` = WinSta0 + Desktop grant; `false` = job UI limits |
 | `[privileges]` | `stdin` | `false` | `false` = NUL, `true` = inherit, path = file |
 | `[privileges]` | `clipboard_read` | `false` | |
 | `[privileges]` | `clipboard_write` | `false` | |
@@ -143,12 +148,16 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | `[registry]` | `read/write` | `[]` | RT only |
 | `[environment]` | `inherit` | `false` | filtered env |
 | `[environment]` | `pass` | `[]` | |
-| `[limit]` | `timeout/memory/processes` | `0` | 0 = no limit |
+| `[limit]` | `timeout/memory/processes` | `0` | 0 = no limit. `timeout` covers the whole process tree |
 
 ## Rules
 
 - **Wrong-mode keys are rejected.**
 - **Unknown keys/sections are rejected.**
+- **Filesystem paths expand `%NAME%` environment variables** at config load
+  (`ExpandConfigPath`, called from `NormalizeConfigFilesystemPaths`, the one
+  place where every configured path enters the config). A variable that is
+  not set fails path validation.
 - A minimal valid config is:
   ```toml
   [sandbox]
@@ -159,6 +168,9 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 
 - Tests use the **toml + py + bat** stack.
 - Keep `.toml`, `.py`, and `.bat` separate. Do not inline TOML or Python into a batch script.
+- **No user name in a path.** Use `%USERPROFILE%` / `%LOCALAPPDATA%` in `.toml`
+  and `.bat` files and `os.environ['USERPROFILE']` in Python. The same holds
+  for documentation examples.
 
 ## Test Header — MANDATORY
 
@@ -172,6 +184,20 @@ Do **not** set window titles in tests. Procmon-backed audit/trace tests were
 removed with the feature. If a feature is removed, add rejection/help-coverage
 tests instead of leaving dead fixtures behind.
 
+## A Check Must Be Able to Fail
+
+- The script must exit non-zero when a check fails. A script that prints
+  `[FAIL]` and exits 0 is not a test.
+- A comparison against a reference must fail when the reference is missing.
+  An SDDL check that compares an empty "before" with an empty "after" passes
+  for the wrong reason: guard the snapshot.
+- Test a deny on both sides: what it must block **and** what it must leave
+  usable.
+- Do not sleep a fixed time for another Sandy instance to end. A revoke on a
+  large tree has no fixed duration. Wait for the instances of the test
+  (by command line or PID), with an upper bound.
+- A new regression test must fail on the build without the fix.
+
 ## Test Safety — Zero Side-Effects
 
 Tests **must not** produce side-effects on Sandy production data, unrelated
@@ -180,8 +206,13 @@ processes, or the host platform.
 ### Registry
 
 - **Never read, write, or delete** production keys under `HKCU\Software\Sandy`
-  or `HKCU\Software\Sandy\Grants` — **except** for `--status` tests, which must
-  inject stale entries into production paths because `--status` reads them.
+  or `HKCU\Software\Sandy\Grants` — **except** for `--status` and recovery
+  tests, which must inject stale entries into production paths because
+  `--status`, `--cleanup` and start-up recovery read only those.
+- An injected entry must have a name that starts with `dead-test-` and a PID /
+  creation time of no live process. The test removes only the entries it made.
+- **Never delete a ledger that the test did not create.** It can belong to a
+  live sandbox, and an ACE whose ledger is gone stays on the object forever.
 - All other test-only registry entries go under **`HKCU\Software\Sandy\Test`**.
 - Parent keys are **permanent**. Cleanup tests must verify subkey/value removal,
   not parent-key deletion.
@@ -190,6 +221,8 @@ processes, or the host platform.
 
 - **Never** use blanket image-name kills like `taskkill /f /im sandy.exe`.
 - All termination must target a specific PID obtained during the test.
+- Get that PID from the process the test started (its handle, or its command
+  line). "The newest `sandy.exe` on the machine" is not a specific PID.
 - If a test verifies a process is gone, verify by PID, not by image name.
 
 ### General

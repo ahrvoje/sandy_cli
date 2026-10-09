@@ -11,23 +11,23 @@ token     = 'restricted'
 integrity = 'low'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read    = ['C:\Users\H\test_gmatrix\scripts', 'C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\deep_hole', 'C:\Users\H\test_gmatrix\file_vs_dir', 'C:\Users\H\test_gmatrix\deny_scope']
-all     = ['C:\Users\H\test_gmatrix\overlap\inner', 'C:\Users\H\test_gmatrix\deep_hole\gap\bottom', 'C:\Users\H\test_gmatrix\deny_sub', 'C:\Users\H\test_gmatrix\deny_parent\child']
-write   = ['C:\Users\H\test_gmatrix\deny_clash']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read    = ['%USERPROFILE%\test_gmatrix\scripts', '%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\deep_hole', '%USERPROFILE%\test_gmatrix\file_vs_dir', '%USERPROFILE%\test_gmatrix\deny_scope']
+all     = ['%USERPROFILE%\test_gmatrix\overlap\inner', '%USERPROFILE%\test_gmatrix\deep_hole\gap\bottom', '%USERPROFILE%\test_gmatrix\deny_sub', '%USERPROFILE%\test_gmatrix\deny_parent\child']
+write   = ['%USERPROFILE%\test_gmatrix\deny_clash']
 
 [allow.this]
-read    = ['C:\Users\H\test_gmatrix\overlap', 'C:\Users\H\test_gmatrix\multi_this', 'C:\Users\H\test_gmatrix\deny_clash']
-write   = ['C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\multi_this\mid', 'C:\Users\H\test_gmatrix\file_vs_dir\target.txt']
-all     = ['C:\Users\H\test_gmatrix\multi_this\mid\leaf']
+read    = ['%USERPROFILE%\test_gmatrix\overlap', '%USERPROFILE%\test_gmatrix\multi_this', '%USERPROFILE%\test_gmatrix\deny_clash']
+write   = ['%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\multi_this\mid', '%USERPROFILE%\test_gmatrix\file_vs_dir\target.txt']
+all     = ['%USERPROFILE%\test_gmatrix\multi_this\mid\leaf']
 
 [deny.deep]
-write   = ['C:\Users\H\test_gmatrix\deny_sub']
-all     = ['C:\Users\H\test_gmatrix\deny_clash']
+write   = ['%USERPROFILE%\test_gmatrix\deny_sub']
+all     = ['%USERPROFILE%\test_gmatrix\deny_clash']
 
 [deny.this]
-read    = ['C:\Users\H\test_gmatrix\deny_parent']
-write   = ['C:\Users\H\test_gmatrix\deny_scope']
+read    = ['%USERPROFILE%\test_gmatrix\deny_parent']
+write   = ['%USERPROFILE%\test_gmatrix\deny_scope']
 
 [environment]
 inherit = true

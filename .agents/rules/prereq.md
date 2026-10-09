@@ -9,7 +9,7 @@ Before modifying any Sandy source code, read these reference documents:
 // turbo
 1. Read `.agents/guidelines.md` — coding style, build commands, architecture rules
 // turbo
-2. Read `.agents/acl_design.md` — ACL grant/deny design, mask math, PROTECTED_DACL, multi-owner safety
+2. Read `.agents/acl_design.md` — ACL grant/deny design, mask math, DACL protection invariant, multi-owner safety
 // turbo
 3. Read `.agents/resilience.md` — cleanup, crash recovery, durable metadata, power-loss handling
 

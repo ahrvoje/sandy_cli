@@ -5,9 +5,9 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_collusion\scripts']
-all = ['C:\Users\H\test_collusion\shared']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_collusion\scripts']
+all = ['%USERPROFILE%\test_collusion\shared']
 
 [privileges]
 child_processes = false

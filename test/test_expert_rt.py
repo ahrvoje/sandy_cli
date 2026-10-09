@@ -1,14 +1,16 @@
 """RT version of expert adversarial test — expectations adjusted for Restricted Token.
 
 Key RT differences:
-  - WRITE_DAC/WRITE_OWNER succeed on user-owned paths (owner privilege)
-  - deny.write readonly_zone: read also blocked (PROTECTED_DACL)
+  - WRITE_DAC/WRITE_OWNER succeed on user-owned paths that carry no deny
+    (owner privilege); every deny blocks them on its own zone
+  - deny.write readonly_zone: read stays allowed (deny is surgical)
   - exe folder write: succeeds (user's native SID has access)
-  - FILE_DELETE_CHILD succeeds on owned paths
+  - FILE_DELETE_CHILD succeeds on owned paths, but not on a deny.all zone
+    and not on the folder that holds one (delete guard)
 """
 import os, sys, ctypes, ctypes.wintypes
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_expert')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_expert')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 
@@ -61,8 +63,7 @@ test("arena: write+read", True, lambda: (
     os.remove(p('baseline.tmp'))
 ))
 test("denied_zone: list", False, lambda: os.listdir(p('denied_zone')))
-# RT: deny.write + PROTECTED_DACL → read also blocked
-test("readonly_zone: read report.txt (blocked by PROTECTED_DACL)", False,
+test("readonly_zone: read report.txt (deny.write keeps read)", True,
      lambda: open(p('readonly_zone', 'report.txt'), 'r').read())
 test("readonly_zone: write", False,
      lambda: open(p('readonly_zone', 'hack.tmp'), 'w').write('x'))
@@ -232,8 +233,11 @@ test("deep/a/b/c: write (above deny)", True,
 
 # ===========================================================================
 # ACL PROBING: WRITE_DAC / WRITE_OWNER / FILE_DELETE_CHILD
-#   RT: these succeed on user-owned paths (owner privilege applies)
-#   Only DENY zones block them
+#   RT: these succeed on user-owned paths (owner privilege applies).
+#   A deny zone blocks WRITE_DAC and WRITE_OWNER (the rule must not be
+#   editable); deny.all also blocks FILE_DELETE_CHILD.  arena/ holds the
+#   deny.all zone denied_zone/, so it carries the delete guard: all three
+#   are blocked on arena/ itself.
 # ===========================================================================
 print("\n=== ACL bit probing (WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD) ===")
 
@@ -245,14 +249,15 @@ for folder_name in ['', 'denied_zone', 'readonly_zone', 'playground', 'deep']:
     folder_path = p(folder_name) if folder_name else ARENA
     label = folder_name or 'arena'
 
-    # RT: user-owned paths → WRITE_DAC/etc succeed (owner privilege)
-    #     denied paths → blocked
-    is_denied = label in ('denied_zone', 'readonly_zone')
-    expect_blocked = is_denied
-
     for access_name, access_mask in [('WRITE_DAC', WRITE_DAC),
                                        ('WRITE_OWNER', WRITE_OWNER),
                                        ('FILE_DELETE_CHILD', FILE_DELETE_CHILD)]:
+        if label in ('arena', 'denied_zone'):
+            expect_blocked = True
+        elif label == 'readonly_zone':
+            expect_blocked = access_name != 'FILE_DELETE_CHILD'  # deny.write is not deny.delete
+        else:
+            expect_blocked = False
         h = ctypes.windll.kernel32.CreateFileW(
             folder_path, access_mask, 0x7, None, 3, 0x02000000, None)
         if h != ctypes.wintypes.HANDLE(-1).value and h != -1:

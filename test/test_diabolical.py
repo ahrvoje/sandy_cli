@@ -14,7 +14,7 @@ Run inside AppContainer via test_diabolical.bat.
 """
 import os, sys, ctypes, ctypes.wintypes, winreg
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_diabolical')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_diabolical')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 
@@ -263,6 +263,8 @@ print("\n=== ATTACK 5: Self-DACL escalation ===")
 try:
     import ctypes.wintypes
 
+    WRITE_DAC = 0x00040000
+
     # First check: can we call GetNamedSecurityInfo on fortress?
     fortress_path = p('fortress')
     if not os.path.exists(fortress_path):
@@ -270,7 +272,6 @@ try:
 
     if os.path.exists(fortress_path):
         # Try to open with WRITE_DAC
-        WRITE_DAC = 0x00040000
         hFile = ctypes.windll.kernel32.CreateFileW(
             fortress_path, WRITE_DAC,
             0x7, None, 3, 0x02000000, None

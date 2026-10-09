@@ -8,7 +8,7 @@ Run inside AppContainer via test_evil.bat.
 """
 import os, sys, ctypes, subprocess
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_evil')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_evil')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 

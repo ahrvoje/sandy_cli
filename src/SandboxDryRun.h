@@ -72,7 +72,6 @@ inline int HandleDryRun(const SandboxConfig& config,
         printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
         printf("  lan:             %ls\n", LanModeTomlDisplayValue(config.lanMode));
     } else {
-        printf("  named_pipes:     %ls\n", config.allowNamedPipes ? L"true" : L"false");
         printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
     }
     // P3: Map internal stdinMode to user-visible representation

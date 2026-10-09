@@ -19,7 +19,7 @@ Run inside AppContainer via test_phantom.bat.
 """
 import os, sys, ctypes, ctypes.wintypes, struct, time
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_phantom')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_phantom')
 ARENA = os.path.join(ROOT, 'arena')
 WORKSPACE = os.path.join(ARENA, 'workspace')
 results = []

@@ -22,7 +22,7 @@ Zone map (12 zones — AC mode):
 """
 import os, sys
 
-ROOT = r'C:\Users\H\test_deep'
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_deep')
 results = []
 
 def test(name, should_pass, fn):

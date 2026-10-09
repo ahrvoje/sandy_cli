@@ -8,7 +8,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_diabolical_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_diabolical
 set PASS=0
 set FAIL=0
@@ -50,6 +50,11 @@ for /f "tokens=*" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\aren
 for /f "tokens=*" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\arena\killzone').Sddl"') do set SDDL_KILLZONE=%%S
 for /f "tokens=*" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\arena\fortress').Sddl"') do set SDDL_FORTRESS=%%S
 for /f "tokens=*" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\arena\readonly_zone').Sddl"') do set SDDL_READONLY=%%S
+REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
+for %%V in (SDDL_ARENA SDDL_KILLZONE SDDL_FORTRESS SDDL_READONLY) do if not defined %%V (
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    exit /b 1
+)
 echo   Captured 4 pre-Sandy SDDLs
 echo.
 
@@ -64,7 +69,7 @@ echo.
 
 REM --- Check 1: RT SID residue ---
 set SC=0
-for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on arena/ tree
     set /a PASS+=1
@@ -77,7 +82,7 @@ REM --- Check 2: OID attack result ---
 if exist "%ROOT%\arena\_oid_attack_done" (
     set FSC=0
     if exist "%ROOT%\arena\fortress_escaped" (
-        for /f %%N in ('icacls "%ROOT%\arena\fortress_escaped" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set FSC=%%N
+        for /f %%N in ('icacls "%ROOT%\arena\fortress_escaped" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set FSC=%%N
         if !FSC! EQU 0 (
             echo   [PASS] Renamed fortress has no residual SIDs
             set /a PASS+=1

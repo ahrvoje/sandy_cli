@@ -14,7 +14,7 @@ REM =====================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set AC_CONFIG=%~dp0test_grant_matrix_config.toml
 set RT_CONFIG=%~dp0test_grant_matrix_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_gmatrix
 set PASS=0
 set FAIL=0

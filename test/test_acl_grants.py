@@ -17,7 +17,7 @@ even if a parent [allow] would grant them.
 """
 import os, sys
 
-ROOT = r'C:\Users\H\test_acl'
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_acl')
 results = []
 
 def test(name, should_pass, fn):

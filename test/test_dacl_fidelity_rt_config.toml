@@ -1,0 +1,44 @@
+# DACL fidelity test — Restricted Token mode (medium, not strict)
+#
+# Every kind of rule that edits a DACL, on protected and on inheriting
+# objects.  After the run each DACL must be identical to the one before:
+# same ACEs, same order, same protection flag.
+#
+# FOLDER TREE:
+#   test_dacl_fidelity/
+#     arena/                [allow.deep] all
+#       lockfile.txt        [deny.this]  all      (protected DACL)
+#       secret/             [deny.deep]  all      (protected DACL)
+#         sub/ empty/
+#       frozen/             [deny.deep]  write
+#         carve/            [allow.deep] all      (carve-out under the deny)
+#       keep/
+#         victim.txt        [deny.this]  delete   (keep/ gets the delete guard)
+#         other.txt
+#     single/               [allow.this] read
+#     scripts/              [allow.deep] read
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[allow.deep]
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_dacl_fidelity\scripts']
+all  = ['%USERPROFILE%\test_dacl_fidelity\arena', '%USERPROFILE%\test_dacl_fidelity\arena\frozen\carve']
+
+[allow.this]
+read = ['%USERPROFILE%\test_dacl_fidelity\single']
+
+[deny.deep]
+all   = ['%USERPROFILE%\test_dacl_fidelity\arena\secret']
+write = ['%USERPROFILE%\test_dacl_fidelity\arena\frozen']
+
+[deny.this]
+all    = ['%USERPROFILE%\test_dacl_fidelity\arena\lockfile.txt']
+delete = ['%USERPROFILE%\test_dacl_fidelity\arena\keep\victim.txt']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

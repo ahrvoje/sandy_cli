@@ -13,7 +13,7 @@ Folder tree:
 """
 import os, sys, ctypes
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_mixed')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_mixed')
 SHARED = os.path.join(ROOT, 'shared')
 results = []
 
@@ -87,12 +87,11 @@ test("workspace: delete file", True, lambda: os.remove(p('workspace', f'created_
 # ================================================================
 # GROUP 2: shared/protected
 #   AC: read OK, write blocked (explicit read grant, no write grant)
-#   RT: read/list ALSO blocked (PROTECT_DACL strips inherited user ACEs)
+#   RT: read OK, write blocked (deny.write blocks write only)
 # ================================================================
 print("--- shared/protected (AC: allow.read, RT: deny.write) ---")
-# AC: True (read grant), RT: False (PROTECTED_DACL strips inherited user ACEs)
-test("protected: list dir",      not is_rt, lambda: os.listdir(p('protected')))
-test("protected: read file",     not is_rt, lambda: open(p('protected', 'data.txt'), 'r').read())
+test("protected: list dir",      True, lambda: os.listdir(p('protected')))
+test("protected: read file",     True, lambda: open(p('protected', 'data.txt'), 'r').read())
 test("protected: overwrite file", False,     lambda: open(p('protected', 'data.txt'), 'w').write('hack'))
 test("protected: create file",   False,     lambda: open(p('protected', f'hack_{mode}.tmp'), 'w').write('x'))
 

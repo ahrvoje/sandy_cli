@@ -10,13 +10,21 @@
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
 
-constexpr const char* kVersion = "0.9992";
+constexpr const char* kVersion = "0.9993";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
 // Console control handler — signal-aware cleanup strategy.
 //
-// CTRL_C / CTRL_BREAK: no OS-imposed deadline → full CleanupSandbox().
+// The handler never cleans up itself.  The main thread is the only owner
+// of cleanup; two threads inside cleanup made the process exit while one
+// of them was half way through it.
+//
+// CTRL_C / CTRL_BREAK: no OS-imposed deadline.  Set the shutdown request,
+//   end the child tree, and return TRUE.  The main thread leaves its wait
+//   (or stops at its next setup step), runs the normal teardown, and ends
+//   the process.  A second signal returns FALSE: exit now, recovery
+//   finishes later.
 //
 // CTRL_CLOSE_EVENT: Windows imposes a short timeout (~5 s) before
 //   killing the process.  Sandy's full cleanup (child-kill wait + ACL
@@ -46,19 +54,21 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
     switch (ctrlType) {
     case CTRL_C_EVENT:
     case CTRL_BREAK_EVENT:
-        // No OS deadline — full synchronous cleanup is safe.
-        CleanupSandbox();
-        break;
+        if (g_shutdownRequested.exchange(true)) {
+            g_logger.Log(L"SIGNAL: second interrupt — exiting now, recovery completes the cleanup");
+            g_logger.Stop();
+            return FALSE;
+        }
+        // No OS deadline — the main thread does the full cleanup.
+        TerminateRunningChild();
+        return TRUE;
 
     case CTRL_CLOSE_EVENT:
         // Deadline-limited: terminate child (fast), defer rest to recovery.
         // Cleanup task intentionally retained — fires on next logon.
         g_logger.Log(L"SIGNAL: deadline-limited close — terminating child, deferring cleanup to recovery");
-        if (HANDLE hJob = g_childJob) {
-            TerminateJobObject(hJob, 1);
-        } else if (HANDLE hChild = g_childProcess) {
-            TerminateProcess(hChild, 1);
-        }
+        g_shutdownRequested = true;
+        TerminateRunningChild();
         g_logger.Stop();
         break;
 
@@ -111,6 +121,13 @@ static bool ExtractCliPreamble(int argc, wchar_t* argv[],
 {
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
+        // Everything from -x on belongs to the child.  A "-l" or "-q" there
+        // is an argument of the child, not an option of Sandy.
+        if (arg == L"-x" || arg == L"--exec" || arg == L"--") {
+            for (; i < argc; i++)
+                rest.push_back(argv[i]);
+            break;
+        }
         if (arg == L"-q" || arg == L"--quiet") {
             preamble.quiet = true;
         } else if (arg == L"-L" || arg == L"--log-stamp") {
@@ -337,7 +354,7 @@ static int RunSavedProfileMode(const RunMainOptions& options)
     if (!options.configPath.empty() || !options.configString.empty()) {
         fprintf(stderr, "Error: -p/--profile and -c/--config/-s/--string are mutually exclusive.\n");
         fprintf(stderr, "       Profile already contains its configuration.\n\n");
-        return SandyExit::ConfigError;
+        return SandyExit::InternalError;
     }
     if (options.exePath.empty()) {
         fprintf(stderr, "Error: -p/--profile requires -x <executable>.\n\n");
@@ -346,6 +363,7 @@ static int RunSavedProfileMode(const RunMainOptions& options)
     }
 
     SavedProfile profile;
+    g_recoveryConsoleOutput = false;  // a run: stdout belongs to the child
     CleanStagingProfiles();
     SavedProfileLoadStatus loadStatus = LoadSavedProfile(options.profileName, profile);
     if (loadStatus == SavedProfileLoadStatus::NotFound) {
@@ -472,7 +490,9 @@ int wmain(int argc, wchar_t* argv[])
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
     __try {
-        return RunMain(argc, argv);
+        int exitCode = RunMain(argc, argv);
+        // After Ctrl+C / Ctrl+Break the run was cut short on request.
+        return ShutdownRequested() ? static_cast<int>(STATUS_CONTROL_C_EXIT) : exitCode;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DWORD code = GetExceptionCode();

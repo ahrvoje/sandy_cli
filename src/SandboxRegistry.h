@@ -15,13 +15,6 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // REG_SZ helpers
     // -----------------------------------------------------------------------
-    inline void WriteRegSz(HKEY hKey, const wchar_t* name, const std::wstring& val)
-    {
-        RegSetValueExW(hKey, name, 0, REG_SZ,
-                       reinterpret_cast<const BYTE*>(val.c_str()),
-                       static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t)));
-    }
-
     inline bool TryWriteRegSz(HKEY hKey, const wchar_t* name, const std::wstring& val)
     {
         return RegSetValueExW(hKey, name, 0, REG_SZ,
@@ -49,12 +42,6 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // REG_DWORD helpers
     // -----------------------------------------------------------------------
-    inline void WriteRegDword(HKEY hKey, const wchar_t* name, DWORD val)
-    {
-        RegSetValueExW(hKey, name, 0, REG_DWORD,
-                       reinterpret_cast<const BYTE*>(&val), sizeof(DWORD));
-    }
-
     inline bool TryWriteRegDword(HKEY hKey, const wchar_t* name, DWORD val)
     {
         return RegSetValueExW(hKey, name, 0, REG_DWORD,

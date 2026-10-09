@@ -142,7 +142,7 @@
 
     <div class="callout info" style="margin-top:20px;">
       <div class="callout-title">💡 Config sources are mutually exclusive</div>
-      <p><code>-c</code>, <code>-s</code>, and <code>-p</code> cannot be combined. If more than one is present, Sandy exits with code 128.</p>
+      <p><code>-c</code>, <code>-s</code>, and <code>-p</code> cannot be combined. If more than one is present, Sandy exits with code 125.</p>
     </div>
   </div>
 </section>
@@ -175,9 +175,9 @@
           <tr><td class="td-flag"><code>-x &lt;path&gt;</code>, <code>--exec</code></td><td>Executable to run sandboxed — consumes all remaining arguments and forwards them to the child</td></tr>
 
           <tr class="group-row"><td colspan="2">Logging &amp; output</td></tr>
-          <tr><td class="td-flag"><code>-l &lt;path&gt;</code>, <code>--log</code></td><td>Session log — captures operational events, config, and exit code</td></tr>
+          <tr><td class="td-flag"><code>-l &lt;path&gt;</code>, <code>--log</code></td><td>Session log — Sandy's own events only: config, grants, timing, exit code, cleanup. It never holds child output; use shell redirection for that. The given path always holds the newest session. An existing file moves to the next free numbered name first (<code>.1</code> is the oldest, then <code>.2</code>, <code>.3</code>, …). If the existing file cannot be moved (a running Sandy writes to it), the new session takes the next free numbered name itself.</td></tr>
           <tr><td class="td-flag"><code>-L</code>, <code>--log-stamp</code></td><td>Prepend <code>YYYYMMDD_HHMMSS_uid_</code> to log filenames to prevent collisions on repeated runs</td></tr>
-          <tr><td class="td-flag"><code>-q</code>, <code>--quiet</code></td><td>Suppress the config banner printed to stderr on launch</td></tr>
+          <tr><td class="td-flag"><code>-q</code>, <code>--quiet</code></td><td>Suppress the config banner printed to stderr on launch. The banner is also off when <code>-l</code> is active (it goes to the log)</td></tr>
 
           <tr class="group-row"><td colspan="2">Profiles</td></tr>
           <tr><td class="td-flag"><code>--create-profile &lt;name&gt;</code></td><td>Create a persistent sandbox profile — saves SID, ACLs, and config derived from <code>-c</code></td></tr>
@@ -217,13 +217,14 @@
         <tbody>
           <tr><td><span class="ec thru">0</span></td><td>Child / Sandy</td><td>Success — child exited cleanly, or info command succeeded</td></tr>
           <tr><td><span class="ec thru">1–124</span></td><td>Child</td><td>Child's own exit code, passed through unchanged</td></tr>
-          <tr><td><span class="ec sandy">125</span></td><td>Sandy</td><td>Internal / general error</td></tr>
+          <tr><td><span class="ec sandy">125</span></td><td>Sandy</td><td>Internal / general error, or a command-line usage error (unknown option, missing argument)</td></tr>
           <tr><td><span class="ec sandy">126</span></td><td>Sandy</td><td>Cannot execute — <code>CreateProcess</code> failed (permission denied, bad format)</td></tr>
           <tr><td><span class="ec sandy">127</span></td><td>Sandy</td><td>Command not found — executable does not exist on disk</td></tr>
           <tr><td><span class="ec sandy">128</span></td><td>Sandy</td><td>Configuration error — invalid TOML, wrong-mode key, config file not found</td></tr>
           <tr><td><span class="ec sandy">129</span></td><td>Sandy</td><td>Sandbox setup failed — token / SID creation, ACL grants, or stdin setup</td></tr>
-          <tr><td><span class="ec warn">130</span></td><td>Sandy</td><td>Timeout — child killed by Sandy's watchdog</td></tr>
+          <tr><td><span class="ec warn">130</span></td><td>Sandy</td><td>Timeout — Sandy's watchdog ended the whole process tree</td></tr>
           <tr><td><span class="ec warn">131</span></td><td>Sandy</td><td>Child crashed — NTSTATUS crash code detected (e.g. <code>0xC0000005</code> access violation)</td></tr>
+          <tr><td><span class="ec warn">0xC000013A</span></td><td>Sandy</td><td>Ctrl+C / Ctrl+Break — Sandy ended the child tree, ran the complete cleanup, and stopped (<code>STATUS_CONTROL_C_EXIT</code>). <code>cmd</code> shows this code as <code>-1073741510</code>.</td></tr>
         </tbody>
       </table>
     </div>

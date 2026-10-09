@@ -2,19 +2,22 @@
 
 Usage: python test_collude4_probe.py <alpha|beta|gamma|delta>
 
-Each actor has ALL on hub/ with one unique deny:
-  Alpha: deny vault/   (exits 1st)
-  Beta:  deny logs/    (exits 2nd)
-  Gamma: deny drop/    (exits 3rd)
-  Delta: deny quarantine/ (exits 4th)
+Each actor is an AppContainer instance with ALL on hub/.  Each actor has one
+home folder, and the actors exit one after the other:
+  Alpha: home vault/      (exits 1st)
+  Beta:  home logs/       (exits 2nd)
+  Gamma: home drop/       (exits 3rd)
+  Delta: home quarantine/ (exits 4th)
 
-After each predecessor exits, remaining actors verify their
-own denies still hold — proving cleanup independence.
+After each earlier actor has exited and its Sandy has removed its grant, the
+remaining actors verify that their own access to every folder of hub/ is
+intact — proving that one instance's cleanup does not touch another's grant.
 """
-import os, sys, time
+import ctypes, os, re, sys, time
+from ctypes import wintypes
 
 ACTOR = sys.argv[1] if len(sys.argv) > 1 else 'unknown'
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_collude4')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_collude4')
 HUB = os.path.join(ROOT, 'hub')
 VAULT = os.path.join(HUB, 'vault')
 LOGS = os.path.join(HUB, 'logs')
@@ -23,8 +26,8 @@ QUARANTINE = os.path.join(HUB, 'quarantine')
 COMMON = os.path.join(HUB, 'common')
 SIGNALS = os.path.join(HUB, 'signals')
 
-# Which directory each actor denies
-DENY_MAP = {
+# The home folder of each actor
+HOME_MAP = {
     'alpha': VAULT,
     'beta': LOGS,
     'gamma': DROP,
@@ -58,16 +61,33 @@ def wait_all_ready():
             return False
     return True
 
-def check_deny(path, label):
-    try:
-        os.listdir(path)
-        # AC deny is unreliable — kernel ignores DENY ACEs for AC SIDs.
-        # This is a known OS limitation, not a Sandy bug.  Treat as INFO.
-        print(f"  [INFO] {label}: accessible (AC deny limitation — kernel ignores DENY ACEs)")
-        results.append(('INFO', label))
-    except PermissionError:
-        print(f"  [PASS] {label}: denied")
-        results.append(('PASS', label))
+def grants_on_hub():
+    """Number of AppContainer instances that hold a grant on hub/ (one explicit ACE each)."""
+    advapi32 = ctypes.WinDLL('advapi32')
+    advapi32.GetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                               ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                               ctypes.POINTER(ctypes.c_void_p)]
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    if advapi32.GetNamedSecurityInfoW(HUB, 1, 4, None, None, None, None, ctypes.byref(sd)):
+        return None
+    text = wintypes.LPWSTR()
+    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 4, ctypes.byref(text), None)
+    count = len(set(re.findall(r'S-1-15-2-[0-9]+(?:-[0-9]+){6,}', text.value or '')))
+    kernel32 = ctypes.WinDLL('kernel32')
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree(text)
+    kernel32.LocalFree(sd)
+    return count
+
+def wait_for_cleanup(remaining, timeout=60):
+    """Wait until only `remaining` instances hold a grant on hub/: the exited actor's Sandy is done."""
+    for _ in range(timeout * 4):
+        if grants_on_hub() == remaining:
+            return True
+        time.sleep(0.25)
+    return False
 
 def check_access(path, label):
     try:
@@ -102,7 +122,7 @@ def check_write(filepath, content, label):
         print(f"  [FAIL] {label}: denied")
         results.append(('FAIL', label))
 
-def deny_name(path):
+def folder_name(path):
     return os.path.basename(path)
 
 
@@ -119,45 +139,36 @@ if wait_all_ready():
 else:
     print("  [WARN] Not all actors signaled ready")
 
-my_deny = DENY_MAP[ACTOR]
-my_deny_nested = None
-# Find nested dir inside our denied path
+my_home = HOME_MAP[ACTOR]
+my_home_nested = None
+# Find the nested dir inside our home folder
 for child in ['inner', 'archive', 'inbox', 'locked']:
-    candidate = os.path.join(my_deny, child)
+    candidate = os.path.join(my_home, child)
     if os.path.isdir(candidate):
-        my_deny_nested = candidate
+        my_home_nested = candidate
         break
 
 # -----------------------------------------------------------------------
-# Phase 1: Verify own deny works (root + nested)
+# Phase 1: Verify access to the own home folder (root + nested)
 # -----------------------------------------------------------------------
-print(f"\n=== Phase 1: Verify own deny on {deny_name(my_deny)}/ ===")
-check_deny(my_deny, f"deny {deny_name(my_deny)}/")
-if my_deny_nested:
-    check_deny(my_deny_nested, f"deny {deny_name(my_deny)}/{os.path.basename(my_deny_nested)}/")
+print(f"\n=== Phase 1: Verify access to home folder {folder_name(my_home)}/ ===")
+check_access(my_home, f"access home {folder_name(my_home)}/")
+if my_home_nested:
+    check_access(my_home_nested, f"access home {folder_name(my_home)}/{os.path.basename(my_home_nested)}/")
 
 # -----------------------------------------------------------------------
-# Phase 2: Verify access to non-denied directories
+# Phase 2: Verify access to the shared folder and to the other homes
 # -----------------------------------------------------------------------
-print(f"\n=== Phase 2: Verify access to allowed directories ===")
+print(f"\n=== Phase 2: Verify access to the other folders of hub/ ===")
 check_access(COMMON, "access common/")
 check_read(os.path.join(COMMON, 'shared.txt'), 'SHARED_DATA', "read common/shared.txt")
 check_write(os.path.join(COMMON, f'{ACTOR}_was_here.txt'), f'{ACTOR.upper()}_DATA', f"write common/{ACTOR}_was_here.txt")
 
-# Check access to other actors' denied dirs — may be blocked if that
-# actor's deny already set PROTECTED_DACL (blocking our inherited ACE).
-# This is expected behavior, not a bug. Phase 3 verifies access after
-# the deny owner exits and re-enables inheritance.
-for other_actor, other_deny in DENY_MAP.items():
+# Every actor has ALL on hub/, so the home folder of another actor is
+# reachable too.  A grant of one instance never blocks another instance.
+for other_actor, other_home in HOME_MAP.items():
     if other_actor != ACTOR:
-        name = deny_name(other_deny)
-        try:
-            os.listdir(other_deny)
-            print(f"  [PASS] access {name}/ (other's deny): accessible")
-            results.append(('PASS', f'access {name}/ (other\'s deny)'))
-        except PermissionError:
-            print(f"  [INFO] access {name}/ blocked (PROTECTED_DACL from {other_actor}'s deny)")
-            results.append(('INFO', f'access {name}/ blocked by {other_actor}'))
+        check_access(other_home, f"access {folder_name(other_home)}/ (home of {other_actor})")
 
 # -----------------------------------------------------------------------
 # Phase 3: Staggered exit — wait for predecessors and verify
@@ -166,43 +177,37 @@ my_pos = EXIT_ORDER.index(ACTOR)
 predecessors = EXIT_ORDER[:my_pos]
 
 if predecessors:
-    print(f"\n=== Phase 3: Verify denies survive predecessor cleanup ===")
+    print(f"\n=== Phase 3: Verify own access survives predecessor cleanup ===")
 
 for i, pred in enumerate(predecessors):
     print(f"\n--- Waiting for {pred} to exit ---")
     if wait_signal(pred, 'done'):
-        print(f"  [OK] {pred} exited, sleeping 5s for cleanup")
-        time.sleep(5)
+        remaining = len(EXIT_ORDER) - (i + 1)
+        if wait_for_cleanup(remaining):
+            print(f"  [OK] {pred} exited and its grant on hub/ is gone ({remaining} grants left)")
+        else:
+            print(f"  [WARN] {pred} exited, but its grant on hub/ is still there")
     else:
         print(f"  [WARN] {pred} never signaled done")
 
-    # Core invariant: our own deny must survive
-    check_deny(my_deny, f"deny {deny_name(my_deny)}/ (after {pred} cleanup)")
-    if my_deny_nested:
-        check_deny(my_deny_nested,
-                    f"deny {deny_name(my_deny)}/{os.path.basename(my_deny_nested)}/ (after {pred} cleanup)")
-
-    # Verify we still have access to allowed areas
+    # Core invariant: our own grant must survive the cleanup of another instance
+    check_access(my_home, f"access home {folder_name(my_home)}/ (after {pred} cleanup)")
+    if my_home_nested:
+        check_access(my_home_nested,
+                     f"access home {folder_name(my_home)}/{os.path.basename(my_home_nested)}/ (after {pred} cleanup)")
+    check_write(os.path.join(my_home, f'{ACTOR}_after_{pred}.txt'), f'{ACTOR.upper()}_DATA',
+                f"write home {folder_name(my_home)}/ (after {pred} cleanup)")
     check_access(COMMON, f"access common/ (after {pred} cleanup)")
 
-    # The predecessor's deny is now lifted — verify access restored.
-    # NOTE: access may still be blocked if ANOTHER still-running actor
-    # also denies this same path (not the case in this test, but guard).
-    pred_deny = DENY_MAP[pred]
-    check_access(pred_deny, f"access {deny_name(pred_deny)}/ (after {pred} cleanup, deny lifted)")
+    # The home folder of the exited actor: its grant is gone, ours is not.
+    pred_home = HOME_MAP[pred]
+    check_access(pred_home, f"access {folder_name(pred_home)}/ (home of {pred}, after {pred} cleanup)")
 
-    # Verify other still-running actors' denied dirs — may be blocked
-    # by their PROTECTED_DACL (expected, not a bug).
+    # The home folders of the actors that are still running
     for future in EXIT_ORDER[i+1:]:
         if future != ACTOR:
-            name = deny_name(DENY_MAP[future])
-            try:
-                os.listdir(DENY_MAP[future])
-                print(f"  [PASS] access {name}/ ({future} still running): accessible")
-                results.append(('PASS', f'access {name}/ ({future} running)'))
-            except PermissionError:
-                print(f"  [INFO] access {name}/ blocked ({future}'s PROTECTED_DACL)")
-                results.append(('INFO', f'access {name}/ blocked by {future}'))
+            check_access(HOME_MAP[future],
+                         f"access {folder_name(HOME_MAP[future])}/ (home of {future}, still running)")
 
 # -----------------------------------------------------------------------
 # Phase 4: Write final proof + signal done

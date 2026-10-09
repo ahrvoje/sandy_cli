@@ -3,13 +3,13 @@
 Key RT differences from AppContainer:
   - allow.read/execute/append on user-owned paths don't restrict writes
     (user's native SID still has full access)
-  - deny.write with PROTECTED_DACL strips inherited user ACEs → reads also fail
-  - deny.all blocks everything except delete-via-parent (user's native
-    SID on parent has FILE_DELETE_CHILD)
+  - a deny blocks only the level it names: deny.write keeps read and
+    delete, deny.read keeps write
+  - deny.all blocks everything, delete included
 """
 import os, sys
 
-ROOT = r'C:\Users\H\test_acl'
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_acl')
 results = []
 
 def test(name, should_pass, fn):
@@ -60,27 +60,27 @@ test("src: delete file", True, lambda: os.remove(p('workspace','src','new.tmp'))
 
 # ================================================================
 # GROUP 2: workspace/build — [deny] write overrides inherited all
-#   RT: PROTECTED_DACL strips inherited user ACEs → read/list ALSO blocked
-#   Write/create blocked by DENY ACE.  Delete OK (parent's native DELETE)
+#   Deny is surgical: read/list stay allowed, write/create are blocked,
+#   delete stays allowed (deny.write is not deny.delete).
 # ================================================================
-print("--- workspace/build (deny.write — PROTECTED_DACL blocks all reads too) ---")
-test("build: list dir",      False, lambda: os.listdir(p('workspace','build')))
-test("build: read file",     False, lambda: open(p('workspace','build','artifact.bin'),'r').read())
+print("--- workspace/build (deny.write — read OK, write blocked, delete OK) ---")
+test("build: list dir",      True,  lambda: os.listdir(p('workspace','build')))
+test("build: read file",     True,  lambda: open(p('workspace','build','artifact.bin'),'r').read())
 test("build: overwrite file", False, lambda: open(p('workspace','build','artifact.bin'),'w').write('hack'))
 test("build: create file",   False, lambda: open(p('workspace','build','deny_test.tmp'),'w').write('x'))
 test("build: delete file",   True,  lambda: os.remove(p('workspace','build','artifact.bin')))
 
 # ================================================================
 # GROUP 3: workspace/secrets — [deny] all → everything blocked
-#   RT: DENY ACE + PROTECTED_DACL. But delete via parent succeeds
-#   because user's NATIVE SID on workspace/ has FILE_DELETE_CHILD.
+#   Delete is blocked too: the deny holds FILE_DELETE_CHILD, so the right
+#   of the user's native SID on the folder does not delete the files.
 # ================================================================
-print("--- workspace/secrets (deny.all — but parent native rights allow delete) ---")
+print("--- workspace/secrets (deny.all — everything blocked, delete included) ---")
 test("secrets: list dir",    False, lambda: os.listdir(p('workspace','secrets')))
 test("secrets: read file",   False, lambda: open(p('workspace','secrets','key.pem'),'r').read())
 test("secrets: write file",  False, lambda: open(p('workspace','secrets','key.pem'),'w').write('x'))
 test("secrets: create file", False, lambda: open(p('workspace','secrets','new.tmp'),'w').write('x'))
-test("secrets: delete file", True,  lambda: os.remove(p('workspace','secrets','key.pem')))
+test("secrets: delete file", False, lambda: os.remove(p('workspace','secrets','key.pem')))
 
 # ================================================================
 # GROUP 4: data/public — inherits [allow] read
@@ -96,13 +96,13 @@ test("public: delete file",  True, lambda: os.remove(p('data','public','new.tmp'
 
 # ================================================================
 # GROUP 5: data/private — [deny] read on top of allow.read
-#   RT: DENY ACE for read + PROTECTED_DACL strips inherited user ACEs.
-#   Everything blocked.
+#   Read and list are blocked.  Write is not: deny.read does not name it,
+#   and the user's native SID gives write on user-owned paths.
 # ================================================================
-print("--- data/private (deny.read — fully blocked) ---")
+print("--- data/private (deny.read — read blocked, write OK) ---")
 test("private: list dir",   False, lambda: os.listdir(p('data','private')))
 test("private: read file",  False, lambda: open(p('data','private','hidden.txt'),'r').read())
-test("private: write file", False, lambda: open(p('data','private','hidden.txt'),'w').write('x'))
+test("private: write file", True,  lambda: open(p('data','private','hidden.txt'),'w').write('x'))
 
 # ================================================================
 # GROUP 6: logs — [allow] append

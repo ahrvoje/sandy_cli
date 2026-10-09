@@ -1,37 +1,25 @@
 // =========================================================================
-// SandboxACL.h — Pure ACL operations (grant, deny, remove)
+// SandboxACL.h — Pure ACL operations (add ACEs, remove ACEs)
 //
 // Low-level helpers for modifying file/registry DACLs and removing
 // specific SID ACEs.  Multi-instance safe: never replaces entire DACLs.
 // Grant tracking, persistence, and revocation are in SandboxGrants.h.
 //
-// DACL Protection Invariant:
-//   All filesystem DACL writes go through WriteDaclToObject(), which
-//   preserves existing SE_DACL_PROTECTED by default.  Individual
-//   functions (grant, deny, remove, rollback) never decide SI flags
-//   independently — they pass a DaclProtectionIntent to the helper.
+// DACL invariants (structural — no caller can break them):
+//   1. Every DACL write goes through WriteDaclToObject(), which keeps the
+//      object's SE_DACL_PROTECTED state as it found it.  Sandy has no code
+//      path that turns DACL protection on or off.
+//   2. ACEs are added only by AddAcesToObject() and removed only by
+//      RemoveSidFromDaclDetailed().  Both go through RebuildDacl(), which
+//      copies every other ACE byte for byte and in order.
+//   3. The cleanup record is persisted before the DACL is written.
 // =========================================================================
 #pragma once
 
 #include "SandboxTypes.h"
+#include <functional>
 
 namespace Sandbox {
-
-    enum class AceRemovalMode {
-        AllForSid,
-        AllowOnly,
-        DenyOnly,
-    };
-
-    // DACL protection intent — used by ALL filesystem DACL writes.
-    //   PreserveExisting — keep whatever protection the DACL already has (DEFAULT)
-    //   ForceUnprotected — set UNPROTECTED_DACL (cleanup: resume inheritance)
-    //   ForceProtected   — set PROTECTED_DACL   (carve-out: block parent deny re-inheritance)
-    enum class DaclProtectionIntent {
-        PreserveExisting,
-        ForceUnprotected,
-        ForceProtected,
-    };
 
     struct AceRemovalResult {
         int   removed = 0;
@@ -41,18 +29,46 @@ namespace Sandbox {
         bool Succeeded() const { return error == ERROR_SUCCESS; }
     };
 
-    // Callback type for recording grants (defined in SandboxGrants.h)
-    // Receives: path, object type, SID string, trapped SIDs, isDeny flag, isThis flag
-    typedef void (*RecordGrantFn)(const std::wstring&, SE_OBJECT_TYPE, const std::wstring&, const std::wstring&, bool, bool);
+    // -----------------------------------------------------------------------
+    // OwnerAce — the "OWNER RIGHTS" companion of a deny rule.
+    //
+    // Windows gives the owner of an object READ_CONTROL | WRITE_DAC before it
+    // reads the DACL, so a deny ACE cannot take WRITE_DAC away from the
+    // owner.  When the user SID is a restricting SID (strict = false), the
+    // sandboxed process is that owner and could rewrite the DACL of a denied
+    // object.  An ACE for OWNER RIGHTS (S-1-3-4) switches the implicit grant
+    // off; the DACL then decides, and the deny ACE comes first.  The ACE
+    // grants the owner exactly what Windows granted implicitly, so nobody
+    // else sees a difference.
+    //   None       — no companion ACE was written
+    //   ObjectOnly — companion applies to the object itself
+    //   Inherit    — companion applies to the object and all descendants
+    // -----------------------------------------------------------------------
+    enum class OwnerAce { None, ObjectOnly, Inherit };
 
-    // Forward declaration — defined later in this file.  Needed by P1 ACE
-    // rollback logic in GrantObjectAccess/DenyObjectAccess.
-    inline AceRemovalResult RemoveSidFromDaclDetailed(const std::wstring& path,
-                                                     const std::wstring& sidString,
-                                                     SE_OBJECT_TYPE objType,
-                                                     DaclProtectionIntent protection,
-                                                     bool skipTreeSet,
-                                                     AceRemovalMode removalMode);
+    constexpr DWORD kOwnerAceMask = READ_CONTROL | WRITE_DAC;
+
+    // One ACE that Sandy adds for the run/profile SID.
+    struct AceSpec {
+        bool  deny = false;   // ACCESS_DENIED_ACE, else ACCESS_ALLOWED_ACE
+        BYTE  flags = 0;      // OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE | INHERIT_ONLY_ACE
+        DWORD mask = 0;
+    };
+
+    // What cleanup must know about one DACL write (persisted by SandboxGrants.h).
+    struct GrantRecordSpec {
+        std::wstring   path;
+        SE_OBJECT_TYPE objType = SE_FILE_OBJECT;
+        std::wstring   sidString;
+        bool           hasDeny = false;
+        bool           objectOnly = false;   // no inheritable ACE: cleanup needs no child walk
+        OwnerAce       ownerAce = OwnerAce::None;
+    };
+
+    // Callback type for recording grants (defined in SandboxGrants.h).
+    // Called BEFORE the DACL is written.  Returns false when the record could
+    // not be persisted; the DACL is then left untouched.
+    typedef bool (*RecordGrantFn)(const GrantRecordSpec&);
 
     // -----------------------------------------------------------------------
     // AclMutexGuard -- serialize DACL read-modify-write across Sandy instances.
@@ -158,6 +174,63 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // Map access level to the mask of a DENY ACE
+    //
+    // A deny mask is NOT the allow mask of the same level.  Every allow mask
+    // carries the rights each open needs (SYNCHRONIZE, READ_CONTROL,
+    // FILE_READ_ATTRIBUTES); a deny on those blocks every open, whatever the
+    // level.  A deny mask holds only the rights that make the level what it
+    // is, so one level can be denied and the others stay usable.
+    //
+    // Every deny also holds WRITE_DAC | WRITE_OWNER: the denied process must
+    // not be able to edit the rule away.  Delete and All also hold
+    // FILE_DELETE_CHILD: without it, the right to delete children that the
+    // parent directory gives through another SID deletes the denied files.
+    // -----------------------------------------------------------------------
+    constexpr DWORD kDenyTamperMask = WRITE_DAC | WRITE_OWNER;
+
+    inline DWORD DenyMask(AccessLevel level) {
+        DWORD mask = 0;
+        switch (level) {
+        case AccessLevel::Read:    mask = FILE_READ_DATA | FILE_READ_EA; break;
+        case AccessLevel::Write:   mask = FILE_WRITE_DATA | FILE_APPEND_DATA |
+                                          FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES; break;
+        case AccessLevel::Execute:
+        case AccessLevel::Run:     mask = FILE_EXECUTE; break;
+        case AccessLevel::Append:  mask = FILE_APPEND_DATA; break;
+        case AccessLevel::Delete:  mask = DELETE | FILE_DELETE_CHILD; break;
+        case AccessLevel::All:     mask = FILE_ALL_ACCESS; break;
+        // Windows also gives FILE_READ_ATTRIBUTES through the list right of
+        // the parent directory, so this deny holds only where listing the
+        // parent is denied too.
+        case AccessLevel::Stat:    mask = FILE_READ_ATTRIBUTES; break;
+        case AccessLevel::Touch:   mask = FILE_WRITE_ATTRIBUTES; break;
+        case AccessLevel::Create:  mask = FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY; break;
+        default:                   return 0;
+        }
+        return mask | kDenyTamperMask;
+    }
+
+    // Does a deny of this level stop deletion of the named object?
+    inline bool DenyBlocksDelete(AccessLevel level) {
+        return level == AccessLevel::Delete || level == AccessLevel::All;
+    }
+
+    // -----------------------------------------------------------------------
+    // Inheritance flags of a recursive (.deep) rule on a directory.
+    //
+    // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY have the same bit values as
+    // FILE_WRITE_DATA and FILE_APPEND_DATA.  If files inherited a `create`
+    // rule, it would be a rule about overwriting existing files.  `create`
+    // therefore inherits to sub-directories only.
+    // -----------------------------------------------------------------------
+    inline BYTE DeepInheritFlags(AccessLevel level) {
+        return level == AccessLevel::Create
+            ? static_cast<BYTE>(CONTAINER_INHERIT_ACE)
+            : static_cast<BYTE>(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
+    }
+
+    // -----------------------------------------------------------------------
     // Map access level to Win32 registry permission mask
     //
     // Registry and file permission bits are disjoint namespaces.
@@ -174,34 +247,28 @@ namespace Sandbox {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // TreeSet progress callback — logs per-object errors
-    // -----------------------------------------------------------------------
-    inline void WINAPI TreeSecurityProgress(
-        LPWSTR pObjectName, DWORD Status,
-        PPROG_INVOKE_SETTING pInvokeSetting, PVOID Args, BOOL SecuritySet)
+    // True when the object can have children that inherit ACEs.
+    inline bool IsAclContainer(const std::wstring& path, SE_OBJECT_TYPE objType)
     {
-        (void)pInvokeSetting; (void)Args; (void)SecuritySet;
-        if (Status != ERROR_SUCCESS && pObjectName)
-            g_logger.LogFmt(L"ACL_TREE_ERROR: %s (error %lu)", pObjectName, Status);
+        if (objType != SE_FILE_OBJECT)
+            return true;  // registry keys
+        DWORD attrs = GetFileAttributesW(path.c_str());
+        return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
     }
 
     // -----------------------------------------------------------------------
     // WriteDaclToObject — the ONLY way Sandy writes filesystem DACLs.
     //
-    // Centralizes the SE_DACL_PROTECTED decision so individual callers
-    // never have to reason about protection flags.  Default behavior
-    // (PreserveExisting) reads the existing SD control and preserves
-    // PROTECTED_DACL if already set.  This prevents any DACL write from
-    // silently stripping carve-out protection.
+    // The DACL protection state (SE_DACL_PROTECTED, "inheritance disabled")
+    // of the object is read from the SD we already fetched and written back
+    // unchanged.  There is no parameter to change it.
     //
     // Parameters:
     //   path        — target object path
     //   objType     — SE_FILE_OBJECT or SE_REGISTRY_KEY
     //   pNewDacl    — new DACL to apply (caller-allocated, caller-freed)
     //   pExistingSD — security descriptor from GetNamedSecurityInfoW
-    //                 (used to read SE_DACL_PROTECTED; may be nullptr)
-    //   protection  — how to handle DACL protection flags
+    //                 (used to read the control flags; may be nullptr)
     //   directoryOnly — true = SetKernelObjectSecurity (no child propagation)
     // -----------------------------------------------------------------------
     inline DWORD WriteDaclToObject(
@@ -209,7 +276,6 @@ namespace Sandbox {
         SE_OBJECT_TYPE objType,
         PACL pNewDacl,
         PSECURITY_DESCRIPTOR pExistingSD,
-        DaclProtectionIntent protection,
         bool directoryOnly)
     {
         // Read existing protection state from the SD we already fetched
@@ -218,26 +284,16 @@ namespace Sandbox {
         if (pExistingSD)
             GetSecurityDescriptorControl(pExistingSD, &existingControl, &sdRevision);
 
-        // Compute SECURITY_INFORMATION flags
         DWORD siFlags = DACL_SECURITY_INFORMATION;
-        if (protection == DaclProtectionIntent::ForceProtected) {
+        if (existingControl & SE_DACL_PROTECTED)
             siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
-        } else if (protection == DaclProtectionIntent::ForceUnprotected) {
-            siFlags |= UNPROTECTED_DACL_SECURITY_INFORMATION;
-        } else if (existingControl & SE_DACL_PROTECTED) {
-            // PreserveExisting: keep the protection that's already there
-            siFlags |= PROTECTED_DACL_SECURITY_INFORMATION;
-        }
 
-        DWORD attrs = (objType == SE_FILE_OBJECT) ? GetFileAttributesW(path.c_str()) : 0;
-        bool isDir = (objType == SE_FILE_OBJECT)
-                     && (attrs != INVALID_FILE_ATTRIBUTES)
-                     && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+        bool isDir = (objType == SE_FILE_OBJECT) && IsAclContainer(path, objType);
 
         DWORD rc;
         if (isDir && directoryOnly) {
             // SetKernelObjectSecurity: writes DACL to this single object only,
-            // no child propagation.  Used for This-scope grants and peek cleanup.
+            // no child propagation.  Used for object-only ACE sets.
             HANDLE hDir = CreateFileW(path.c_str(), WRITE_DAC | READ_CONTROL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
@@ -247,10 +303,14 @@ namespace Sandbox {
                 SECURITY_DESCRIPTOR sd;
                 InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
                 SetSecurityDescriptorDacl(&sd, TRUE, pNewDacl, FALSE);
-                if (existingControl & SE_DACL_PROTECTED)
-                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
-                else if (protection == DaclProtectionIntent::ForceProtected)
-                    SetSecurityDescriptorControl(&sd, SE_DACL_PROTECTED, SE_DACL_PROTECTED);
+                // The kernel keeps SE_DACL_AUTO_INHERITED only when the
+                // request bit comes with it.
+                SECURITY_DESCRIPTOR_CONTROL keep =
+                    existingControl & (SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED);
+                if (keep & SE_DACL_AUTO_INHERITED)
+                    keep |= SE_DACL_AUTO_INHERIT_REQ;
+                SetSecurityDescriptorControl(&sd,
+                    SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ, keep);
                 rc = SetKernelObjectSecurity(hDir, siFlags, &sd)
                      ? ERROR_SUCCESS : GetLastError();
                 CloseHandle(hDir);
@@ -267,212 +327,221 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // RollbackAceBySid — emergency ACE removal using binary SID directly.
-    //
-    // Used when ConvertSidToStringSidW fails and we need to undo an
-    // already-applied ACE without going through the string-SID path.
-    // Returns true if the ACE was successfully removed.
+    // ACE inspection helpers
     // -----------------------------------------------------------------------
-    inline bool RollbackAceBySid(PSID pSid, const std::wstring& path,
-                                 SE_OBJECT_TYPE objType, AceRemovalMode removalMode)
+    inline bool IsDenyAceType(BYTE aceType)
     {
-        PACL pOldDacl = nullptr;
-        PSECURITY_DESCRIPTOR pSD = nullptr;
-        DWORD rc = GetNamedSecurityInfoW(
-            path.c_str(), objType, DACL_SECURITY_INFORMATION,
-            nullptr, nullptr, &pOldDacl, nullptr, &pSD);
-        if (rc != ERROR_SUCCESS) return false;
+        return aceType == ACCESS_DENIED_ACE_TYPE ||
+               aceType == ACCESS_DENIED_OBJECT_ACE_TYPE ||
+               aceType == ACCESS_DENIED_CALLBACK_ACE_TYPE ||
+               aceType == ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE;
+    }
 
-        // NULL DACL (FAT volumes, explicitly null-DACL objects) holds no ACEs
-        // to roll back — and GetAclInformation would dereference null.
-        if (!pOldDacl) {
-            LocalFree(pSD);
-            return true;
-        }
+    // SID of a plain allow/deny ACE; nullptr for every other ACE type.
+    inline PSID SimpleAceSid(PACE_HEADER pAceHdr)
+    {
+        if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
+            return &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
+        if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
+            return &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
+        return nullptr;
+    }
 
+    // OWNER RIGHTS (S-1-3-4); nullptr if Windows cannot build it.
+    inline PSID OwnerRightsSid()
+    {
+        static BYTE sidBuf[SECURITY_MAX_SID_SIZE];
+        static DWORD sidSize = sizeof(sidBuf);
+        static bool ok = CreateWellKnownSid(WinCreatorOwnerRightsSid, nullptr, sidBuf, &sidSize) != 0;
+        return ok ? static_cast<PSID>(sidBuf) : nullptr;
+    }
+
+    inline bool IsOwnerRightsAce(PACE_HEADER pAceHdr)
+    {
+        PSID pOwnerRights = OwnerRightsSid();
+        PSID pAceSid = SimpleAceSid(pAceHdr);
+        return pOwnerRights && pAceSid && EqualSid(pAceSid, pOwnerRights);
+    }
+
+    // The exact ACE Sandy writes as deny companion: explicit, allow,
+    // OWNER RIGHTS, READ_CONTROL | WRITE_DAC, the given inheritance flags.
+    inline bool IsSandyOwnerAce(PACE_HEADER pAceHdr, BYTE inheritFlags)
+    {
+        return pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+               pAceHdr->AceFlags == inheritFlags &&
+               reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->Mask == kOwnerAceMask &&
+               IsOwnerRightsAce(pAceHdr);
+    }
+
+    inline BYTE OwnerAceInheritFlags(OwnerAce ownerAce)
+    {
+        return ownerAce == OwnerAce::Inherit
+            ? static_cast<BYTE>(OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)
+            : static_cast<BYTE>(0);
+    }
+
+    // An OWNER RIGHTS ACE that says something else than Sandy's companion
+    // ACE is a policy of the user.  The implicit owner grant is already off
+    // on such an object, and one more allow ACE would widen that policy.
+    inline bool HasForeignOwnerRightsAce(PACL pDacl)
+    {
         ACL_SIZE_INFORMATION aclInfo = {};
-        if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
-            LocalFree(pSD);
-            return false;
-        }
-
-        auto shouldRemove = [&](BYTE aceType, PSID pAceSid) -> bool {
-            if (!EqualSid(pAceSid, pSid)) return false;
-            switch (removalMode) {
-            case AceRemovalMode::AllowOnly: return aceType == ACCESS_ALLOWED_ACE_TYPE;
-            case AceRemovalMode::DenyOnly:  return aceType == ACCESS_DENIED_ACE_TYPE;
-            default:                        return aceType == ACCESS_ALLOWED_ACE_TYPE ||
-                                                   aceType == ACCESS_DENIED_ACE_TYPE;
-            }
-        };
-
-        int removed = 0;
-        DWORD newAclSize = sizeof(ACL);
+        if (!GetAclInformation(pDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation))
+            return true;  // cannot tell — add nothing
         for (DWORD i = 0; i < aclInfo.AceCount; i++) {
             PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-            PSID pAceSid = nullptr;
-            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
-            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid))
-                removed++;
-            else
-                newAclSize += pAceHdr->AceSize;
+            if (!GetAce(pDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
+                return true;
+            if (!IsOwnerRightsAce(pAceHdr))
+                continue;
+            bool sameAsOurs = pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->Mask == kOwnerAceMask;
+            if (!sameAsOurs)
+                return true;
         }
-        if (removed == 0) { LocalFree(pSD); return true; }
-
-        PACL pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
-        if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
-            LocalFree(pSD); if (pNewDacl) LocalFree(pNewDacl);
-            return false;
-        }
-        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
-            PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-            PSID pAceSid = nullptr;
-            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
-            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) continue;
-            if (!AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
-                // Writing a DACL missing unrelated ACEs would destroy other
-                // principals' access — abort and leave the original untouched.
-                g_logger.LogFmt(L"ROLLBACK_ACE: %s -> ABORTED (AddAce failed, error %lu)",
-                                path.c_str(), GetLastError());
-                LocalFree(pNewDacl);
-                LocalFree(pSD);
-                return false;
-            }
-        }
-
-        // Use centralized DACL write — preserves PROTECTED_DACL if already set
-        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
-                               DaclProtectionIntent::PreserveExisting, false);
-        LocalFree(pNewDacl);
-        LocalFree(pSD);
-
-        g_logger.LogFmt(L"ROLLBACK_ACE: %s -> %s (%d ACEs)",
-                        path.c_str(), rc == ERROR_SUCCESS ? L"OK" : L"FAILED", removed);
-        return rc == ERROR_SUCCESS;
+        return false;
     }
 
     // -----------------------------------------------------------------------
-    // PrependExplicitDeniesForSid — restore a SID's explicit deny ACEs that
-    // SetEntriesInAclW dropped when merging in a grant.
+    // RebuildDacl — the only place where Sandy builds a DACL.
     //
-    // SetEntriesInAclW keeps at most one ACE per trustee, so GRANT_ACCESS for
-    // a SID collapses away any same-SID DENY ACE already on the object (e.g. a
-    // same-path [deny.*] rule applied moments earlier).  Passing the deny back
-    // in the same call does not help — the merge still resolves to the grant.
+    // Copies `pOld`, leaves out the ACEs for which `drop` returns true, and
+    // adds `added` at their canonical places: new explicit denies after the
+    // explicit denies already there, new explicit allows after the last
+    // explicit ACE; both before the first inherited ACE.  Each kept ACE is
+    // copied byte for byte and in its old order.
     //
-    // This rebuilds the merged DACL with the source DACL's explicit (non-
-    // inherited) deny ACEs for `pSid` prepended, yielding canonical
-    // deny-before-allow so an explicit same-object deny wins, as Windows
-    // requires.  The source denies are authoritative: any same-SID explicit
-    // deny the merge happened to KEEP is dropped from the copied tail so the
-    // result holds each deny exactly once (no duplicates).  Returns a new DACL
-    // the caller must LocalFree, or nullptr when there is nothing to restore
-    // (caller keeps the merged DACL) or on error.
+    // Returns a new ACL (caller must LocalFree) or nullptr with the last
+    // error set.  The caller must not write a DACL when this fails: a DACL
+    // without unrelated ACEs would destroy the access of other principals.
     // -----------------------------------------------------------------------
-    inline PACL PrependExplicitDeniesForSid(PACL pMergedDacl, PACL pSourceDacl, PSID pSid)
-    {
-        if (!pMergedDacl || !pSourceDacl) return nullptr;
+    struct NewAce {
+        PSID  sid;
+        bool  deny;
+        BYTE  flags;
+        DWORD mask;
+    };
 
-        ACL_SIZE_INFORMATION srcInfo = {};
-        ACL_SIZE_INFORMATION mergedInfo = {};
-        if (!GetAclInformation(pSourceDacl, &srcInfo, sizeof(srcInfo), AclSizeInformation) ||
-            !GetAclInformation(pMergedDacl, &mergedInfo, sizeof(mergedInfo), AclSizeInformation))
+    inline PACL RebuildDacl(PACL pOld,
+                            const std::function<bool(PACE_HEADER)>& drop,
+                            const std::vector<NewAce>& added)
+    {
+        ACL_SIZE_INFORMATION aclInfo = {};
+        if (!GetAclInformation(pOld, &aclInfo, sizeof(aclInfo), AclSizeInformation))
             return nullptr;
 
-        auto isExplicitDenyForSid = [&](PACE_HEADER pAceHdr) -> bool {
-            if (pAceHdr->AceType != ACCESS_DENIED_ACE_TYPE) return false;
-            if (pAceHdr->AceFlags & INHERITED_ACE) return false;  // ancestor-owned
-            PSID pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-            return EqualSid(pAceSid, pSid);
-        };
-
-        // Size the rebuilt ACL: prepended denies + every ACE already merged.
-        DWORD newAclSize = sizeof(ACL);
-        bool haveDeny = false;
-        for (DWORD i = 0; i < srcInfo.AceCount; i++) {
+        std::vector<PACE_HEADER> kept;
+        kept.reserve(aclInfo.AceCount);
+        size_t newAclSize = sizeof(ACL);
+        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
             PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pSourceDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) return nullptr;
-            if (isExplicitDenyForSid(pAceHdr)) { newAclSize += pAceHdr->AceSize; haveDeny = true; }
-        }
-        if (!haveDeny) return nullptr;  // nothing dropped — keep merged DACL
-
-        // Tail = merged ACEs minus any same-SID explicit deny the merge kept
-        // (those are re-added once from the source above — avoid duplicates).
-        for (DWORD i = 0; i < mergedInfo.AceCount; i++) {
-            PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pMergedDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) return nullptr;
-            if (isExplicitDenyForSid(pAceHdr)) continue;
+            if (!GetAce(pOld, i, reinterpret_cast<LPVOID*>(&pAceHdr)))
+                return nullptr;
+            if (drop && drop(pAceHdr))
+                continue;
+            kept.push_back(pAceHdr);
             newAclSize += pAceHdr->AceSize;
         }
-
-        PACL pFinal = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
-        if (!pFinal || !InitializeAcl(pFinal, newAclSize, ACL_REVISION)) {
-            if (pFinal) LocalFree(pFinal);
+        for (const auto& ace : added)
+            newAclSize += sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(ace.sid);
+        if (newAclSize > MAXWORD) {  // AclSize is a 16-bit field
+            SetLastError(ERROR_ALLOTTED_SPACE_EXCEEDED);
             return nullptr;
         }
 
-        // Explicit denies first (canonical), then the merged ACEs.
-        for (DWORD i = 0; i < srcInfo.AceCount; i++) {
-            PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pSourceDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr)) ||
-                !isExplicitDenyForSid(pAceHdr)) continue;
-            if (!AddAce(pFinal, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
-                LocalFree(pFinal);
-                return nullptr;
+        size_t explicitEnd = 0;
+        while (explicitEnd < kept.size() && !(kept[explicitEnd]->AceFlags & INHERITED_ACE))
+            explicitEnd++;
+        size_t denyEnd = 0;
+        while (denyEnd < explicitEnd && IsDenyAceType(kept[denyEnd]->AceType))
+            denyEnd++;
+
+        PACL pNew = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
+        if (!pNew)
+            return nullptr;
+        const DWORD revision = pOld->AclRevision;
+        auto copyKept = [&](size_t from, size_t to) {
+            for (size_t i = from; i < to; i++) {
+                if (!AddAce(pNew, revision, MAXDWORD, kept[i], kept[i]->AceSize))
+                    return false;
             }
-        }
-        for (DWORD i = 0; i < mergedInfo.AceCount; i++) {
-            PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pMergedDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) { LocalFree(pFinal); return nullptr; }
-            if (isExplicitDenyForSid(pAceHdr)) continue;  // re-added once from source
-            if (!AddAce(pFinal, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
-                LocalFree(pFinal);
-                return nullptr;
+            return true;
+        };
+        auto addNew = [&](bool deny) {
+            for (const auto& ace : added) {
+                if (ace.deny != deny)
+                    continue;
+                BOOL ok = deny
+                    ? AddAccessDeniedAceEx(pNew, ACL_REVISION, ace.flags, ace.mask, ace.sid)
+                    : AddAccessAllowedAceEx(pNew, ACL_REVISION, ace.flags, ace.mask, ace.sid);
+                if (!ok)
+                    return false;
             }
+            return true;
+        };
+
+        bool built = InitializeAcl(pNew, static_cast<DWORD>(newAclSize), revision) &&
+                     copyKept(0, denyEnd) && addNew(true) &&
+                     copyKept(denyEnd, explicitEnd) && addNew(false) &&
+                     copyKept(explicitEnd, kept.size());
+        if (!built) {
+            DWORD err = GetLastError();
+            LocalFree(pNew);
+            SetLastError(err);
+            return nullptr;
         }
-        return pFinal;
+        return pNew;
+    }
+
+    inline void LogResultingSddl(const std::wstring& path, SE_OBJECT_TYPE objType)
+    {
+        PACL pResultDacl = nullptr;
+        PSECURITY_DESCRIPTOR pResultSD = nullptr;
+        if (GetNamedSecurityInfoW(path.c_str(), objType,
+                DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                &pResultDacl, nullptr, &pResultSD) != ERROR_SUCCESS)
+            return;
+        LPWSTR sddl = nullptr;
+        if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
+                &sddl, nullptr)) {
+            g_logger.Log((L"GRANT_SDDL: " + path + L" -> " + sddl).c_str());
+            LocalFree(sddl);
+        }
+        LocalFree(pResultSD);
     }
 
     // -----------------------------------------------------------------------
-    // Grant access to a file/folder or registry key
+    // AddAcesToObject — add the ACEs of one sandbox SID to a file, folder or
+    // registry key.  The only function that adds Sandy ACEs.
     //
     // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
     // Steps:
     //   1. Read current DACL
-    //   2. Build new DACL with the ALLOW ACE added
-    //   3. Record grant (path + SID string) via RecordGrant()
-    //   4. Apply the new DACL (TreeSet for directories)
+    //   2. Persist the cleanup record via recordFn (write-ahead)
+    //   3. Build the new DACL: old ACEs unchanged + `aces` (+ owner companion)
+    //   4. Apply it in one write (auto-inheritance unless every ACE is
+    //      object-only)
     //   5. Log resulting SDDL
+    //
+    // An allow and a deny for the same object need no special handling: the
+    // canonical order (explicit deny, explicit allow, inherited) makes the
+    // deny win on the object and makes a rule on a nearer object win over a
+    // rule inherited from farther up.
+    //
+    // neutralizeOwner — add the OWNER RIGHTS companion (see OwnerAce) when
+    // `aces` holds a deny.  Pass true when the user SID is a restricting SID
+    // of the sandbox token.
     // -----------------------------------------------------------------------
-    inline DWORD GrantObjectAccess(PSID pSid, const std::wstring& path,
-                                  AccessLevel level,
-                                  RecordGrantFn recordFn = nullptr,
-                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT,
-                                  GrantScope scope = GrantScope::Deep)
+    inline DWORD AddAcesToObject(const std::wstring& path,
+                                 SE_OBJECT_TYPE objType,
+                                 PSID pSid,
+                                 const std::wstring& sidString,
+                                 const std::vector<AceSpec>& aces,
+                                 bool neutralizeOwner,
+                                 RecordGrantFn recordFn)
     {
         AclMutexGuard aclLock(path);
-        DWORD permissions = (objType == SE_REGISTRY_KEY)
-                          ? RegistryAccessMask(level)
-                          : AccessMask(level);
-
-        EXPLICIT_ACCESSW ea{};
-        ea.grfAccessPermissions = permissions;
-        ea.grfAccessMode = GRANT_ACCESS;  // GRANT_ACCESS unions with existing ACE for same SID
-        // This scope: ACE applies only to this object, not children
-        ea.grfInheritance = (scope == GrantScope::This)
-            ? 0
-            : (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
-        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
 
         // 1. Read current DACL
         PACL pOldDacl = nullptr;
@@ -482,161 +551,66 @@ namespace Sandbox {
             nullptr, nullptr, &pOldDacl, nullptr, &pSD);
         if (rc != ERROR_SUCCESS) return rc;
 
-        // 2. Build new DACL.  SetEntriesInAclW merges per-trustee and collapses
-        //    away this SID's existing explicit deny ACEs; restore them in
-        //    canonical position so deny-before-allow holds when an allow and a
-        //    deny target the same object.
-        PACL pMergedDacl = nullptr;
-        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pMergedDacl);
-        if (rc != ERROR_SUCCESS) { LocalFree(pSD); return rc; }
+        // A NULL DACL gives everyone full access.  A DACL with only our ACEs
+        // in its place would take that access away from everyone else.
+        if (!pOldDacl) {
+            LocalFree(pSD);
+            return ERROR_INVALID_ACL;
+        }
 
-        PACL pNewDacl = pMergedDacl;
-        PACL pRebuiltDacl = PrependExplicitDeniesForSid(pMergedDacl, pOldDacl, pSid);
-        if (pRebuiltDacl)
-            pNewDacl = pRebuiltDacl;
+        bool hasDeny = false;
+        bool inheritable = false;
+        for (const auto& ace : aces) {
+            hasDeny = hasDeny || ace.deny;
+            inheritable = inheritable || (ace.flags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE));
+        }
 
-        // 3. (moved below — record only after ACL application succeeds)
+        OwnerAce ownerAce = OwnerAce::None;
+        if (neutralizeOwner && hasDeny && OwnerRightsSid() && !HasForeignOwnerRightsAce(pOldDacl))
+            ownerAce = inheritable ? OwnerAce::Inherit : OwnerAce::ObjectOnly;
+
+        // 2. Record first.  A record without ACEs is a no-op for cleanup;
+        //    ACEs without a record can never be found again.
+        if (recordFn) {
+            GrantRecordSpec record;
+            record.path = path;
+            record.objType = objType;
+            record.sidString = sidString;
+            record.hasDeny = hasDeny;
+            record.objectOnly = !inheritable;
+            record.ownerAce = ownerAce;
+            if (!recordFn(record)) {
+                LocalFree(pSD);
+                return ERROR_WRITE_FAULT;
+            }
+        }
+
+        // 3. Build new DACL
+        std::vector<NewAce> added;
+        added.reserve(aces.size() + 1);
+        for (const auto& ace : aces)
+            added.push_back({ pSid, ace.deny, ace.flags, ace.mask });
+        if (ownerAce != OwnerAce::None)
+            added.push_back({ OwnerRightsSid(), false, OwnerAceInheritFlags(ownerAce), kOwnerAceMask });
+
+        PACL pNewDacl = RebuildDacl(pOldDacl, nullptr, added);
+        if (!pNewDacl) {
+            rc = GetLastError();
+            LocalFree(pSD);
+            return rc != ERROR_SUCCESS ? rc : ERROR_NOT_ENOUGH_MEMORY;
+        }
 
         // 4. Apply new DACL via centralized helper.
-        //    PreserveExisting: if the target already has PROTECTED_DACL (e.g.
-        //    set by a prior carve-out strip), it is preserved — the grant
-        //    does not silently strip protection.
-        bool directoryOnly = (scope == GrantScope::This);
-        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
-                               DaclProtectionIntent::PreserveExisting, directoryOnly);
-        LocalFree(pMergedDacl);
-        if (pRebuiltDacl) LocalFree(pRebuiltDacl);
-        LocalFree(pSD);
-
-        // 3. Record the grant AFTER successful ACL application
-        if (rc == ERROR_SUCCESS && recordFn) {
-            LPWSTR sidStr = nullptr;
-            if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", false, scope == GrantScope::This);
-                LocalFree(sidStr);
-            } else {
-                // SID conversion failed — ACE is on disk but no cleanup record.
-                // P1: Roll back the untracked ACE using binary SID directly
-                // (re-calling ConvertSidToStringSidW would hit the same failure).
-                DWORD convErr = GetLastError();
-                g_logger.LogFmt(L"GRANT_RECORD: ConvertSidToStringSidW failed (error %lu) — "
-                               L"rolling back untracked ACE on %s", convErr, path.c_str());
-                RollbackAceBySid(pSid, path, objType, AceRemovalMode::AllowOnly);
-                return ERROR_NOT_ENOUGH_MEMORY;
-            }
-        }
-
-        // 5. Log resulting SDDL
-        if (rc == ERROR_SUCCESS) {
-            PACL pResultDacl = nullptr;
-            PSECURITY_DESCRIPTOR pResultSD = nullptr;
-            if (GetNamedSecurityInfoW(path.c_str(), objType,
-                    DACL_SECURITY_INFORMATION, nullptr, nullptr,
-                    &pResultDacl, nullptr, &pResultSD) == ERROR_SUCCESS) {
-                LPWSTR sddl = nullptr;
-                if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                        pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
-                        &sddl, nullptr)) {
-                    g_logger.Log((L"GRANT_SDDL: " + path + L" -> " + sddl).c_str());
-                    LocalFree(sddl);
-                }
-                LocalFree(pResultSD);
-            }
-        }
-        return rc;
-    }
-
-    // -----------------------------------------------------------------------
-    // Deny access to a file/folder (Restricted Token only)
-    //
-    // Returns ERROR_SUCCESS (0) on success, or the exact Win32 error code.
-    // Uses real DENY_ACCESS ACEs — the kernel evaluates deny-before-allow
-    // normally for Restricted Token SIDs.
-    //
-    // AppContainer mode does NOT support deny: the Windows kernel ignores
-    // DENY ACEs for AppContainer SIDs (S-1-15-2-*).  This is rejected at
-    // config validation time in SandboxConfig.h.
-    // -----------------------------------------------------------------------
-    inline DWORD DenyObjectAccess(PSID pSid, const std::wstring& path,
-                                  AccessLevel level,
-                                  RecordGrantFn recordFn = nullptr,
-                                  SE_OBJECT_TYPE objType = SE_FILE_OBJECT,
-                                  GrantScope scope = GrantScope::Deep)
-    {
-        AclMutexGuard aclLock(path);
-        DWORD denyMask = AccessMask(level);
-
-        // Read current DACL
-        PACL pOldDacl = nullptr;
-        PSECURITY_DESCRIPTOR pSD = nullptr;
-        DWORD rc = GetNamedSecurityInfoW(
-            path.c_str(), objType, DACL_SECURITY_INFORMATION,
-            nullptr, nullptr, &pOldDacl, nullptr, &pSD);
-        if (rc != ERROR_SUCCESS) return rc;
-
-        // Build new DACL with DENY ACE
-        PACL pNewDacl = nullptr;
-        EXPLICIT_ACCESSW ea{};
-        ea.grfAccessPermissions = denyMask;
-        ea.grfAccessMode = DENY_ACCESS;
-        ea.grfInheritance = (scope == GrantScope::This)
-            ? 0
-            : (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
-        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
-        rc = SetEntriesInAclW(1, &ea, pOldDacl, &pNewDacl);
-
-        if (rc != ERROR_SUCCESS || !pNewDacl) {
-            LocalFree(pSD);
-            return (rc != ERROR_SUCCESS) ? rc : ERROR_NOT_ENOUGH_MEMORY;
-        }
-
-        // Apply via centralized helper — preserves existing PROTECTED_DACL
-        bool directoryOnly = (scope == GrantScope::This);
-        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
-                               DaclProtectionIntent::PreserveExisting, directoryOnly);
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD, !inheritable);
         LocalFree(pNewDacl);
         LocalFree(pSD);
 
-        // Record the grant AFTER successful ACL application
-        if (rc == ERROR_SUCCESS && recordFn) {
-            LPWSTR sidStr = nullptr;
-            if (ConvertSidToStringSidW(pSid, &sidStr)) {
-                recordFn(path, objType, sidStr, L"", true, scope == GrantScope::This);
-                LocalFree(sidStr);
-            } else {
-                // SID conversion failed — ACE is on disk but no cleanup record.
-                // P1: Roll back the untracked deny ACE using binary SID directly
-                // (re-calling ConvertSidToStringSidW would hit the same failure).
-                DWORD convErr = GetLastError();
-                g_logger.LogFmt(L"DENY_RECORD: ConvertSidToStringSidW failed (error %lu) — "
-                               L"rolling back untracked deny ACE on %s", convErr, path.c_str());
-                RollbackAceBySid(pSid, path, objType, AceRemovalMode::DenyOnly);
-                return ERROR_NOT_ENOUGH_MEMORY;
-            }
-        }
-
-        // Log resulting DACL
-        if (rc == ERROR_SUCCESS) {
-            g_logger.LogFmt(L"DENY_RT: %s -> mask=0x%08X", path.c_str(), denyMask);
-            PACL pResultDacl = nullptr;
-            PSECURITY_DESCRIPTOR pResultSD = nullptr;
-            if (GetNamedSecurityInfoW(path.c_str(), objType,
-                    DACL_SECURITY_INFORMATION, nullptr, nullptr,
-                    &pResultDacl, nullptr, &pResultSD) == ERROR_SUCCESS) {
-                LPWSTR sddl = nullptr;
-                if (ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                        pResultSD, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
-                        &sddl, nullptr)) {
-                    g_logger.Log((L"DENY_SDDL: " + path + L" -> " + sddl).c_str());
-                    LocalFree(sddl);
-                }
-                LocalFree(pResultSD);
-            }
-        }
+        // 5. Log resulting SDDL
+        if (rc == ERROR_SUCCESS)
+            LogResultingSddl(path, objType);
         return rc;
     }
+
     // -----------------------------------------------------------------------
     // RemoveSidFromDacl — remove all ACEs for a specific SID from an object.
     //
@@ -652,13 +626,25 @@ namespace Sandbox {
 
     // Returns a structured result so callers can distinguish "already clean"
     // from an actual ACL mutation failure.
+    //
+    // ownerAce — the record says an OWNER RIGHTS companion was written with
+    // the ACEs.  It went onto the object in the same DACL write as the deny
+    // ACEs of this SID, so one copy is removed if, and only if, an explicit
+    // deny of this SID is still on the object.  Without that proof nothing
+    // but the SID's own ACEs is touched (the write never happened, or an
+    // earlier cleanup already removed both).
+    //
+    // An object that holds no ACE of the SID can still have descendants that
+    // do: Windows writes the children first and the object last, so a
+    // killed grant leaves inherited copies below a clean root.  Unless
+    // skipTreeSet is set, the DACL is written back unchanged to make Windows
+    // compute the inheritance of the whole tree again.
     // -----------------------------------------------------------------------
     inline AceRemovalResult RemoveSidFromDaclDetailed(const std::wstring& path,
                                                      const std::wstring& sidString,
                                                      SE_OBJECT_TYPE objType,
-                                                     DaclProtectionIntent protection = DaclProtectionIntent::PreserveExisting,
                                                      bool skipTreeSet = false,
-                                                     AceRemovalMode removalMode = AceRemovalMode::AllForSid)
+                                                     OwnerAce ownerAce = OwnerAce::None)
     {
         AclMutexGuard aclLock(path);
         AceRemovalResult result;
@@ -695,7 +681,6 @@ namespace Sandbox {
             return result;
         }
 
-        // Walk ACE list, build new DACL without matching ACEs
         ACL_SIZE_INFORMATION aclInfo = {};
         if (!GetAclInformation(pOldDacl, &aclInfo, sizeof(aclInfo), AclSizeInformation)) {
             LocalFree(pSD);
@@ -707,93 +692,67 @@ namespace Sandbox {
             return result;
         }
 
-        // Helper: check if an ACE SID matches our target
-        auto shouldRemove = [&](BYTE aceType, PSID pAceSid) -> bool {
-            if (!EqualSid(pAceSid, pTargetSid))
-                return false;
-
-            switch (removalMode) {
-            case AceRemovalMode::AllowOnly:
-                return aceType == ACCESS_ALLOWED_ACE_TYPE;
-            case AceRemovalMode::DenyOnly:
-                return aceType == ACCESS_DENIED_ACE_TYPE;
-            case AceRemovalMode::AllForSid:
-            default:
-                return aceType == ACCESS_ALLOWED_ACE_TYPE ||
-                       aceType == ACCESS_DENIED_ACE_TYPE;
-            }
+        auto isTargetAce = [&](PACE_HEADER pAceHdr) -> bool {
+            PSID pAceSid = SimpleAceSid(pAceHdr);
+            return pAceSid && EqualSid(pAceSid, pTargetSid);
         };
 
+        // First pass: what does this SID hold on the object?
         int removed = 0;
-        DWORD newAclSize = sizeof(ACL);
-        // First pass: compute size of new ACL
+        bool explicitDenyPresent = false;
         for (DWORD i = 0; i < aclInfo.AceCount; i++) {
             PACE_HEADER pAceHdr = nullptr;
             if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-
-            PSID pAceSid = nullptr;
-            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
-            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-
-            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid)) {
-                removed++;
-            } else {
-                newAclSize += pAceHdr->AceSize;
-            }
+            if (!isTargetAce(pAceHdr)) continue;
+            removed++;
+            if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE && !(pAceHdr->AceFlags & INHERITED_ACE))
+                explicitDenyPresent = true;
         }
 
         if (removed == 0) {
+            if (!skipTreeSet && IsAclContainer(path, objType)) {
+                // Not an error when it fails: a DACL we cannot write now is a
+                // DACL the grant could not write either.
+                rc = WriteDaclToObject(path, objType, pOldDacl, pSD, false);
+                if (rc == ERROR_SUCCESS)
+                    g_logger.LogFmt(L"ACL_REPROPAGATE: %s -> OK", path.c_str());
+                else
+                    g_logger.LogFmt(L"ACL_REPROPAGATE: %s -> skipped (0x%08X: %s)",
+                                    path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+            }
             LocalFree(pSD);
             LocalFree(pTargetSid);
             return result;
         }
 
-        // Second pass: build new ACL
-        PACL pNewDacl = reinterpret_cast<PACL>(LocalAlloc(LPTR, newAclSize));
-        if (!pNewDacl || !InitializeAcl(pNewDacl, newAclSize, ACL_REVISION)) {
-            LocalFree(pSD);
-            LocalFree(pTargetSid);
+        // Second pass: build new ACL without the SID's ACEs
+        const bool dropOwnerAce = ownerAce != OwnerAce::None && explicitDenyPresent;
+        const BYTE ownerFlags = OwnerAceInheritFlags(ownerAce);
+        bool ownerAceDropped = false;
+        PACL pNewDacl = RebuildDacl(pOldDacl, [&](PACE_HEADER pAceHdr) -> bool {
+            if (isTargetAce(pAceHdr))
+                return true;
+            if (dropOwnerAce && !ownerAceDropped && IsSandyOwnerAce(pAceHdr, ownerFlags)) {
+                ownerAceDropped = true;  // exactly one copy: other instances own the rest
+                return true;
+            }
+            return false;
+        }, {});
+        LocalFree(pTargetSid);
+        if (!pNewDacl) {
+            // Writing a DACL missing unrelated ACEs would destroy other
+            // principals' access — abort and leave the original untouched.
             result.error = GetLastError();
-            if (pNewDacl) LocalFree(pNewDacl);
-            g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
+            if (result.error == ERROR_SUCCESS) result.error = ERROR_NOT_ENOUGH_MEMORY;
+            g_logger.LogFmt(L"ACL_REMOVE: %s -> ABORTED (0x%08X: %s)",
                             path.c_str(), result.error,
                             GetSystemErrorMessage(result.error).c_str());
+            LocalFree(pSD);
             return result;
         }
 
-        for (DWORD i = 0; i < aclInfo.AceCount; i++) {
-            PACE_HEADER pAceHdr = nullptr;
-            if (!GetAce(pOldDacl, i, reinterpret_cast<LPVOID*>(&pAceHdr))) continue;
-
-            PSID pAceSid = nullptr;
-            if (pAceHdr->AceType == ACCESS_ALLOWED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_ALLOWED_ACE*>(pAceHdr)->SidStart;
-            else if (pAceHdr->AceType == ACCESS_DENIED_ACE_TYPE)
-                pAceSid = &reinterpret_cast<ACCESS_DENIED_ACE*>(pAceHdr)->SidStart;
-
-            if (pAceSid && shouldRemove(pAceHdr->AceType, pAceSid))
-                continue;  // skip — this is ours or a trapped SID
-            if (!AddAce(pNewDacl, ACL_REVISION, MAXDWORD, pAceHdr, pAceHdr->AceSize)) {
-                // Writing a DACL missing unrelated ACEs would destroy other
-                // principals' access — abort and leave the original untouched.
-                result.error = GetLastError();
-                g_logger.LogFmt(L"ACL_REMOVE: %s -> ABORTED (AddAce failed, 0x%08X: %s)",
-                                path.c_str(), result.error,
-                                GetSystemErrorMessage(result.error).c_str());
-                LocalFree(pNewDacl);
-                LocalFree(pSD);
-                LocalFree(pTargetSid);
-                return result;
-            }
-        }
-
-        LocalFree(pTargetSid);
-
         // Apply cleaned DACL via centralized helper
-        rc = WriteDaclToObject(path, objType, pNewDacl, pSD,
-                               protection, skipTreeSet);
+        rc = WriteDaclToObject(path, objType, pNewDacl, pSD, skipTreeSet);
         LocalFree(pNewDacl);
         LocalFree(pSD);
 
@@ -815,12 +774,11 @@ namespace Sandbox {
     inline int RemoveSidFromDacl(const std::wstring& path,
                                  const std::wstring& sidString,
                                  SE_OBJECT_TYPE objType,
-                                 DaclProtectionIntent protection = DaclProtectionIntent::PreserveExisting,
                                  bool skipTreeSet = false,
-                                 AceRemovalMode removalMode = AceRemovalMode::AllForSid)
+                                 OwnerAce ownerAce = OwnerAce::None)
     {
         return RemoveSidFromDaclDetailed(path, sidString, objType,
-                                         protection, skipTreeSet, removalMode).removed;
+                                         skipTreeSet, ownerAce).removed;
     }
 
 } // namespace Sandbox

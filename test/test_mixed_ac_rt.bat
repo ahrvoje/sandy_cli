@@ -18,7 +18,7 @@ REM =====================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set AC_CONFIG=%~dp0test_mixed_ac_rt_ac.toml
 set RT_CONFIG=%~dp0test_mixed_ac_rt_rt.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_mixed
 set PASS=0
 set FAIL=0
@@ -49,6 +49,11 @@ echo --- Pre-Sandy SDDL snapshots ---
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared').Sddl" 2^>nul') do set "PRE_SDDL_0=%%S"
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\workspace').Sddl" 2^>nul') do set "PRE_SDDL_1=%%S"
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\protected').Sddl" 2^>nul') do set "PRE_SDDL_2=%%S"
+REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
+for %%V in (PRE_SDDL_0 PRE_SDDL_1 PRE_SDDL_2) do if not defined %%V (
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    exit /b 1
+)
 echo   Captured 3 pre-Sandy SDDLs
 echo.
 
@@ -109,7 +114,7 @@ echo.
 
 REM --- Check for residual AppContainer SIDs ---
 set SC_AC=0
-for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC_AC=%%N
+for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC_AC=%%N
 if !SC_AC! EQU 0 (
     echo   [PASS] No AppContainer SIDs (S-1-15-2-^) on shared/ tree
     set /a PASS+=1
@@ -120,7 +125,7 @@ if !SC_AC! EQU 0 (
 
 REM --- Check for residual RT SIDs ---
 set SC_RT=0
-for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC_RT=%%N
+for /f %%N in ('icacls "%ROOT%\shared" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC_RT=%%N
 if !SC_RT! EQU 0 (
     echo   [PASS] No Restricted Token SIDs (S-1-9-^) on shared/ tree
     set /a PASS+=1

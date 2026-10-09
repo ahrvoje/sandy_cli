@@ -9,7 +9,7 @@ Run inside AppContainer via test_expert.bat.
 """
 import os, sys, ctypes, ctypes.wintypes
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_expert')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_expert')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 

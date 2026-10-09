@@ -3,7 +3,7 @@ Reads should succeed, writes and deletes should be blocked.
 For actual deny testing, use the RT variant."""
 import os, sys
 
-folder = r'C:\Users\H\test_RW'
+folder = os.path.join(os.environ['USERPROFILE'], 'test_RW')
 results = []
 
 # Test 1: list dir should SUCCEED (only write is denied, read still allowed)

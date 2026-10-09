@@ -11,7 +11,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_acl_grants_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_acl
 
 echo =====================================================================
@@ -60,7 +60,7 @@ set PASS=0
 set FAIL=0
 
 set SC=0
-for /f %%N in ('icacls "%ROOT%\workspace" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\workspace" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on workspace/ tree
     set /a PASS+=1

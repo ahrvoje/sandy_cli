@@ -1,13 +1,13 @@
-# Collusion4 — Delta (AC, no deny)
-# ALL on hub/ (deny on hub/quarantine/ removed — AC doesn't support deny)
+# Collusion4 — Delta (AppContainer)
+# ALL on hub/, like the other three actors
 
 [sandbox]
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_collude4\scripts']
-all = ['C:\Users\H\test_collude4\hub']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_collude4\scripts']
+all = ['%USERPROFILE%\test_collude4\hub']
 
 [privileges]
 child_processes = false

@@ -153,6 +153,74 @@ if !ERRORLEVEL! EQU 0 (
 
 del "%TEMP%\sandy_pg5.txt" 2>nul
 
+echo.
+echo --- PG6: environment variables in paths are expanded ---
+
+"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\nworkdir = '%%USERPROFILE%%'\n[allow.this]\nstat = ['%%LOCALAPPDATA%%']" >"%TEMP%\sandy_pg6.txt" 2>&1
+set PG6_EC=!ERRORLEVEL!
+
+if !PG6_EC! EQU 0 (
+    echo   [PASS] PG6a: config with %%NAME%% paths accepted
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG6a: exit code !PG6_EC! (expected 0^)
+    set /a FAIL+=1
+)
+
+findstr /L /C:"workdir = '%USERPROFILE%'" "%TEMP%\sandy_pg6.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] PG6b: %%USERPROFILE%% expanded in workdir
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG6b: workdir does not hold the user profile path
+    set /a FAIL+=1
+)
+
+findstr /L /C:"'%LOCALAPPDATA%'" "%TEMP%\sandy_pg6.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] PG6c: %%LOCALAPPDATA%% expanded in an allow path
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG6c: allow path does not hold the local app data path
+    set /a FAIL+=1
+)
+
+findstr /L /C:"%%USERPROFILE%%" /C:"%%LOCALAPPDATA%%" "%TEMP%\sandy_pg6.txt" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] PG6d: resolved config holds no variable reference
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG6d: a variable reference is still in the resolved config
+    set /a FAIL+=1
+)
+
+del "%TEMP%\sandy_pg6.txt" 2>nul
+
+echo.
+echo --- PG7: variable that is not set is rejected ---
+
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['%%SANDY_TEST_NO_SUCH_VAR%%\data']" >nul 2>"%TEMP%\sandy_pg7.txt"
+set PG7_EC=!ERRORLEVEL!
+
+if !PG7_EC! EQU 128 (
+    echo   [PASS] PG7a: path with a variable that is not set rejected with config error
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG7a: exit code !PG7_EC! (expected 128^)
+    set /a FAIL+=1
+)
+
+findstr /C:"Environment variable 'SANDY_TEST_NO_SUCH_VAR' is not set." "%TEMP%\sandy_pg7.txt" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] PG7b: error names the variable
+    set /a PASS+=1
+) else (
+    echo   [FAIL] PG7b: error does not name the variable
+    set /a FAIL+=1
+)
+
+del "%TEMP%\sandy_pg7.txt" 2>nul
+
 del "!TMP_FILE!" 2>nul
 rmdir /s /q "!TMP_DIR!" 2>nul
 

@@ -1,0 +1,10 @@
+# Interrupt test — one grant on a small tree.
+# Restricted token with the default desktop = true: the run also puts an
+# ACE of its SID on the window station and on the desktop.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[allow.deep]
+read = ['%USERPROFILE%\test_interrupt\small']

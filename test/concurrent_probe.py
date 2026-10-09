@@ -4,7 +4,7 @@
 import os, sys, time
 
 role = sys.argv[1] if len(sys.argv) > 1 else "unknown"
-folder = os.path.join(os.environ.get("USERPROFILE", "C:\\Users\\H"), "test_concurrent", "data")
+folder = os.path.join(os.environ["USERPROFILE"], "test_concurrent", "data")
 marker = os.path.join(folder, f"probe_{role}.txt")
 wait = int(sys.argv[2]) if len(sys.argv) > 2 else 15
 

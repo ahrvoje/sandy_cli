@@ -13,7 +13,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_new_levels_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_new_levels
 
 echo =====================================================================
@@ -26,6 +26,11 @@ REM === Cleanup stale state ===
 
 REM === Recreate folder tree ===
 if exist "%ROOT%" rmdir /s /q "%ROOT%"
+mkdir "%ROOT%"
+REM A private tree (owner only, inheritance off): the access of the sandbox
+REM then comes from the Sandy grants alone, whatever the parent folder gives
+REM to Users or Everyone.
+icacls "%ROOT%" /inheritance:r /grant:r "%USERDOMAIN%\%USERNAME%:(OI)(CI)F" >nul
 mkdir "%ROOT%\scripts"
 mkdir "%ROOT%\run_dir"
 mkdir "%ROOT%\stat_dir"
@@ -56,6 +61,7 @@ echo.
 
 REM === Part 2: Run test inside sandbox ===
 echo --- Part 2: AC sandbox test ---
+set TEST_MODE=AC
 "%SANDY%" -c "%CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_new_levels.py"
 set AC_EXIT=!ERRORLEVEL!
 echo.
@@ -73,7 +79,11 @@ echo @echo blocked>"%ROOT%\denied\no_run\blocked.bat"
 echo blocked>"%ROOT%\denied\no_stat\file.txt"
 echo blocked>"%ROOT%\denied\no_touch\file.txt"
 echo blocked>"%ROOT%\denied\no_create\existing.txt"
+REM A real program for the deny.run check: same file in an allowed and a denied folder
+copy /y "%SystemRoot%\System32\whoami.exe" "%ROOT%\denied\tool.exe" >nul
+copy /y "%SystemRoot%\System32\whoami.exe" "%ROOT%\denied\no_run\tool.exe" >nul
 
+set TEST_MODE=RT
 "%SANDY%" -c "%RT_CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_new_levels.py"
 set RT_EXIT=!ERRORLEVEL!
 echo.
@@ -89,10 +99,13 @@ echo    AC test:  exit !AC_EXIT!
 echo    RT test:  exit !RT_EXIT!
 echo =====================================================================
 
-if !DRY_EXIT! EQU 0 if !AC_EXIT! EQU 0 (
-    echo  CORE TESTS PASSED
+set FAILED=0
+if !DRY_EXIT! NEQ 0 set FAILED=1
+if !AC_EXIT! NEQ 0 set FAILED=1
+if !RT_EXIT! NEQ 0 set FAILED=1
+if !FAILED! EQU 0 (
+    echo  ALL TESTS PASSED
     exit /b 0
-) else (
-    echo  SOME TESTS FAILED
-    exit /b 1
 )
+echo  SOME TESTS FAILED
+exit /b 1

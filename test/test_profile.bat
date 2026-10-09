@@ -9,7 +9,7 @@ REM ===================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set AC_CONFIG=%~dp0test_profile_ac.toml
 set RT_CONFIG=%~dp0test_profile_rt.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 set ROOT=%USERPROFILE%\test_sandy_profile
@@ -375,11 +375,12 @@ echo --- P7: Flag Combinations ---
 
 REM P7a: -p + -c + -x = COLLISION
 "!SANDY!" -p test_ac -c "!AC_CONFIG!" -x cmd.exe /c exit >nul 2>"%TEMP%\sandy_p7a.txt"
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] P7a: -p -c -x rejected
+set P7A_EC=!ERRORLEVEL!
+if !P7A_EC! EQU 125 (
+    echo   [PASS] P7a: -p -c -x rejected with exit code 125
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P7a: -p -c -x should be rejected
+    echo   [FAIL] P7a: -p -c -x exit code !P7A_EC!, expected 125
     set /a FAIL+=1
 )
 findstr /C:"mutually exclusive" "%TEMP%\sandy_p7a.txt" >nul 2>nul
@@ -393,11 +394,12 @@ if !ERRORLEVEL! EQU 0 (
 
 REM P7c: -p + -s + -x = COLLISION
 "!SANDY!" -p test_ac -s "[sandbox]" -x cmd.exe >nul 2>"%TEMP%\sandy_p7c.txt"
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] P7c: -p -s -x rejected
+set P7C_EC=!ERRORLEVEL!
+if !P7C_EC! EQU 125 (
+    echo   [PASS] P7c: -p -s -x rejected with exit code 125
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P7c: -p -s -x should be rejected
+    echo   [FAIL] P7c: -p -s -x exit code !P7C_EC!, expected 125
     set /a FAIL+=1
 )
 findstr /C:"mutually exclusive" "%TEMP%\sandy_p7c.txt" >nul 2>nul
@@ -406,6 +408,17 @@ if !ERRORLEVEL! EQU 0 (
     set /a PASS+=1
 ) else (
     echo   [FAIL] P7d: missing -s collision message
+    set /a FAIL+=1
+)
+
+REM P7m: -c + -s + -x = the same kind of conflict, so the same exit code
+"!SANDY!" -c "!AC_CONFIG!" -s "[sandbox]" -x cmd.exe /c exit >nul 2>nul
+set P7M_EC=!ERRORLEVEL!
+if !P7M_EC! EQU !P7A_EC! (
+    echo   [PASS] P7m: -c -s -x gives the same exit code as -p -c -x ^(!P7M_EC!^)
+    set /a PASS+=1
+) else (
+    echo   [FAIL] P7m: -c -s -x exit code !P7M_EC!, but -p -c -x gave !P7A_EC!
     set /a FAIL+=1
 )
 
@@ -644,7 +657,7 @@ echo --- P13: Registry Isolation ---
 REM P13a: No subkeys under Sandy\Grants after profile creation
 REM   Both test_ac and test_rt were created in P1/P2 above.
 REM   If RecordGrant leaked to Grants, there would be subkeys.
-reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P13a: Sandy\Grants has no subkeys after profile creation
     set /a PASS+=1
@@ -655,7 +668,7 @@ if !ERRORLEVEL! NEQ 0 (
 
 REM P13b: No bare grant values under Sandy\Grants (only Default)
 set P13B_DIRTY=0
-for /f "tokens=1,2,3*" %%a in ('reg query "HKCU\Software\Sandy\Grants" /v 2^>nul ^| findstr REG_SZ') do (
+for /f "tokens=1,2,3*" %%a in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr REG_SZ') do (
     REM Skip (Default)
     if /i "%%a" NEQ "(Default)" set P13B_DIRTY=1
 )
@@ -690,7 +703,7 @@ if !ERRORLEVEL! EQU 0 (
 
 REM P13e: Run with profile, then verify Grants is still clean
 REM   (P5 already ran with test_ac ? check Grants after)
-reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P13e: Sandy\Grants clean after profile run
     set /a PASS+=1
@@ -1142,7 +1155,7 @@ REM P14e: Profile-mode run creates and clears Grants live-state
 REM   During a run, a lightweight Grants\<instanceId> entry should exist
 REM   for liveness tracking. After clean exit, it must be removed.
 REM   Verify: no Grants subkeys remain after a clean profile-mode run.
-reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P14e: Grants clean after profile-mode run
     set /a PASS+=1
@@ -1155,7 +1168,7 @@ REM P14f/P14g: live profile deletion must be refused while a profile-mode run is
 copy /y "%~dp0profile_live_hold.py" "!ROOT!\data\profile_live_hold.py" >nul 2>nul
 start /b "" "!SANDY!" -p test_ac -x "!PYTHON!" "!ROOT!\data\profile_live_hold.py" >nul 2>nul
 ping -n 3 127.0.0.1 >nul
-for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "LIVE_PROFILE_PID=%%P"
+for /f %%P in ('powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*profile_live_hold.py*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { $p }"') do set "LIVE_PROFILE_PID=%%P"
 
 set LIVE_READY=0
 for /l %%W in (1,1,15) do (

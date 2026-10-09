@@ -16,7 +16,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_deny_precedence_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_deny_prec
 
 echo =====================================================================

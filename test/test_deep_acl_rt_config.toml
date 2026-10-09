@@ -30,15 +30,15 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-execute = ['C:\Users\H\test_deep\scripts']
-read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts', 'C:\Users\H\test_deep\library']
-all = ['C:\Users\H\test_deep\app']
+execute = ['%USERPROFILE%\test_deep\scripts']
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_deep\scripts', '%USERPROFILE%\test_deep\library']
+all = ['%USERPROFILE%\test_deep\app']
 
 [deny.deep]
-write   = ['C:\Users\H\test_deep\app\src\core']
-all     = ['C:\Users\H\test_deep\app\src\contrib']
-read    = ['C:\Users\H\test_deep\app\docs\classified', 'C:\Users\H\test_deep\library\experimental']
-execute = ['C:\Users\H\test_deep\scripts\restricted']
+write   = ['%USERPROFILE%\test_deep\app\src\core']
+all     = ['%USERPROFILE%\test_deep\app\src\contrib']
+read    = ['%USERPROFILE%\test_deep\app\docs\classified', '%USERPROFILE%\test_deep\library\experimental']
+execute = ['%USERPROFILE%\test_deep\scripts\restricted']
 [environment]
 inherit = true
 

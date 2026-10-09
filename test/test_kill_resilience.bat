@@ -24,7 +24,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0kill_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PROBE=%~dp0kill_probe.py
 set DIR_A=%USERPROFILE%\test_kill_A
 set DIR_B=%USERPROFILE%\test_kill_B
@@ -74,27 +74,30 @@ echo   [OK] S1 probe running
 taskkill /f /pid !S1_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
-REM 1a: Registry grants MUST exist (proving persistence works)
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] S1: Grants registry key persisted after kill
+REM 1a: The ledger of the killed instance MUST exist (proving persistence works).
+REM The parent key is permanent, so count the instance subkeys.
+set LEDGERS=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set LEDGERS=%%N
+if !LEDGERS! GEQ 1 (
+    echo   [PASS] S1: Ledger of the killed instance persisted
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S1: Grants registry key missing — persistence broken
+    echo   [FAIL] S1: No ledger after kill — persistence broken
     set /a FAIL+=1
 )
 
-REM 1b: ACL may or may not have AppContainer SID — taskkill /f is non-deterministic:
-REM ConsoleCtrlHandler may fire (cleaning ACLs) or TerminateProcess may win (leaving them).
-REM Both outcomes are valid; --cleanup handles the residual state either way.
+REM 1b: taskkill /f ends Sandy with no chance to clean up, so the ACE of the
+REM run MUST still be on the folder.  Without it the checks after --cleanup
+REM would prove nothing.
 set SC=0
 for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
-if !SC! EQU 0 (
-    echo   [PASS] S1: ACL clean after kill ^(ConsoleCtrlHandler ran cleanup^)
+if !SC! GEQ 1 (
+    echo   [PASS] S1: !SC! AppContainer ACE left behind by the kill
+    set /a PASS+=1
 ) else (
-    echo   [PASS] S1: !SC! AppContainer SIDs persisted ^(ctrl handler did not run^)
+    echo   [FAIL] S1: No AppContainer ACE after kill — the kill did not interrupt a live grant
+    set /a FAIL+=1
 )
-set /a PASS+=1
 
 REM 1c: --cleanup ALONE must remove registry entries (no manual help)
 "!SANDY!" --cleanup >nul 2>nul
@@ -112,7 +115,7 @@ if !REMAIN! EQU 0 (
 
 REM 1d: ACL MUST be clean after --cleanup
 set SC=0
-for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] S1: ACLs clean after --cleanup
     set /a PASS+=1
@@ -246,8 +249,9 @@ taskkill /f /pid !S3A_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 
 REM 3a: Stale grants MUST exist (proves kill left state behind)
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+set LEDGERS=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set LEDGERS=%%N
+if !LEDGERS! GEQ 1 (
     echo   [PASS] S3: Stale grants from killed S3a
     set /a PASS+=1
 ) else (
@@ -444,7 +448,7 @@ for /f %%N in ('icacls "!DIR_A!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v 
 set SCB=0
 for /f %%N in ('icacls "!DIR_B!" 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SCB=%%N
 if !SCA! GEQ 1 if !SCB! GEQ 1 (
-    echo   [PASS] S5: Both folders have AppContainer SIDs (A:!SCA! B:!SCB!)
+    echo   [PASS] S5: Both folders have AppContainer SIDs ^(A:!SCA! B:!SCB!^)
     set /a PASS+=1
     goto :S5_SID_DONE
 )
@@ -559,8 +563,8 @@ echo.
 echo === Final: Verify pristine state (Sandy must leave nothing) ===
 echo.
 
-REM F1: No scheduled task
-schtasks /Query /TN "SandyCleanup" >nul 2>nul
+REM F1: No scheduled task (the task names are SandyCleanup_<uuid>)
+schtasks /Query /FO LIST 2>nul | findstr /C:"SandyCleanup_" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No scheduled task remains
     set /a PASS+=1
@@ -597,14 +601,10 @@ del "%TEMP%\sandy_kill_*.txt" 2>nul
 if exist "!DIR_A!" rmdir /s /q "!DIR_A!"
 if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 
-REM === Defense-in-depth: clear stale subkeys (parent keys are permanent) ===
+REM === Final recovery pass.  Sandy removes only the ledgers of dead instances;
+REM     the test must not delete ledgers itself: a ledger here can belong to a
+REM     live sandbox that has nothing to do with this test. ===
 "!SANDY!" --cleanup >nul 2>nul
-for /f "tokens=*" %%K in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\"') do (
-    reg delete "%%K" /f >nul 2>nul
-)
-for /f "tokens=1,2,*" %%A in ('reg query "HKCU\Software\Sandy\WER" /v * 2^>nul ^| findstr REG_') do (
-    reg delete "HKCU\Software\Sandy\WER" /v "%%A" /f >nul 2>nul
-)
 
 REM =====================================================================
 REM Summary

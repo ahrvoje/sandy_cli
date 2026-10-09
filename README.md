@@ -75,7 +75,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--delete-profile <name>` | Delete a saved profile and revoke its persistent ACLs |
 | `--profile-info <name>` | Show saved profile details (type, SID, config, grants) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
-| `-q`, `--quiet` | Suppress the config banner on stderr |
+| `-q`, `--quiet` | Suppress the config banner on stderr. The banner is also off when `-l` is active (it goes to the log) |
 | `-v`, `--version` | Print version |
 | `-h`, `--help` | Print full help text with config reference |
 | `--print-container-toml` | Print default AppContainer config to stdout |
@@ -88,7 +88,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
 
 
-All sandy flags must come **before** `-x`. Arguments after `-x <executable>` are forwarded to it.
+All sandy flags must come **before** `-x`. Everything after `-x <executable>` is forwarded to it, also tokens such as `-l` or `-q`.
 
 ### Exit codes
 
@@ -98,22 +98,27 @@ Sandy follows the POSIX high-code convention used by `bash`, `env`, `timeout`, a
 |:----:|---------|
 | `0` | Success — child exited cleanly, or info command succeeded |
 | `1`-`124` | Child's exit code (passed through unchanged) |
-| `125` | Sandy internal / general error |
+| `125` | Sandy internal / general error, or a command-line usage error (unknown option, missing argument) |
 | `126` | Cannot execute — `CreateProcess` failed (permission denied, bad format) |
 | `127` | Command not found — executable does not exist on disk |
 | `128` | Configuration error — invalid TOML, wrong-mode keys, config file not found |
 | `129` | Sandbox setup failed — token/SID creation, ACL grants, or stdin setup |
-| `130` | Timeout — child killed by Sandy's timeout watchdog |
+| `130` | Timeout — the sandboxed process tree was ended by Sandy's timeout watchdog |
 | `131` | Child crashed — NTSTATUS crash code detected (e.g. `0xC0000005`) |
 
 > [!TIP]
 > In automation scripts, check for `exit code >= 125` to detect Sandy-level errors. Codes 130 and 131 indicate the child ran but terminated abnormally.
+
+> [!NOTE]
+> **Ctrl+C / Ctrl+Break.** Sandy ends the child process tree, runs its complete cleanup, and then exits with `0xC000013A` (`STATUS_CONTROL_C_EXIT`, shown by `cmd` as `-1073741510`). This is the code that Windows gives to any console program ended by Ctrl+C.
 
 ---
 
 ## Config File
 
 All sandbox behavior is controlled by a TOML config. Every config **must** include a `[sandbox]` section declaring the token mode. Use `-c` or `-s` (mutually exclusive). Mode-specific settings are validated — using a flag meant for the other mode is an error. All paths must be absolute and must exist on disk (non-existent paths are rejected as config errors).
+
+**Environment variables in paths:** a path can hold variables in `%NAME%` form, for example `'%USERPROFILE%\project'` or `'%LOCALAPPDATA%\Programs\Python\Python314'`. Sandy replaces them with the values from its own environment when it loads the config, so a config does not have to hold a user name. A variable that is not set is a config error. `--print-config` shows the resolved paths.
 
 **Config limits (defense-in-depth):**
 - Config file size: max **1 MB**
@@ -157,7 +162,7 @@ delete  = ['C:\temp\scratch']
 all     = ['C:\workspace']
 
 [allow.this]
-read    = ['C:\', 'C:\Users', 'C:\Users\H']    # directory listing only
+read    = ['C:\', 'C:\Users', '%USERPROFILE%']    # directory listing only
 stat    = ['C:\important_file.dat']             # attributes only
 ```
 
@@ -179,6 +184,9 @@ stat    = ['C:\important_file.dat']             # attributes only
 
 > [!IMPORTANT]
 > Permissions are independent — `write` does **not** grant `read`, and `read` does **not** grant `execute`. Grant each permission explicitly, or use `all` for full access.
+
+> [!NOTE]
+> **Two limits that come from the Windows permission bits.** A `create` rule in `[allow.deep]` / `[deny.deep]` inherits to sub-folders only: "add file" on a folder and "write data" on a file are the same bit, so a `create` rule on files would be an overwrite rule. For the same reason `append` on a folder also allows the creation of sub-folders.
 
 ### `[deny.deep]` / `[deny.this]` — Deny access to specific paths *(restricted token only)*
 
@@ -203,10 +211,34 @@ write   = ['C:\workspace\config.lock']      # block writes to this single file o
 - **Deny is surgical.** Only the specific permission type is blocked. For example, `deny.write` blocks writing and creating files, but `read`, `execute`, and `delete` remain allowed.
 - **`deny.write` does NOT block delete.** `DELETE` is a separate Windows permission from `WRITE`. To block deletion, use `deny.delete` or `deny.all`.
 - **`deny.read` blocks listing.** Denying read also blocks `os.listdir()` / `dir` because directory listing requires read-data permission.
+- **`deny.delete` and `deny.all` also block rename.** Windows lets a process delete or rename an object through the "delete child" right of the parent folder, whatever the object's own DACL says. For these two levels Sandy therefore puts one extra deny ACE (the *delete guard*: delete child, this folder only) on the parent folder of the denied path. The denied object, and the denied folder itself, cannot be deleted or renamed. Other children of that parent are not affected.
+- **A deny cannot be edited away.** Every deny also blocks "change permissions" and "take ownership" on the denied object. With `strict = false` the sandboxed process counts as owner of the user's files, and Windows gives an owner the right to change permissions before it reads the DACL. Sandy switches that implicit right off with one `OWNER RIGHTS` ACE next to the deny. The real user keeps the same rights as before.
+- **`deny.stat` has a limit.** Windows also gives "read attributes" through the list right of the parent folder. `deny.stat` holds only where listing the parent folder is denied too.
 
-#### Allow-inside-deny (depth-sorted pipeline)
+| Deny level | Rights denied |
+|------------|---------------|
+| `read` | Read data / list folder, read extended attributes |
+| `write` | Write data, append data, write extended attributes, write attributes |
+| `execute`, `run` | Execute / traverse |
+| `append` | Append data |
+| `delete` | Delete, delete child |
+| `all` | All file rights |
+| `stat` | Read attributes |
+| `touch` | Write attributes |
+| `create` | Add file, add sub-folder (folders only) |
 
-Sandy supports carving out allowed subtrees from within denied areas. When an allow path is under a deny path, Sandy automatically strips the deny ACEs from the allowed subtree before granting access.
+All levels also deny "change permissions" and "take ownership".
+
+#### Allow-inside-deny (the nearest rule wins)
+
+Sandy supports carving out allowed subtrees from within denied areas. The standard Windows ACE order decides: the ACEs on an object are evaluated before the ACEs it inherits from further up. So the rule on the **nearest** folder wins, right by right:
+
+- An allow under a deny gives back exactly the rights that the allow names, at its own scope (`allow.deep` = the subtree, `allow.this` = that one object). `allow.deep write` under `deny.deep all` gives write access; read stays denied.
+- A deny under an allow removes exactly the rights that the deny names.
+- On the same path and scope, the deny wins.
+- `allow.this` on a folder that also has a `deny.deep` wins on the folder itself for the rights it names. Descendants keep the full deny.
+
+Sandy never changes the protection of a DACL ("disable inheritance") and never removes or rewrites ACEs of other identities. It adds ACEs for the sandbox SID and removes exactly those on exit.
 
 ```toml
 [deny.deep]
@@ -223,12 +255,12 @@ The pipeline execution is logged:
 ```
 PIPELINE: sorted 3 entries by path depth:
     DENY  [ALL    ] C:\repos
-    ALLOW [STAT   ] C:\repos            <- strip deny (dir only)
-    ALLOW [ALL    ] C:\repos\snipps     <- strip deny (subtree)
+    ALLOW [STAT   ] C:\repos  (this object only)
+    ALLOW [ALL    ] C:\repos\snipps
 ```
 
 > [!TIP]
-> **Common pattern:** Deny `all` on a broad directory, then allow specific subdirectories. The most specific (deepest) path always wins.
+> **Common pattern:** Deny `all` on a broad directory, then allow specific subdirectories. The rule on the nearest folder wins.
 
 ### `[privileges]` — Permissions
 
@@ -246,7 +278,6 @@ child_processes = true               # default: true
 
 # Restricted mode — defaults shown:
 [privileges]
-named_pipes     = false   # default: false
 desktop         = true    # default: true (WinSta0 + Desktop access)
 stdin           = false   # default: false (NUL)
 clipboard_read  = false   # default: false
@@ -258,8 +289,7 @@ child_processes = true    # default: true
 |-----|-------------|---------|-------------|
 | `network` | appcontainer / lpac | `false` | Outbound internet access |
 | `lan` | appcontainer / lpac | `false` | `false` • `'without localhost'` • `'with localhost'` — LAN and loopback control (see below) |
-| `named_pipes` | restricted | `false` | Named pipe creation (`CreateNamedPipeW`) |
-| `desktop` | restricted | `true` | Grant WinSta0 + Desktop access for interactive use |
+| `desktop` | restricted | `true` | `true` = grant WinSta0 + Desktop access for interactive use. `false` = job-object UI limits: the sandbox cannot list or use the windows of other processes |
 | `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or an absolute file path |
 | `clipboard_read` | all | `false` | Allow reading from the clipboard |
 | `clipboard_write` | all | `false` | Allow writing to the clipboard |
@@ -325,10 +355,13 @@ When `inherit = false`, the following essential Windows vars are always passed:
 
 ```toml
 [limit]
-timeout = 300       # kill process after N seconds (default: 0)
+timeout = 300       # end the whole process tree after N seconds (default: 0)
 memory = 4096       # job-wide memory cap in MB (default: 0)
 processes = 10      # max total active processes (default: 0)
 ```
+
+> [!NOTE]
+> **The timeout covers the whole process tree.** Sandy waits for the root process and then for every descendant in the job. The watchdog stays active until the tree is gone. On timeout the whole tree is ended and Sandy exits with 130, also when the root process had already exited.
 
 > [!IMPORTANT]
 > **Resource limits are strictly enforced (fail-closed).** If a resource limit (memory, process count, or clipboard restriction) is configured but cannot be applied to the job object, Sandy will terminate the child and exit with code 129 (setup error). This includes scenarios where `SetInformationJobObject` fails as well as cases where the job cannot be assigned to the child process. The sandbox never runs with unenforced limits.
@@ -352,7 +385,6 @@ processes = 10      # max total active processes (default: 0)
 | **`[privileges]`** | 🔵 optional | 🔵 optional | 🔵 optional |
 | &ensp; `network` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
 | &ensp; `lan` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `named_pipes` | 🔴 n/a | 🔴 n/a | 🔵 default: `false` |
 | &ensp; `desktop` | 🔴 n/a | 🔴 n/a | 🔵 default: `true` |
 | &ensp; `stdin` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
 | &ensp; `clipboard_read` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
@@ -380,7 +412,7 @@ Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integr
 | **Elevation** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **Privilege stripping** | 🔒 All stripped | 🔒 All stripped | 🔒 All except SeChangeNotify | 🔒 All except SeChangeNotify |
 | **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
-| **Named pipes** | ❌ Blocked | ❌ Blocked | ⚙️ `named_pipes` | ⚙️ `named_pipes` |
+| **Named pipes** | ❌ Blocked | ❌ Blocked | ✅ Allowed | ✅ Allowed |
 | **Desktop access** | ✅ Inherited | ✅ Inherited | ⚙️ `desktop` | ⚙️ `desktop` |
 | **Network** | ⚙️ `network` `lan` | ⚙️ `network` `lan` | ✅ Allowed | ✅ Allowed |
 | **App. Packages access** | ✅ Included | ❌ Excluded ¹ | n/a | n/a |
@@ -449,7 +481,7 @@ processes = 0
 sandy.exe -c agent_config.toml -x C:\Python314\python.exe agent.py
 ```
 
-Restricted Token with pipes and medium integrity:
+Restricted Token with medium integrity (named pipes are always available in this mode):
 
 ```toml
 [sandbox]
@@ -462,7 +494,6 @@ all = ['C:\workspace']
 
 
 [privileges]
-named_pipes = true
 desktop = true
 stdin = false
 clipboard_read = false
@@ -491,16 +522,20 @@ Session logs (`-l`) write to the path you specify — relative paths resolve aga
 
 **Console passthrough:** The child process inherits the parent's console handles directly (real TTY). Sandy does **not** interpose on stdout/stderr. This means interactive CLI tools (REPLs, Claude Code, etc.) work correctly with TTY detection, colors, and terminal features. To capture child output to a file, use standard shell redirection: `sandy ... -x myapp > output.log 2>&1`.
 
-**Log rotation:** If the target file already exists and `--log-stamp` is *not* used, Sandy automatically rotates with POSIX-style numbered suffixes:
+**Log content:** The session log holds Sandy's own events only: config, grants, timing, exit code, cleanup. It never holds child output. The child does not inherit the log handle and cannot write to the log.
+
+**Log rotation:** The path you give always holds the **newest** session. If the file already exists and `--log-stamp` is *not* used, Sandy first moves the old file to the next free numbered name:
 
 ```
-session.log → session.log.1 → session.log.2 → ...
+session.log      newest session
+session.log.1    oldest session
+session.log.2    next oldest, ...
 ```
 
 **Timestamped logs:** Use `-L` / `--log-stamp` to prepend a unique `YYYYMMDD_HHMMSS_uid_` prefix to log filenames. The 4-hex UID prevents collisions when multiple runs start in the same second:
 
 ```
-sandy.exe -L -l session.log -x myapp.exe
+sandy.exe -c config.toml -L -l session.log -x myapp.exe
 → 20260305_105426_a3f1_session.log
 ```
 
@@ -568,7 +603,7 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 | Resource | Created by | Persistence |
 |----------|-----------|-------------|
-| **ACL grants** | `[allow.*]` / `[deny.*]` folder/file grants | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant) |
+| **ACL grants** | `[allow.*]` / `[deny.*]` folder/file grants, desktop access | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant, written before the DACL changes) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
 | **Loopback exemption** | `lan = 'with localhost'` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
@@ -578,45 +613,50 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 | Scenario | ACLs | Loopback | AppContainer | Sched. Task | Registry | Mechanism |
 |----------|:----:|:--------:|:------------:|:-----------:|:--------:|-----------|
-| **Clean exit** | ✅ | ✅ | ✅ | ✅ | ✅ | `cleanup()` lambda in `RunSandboxed` |
+| **Clean exit** | ✅ | ✅ | ✅ | ✅ | ✅ | Normal cleanup at the end of `RunSandboxed` |
 | **Child crash** | ✅ | ✅ | ✅ | ✅ | ✅ | Same — child exit doesn't affect Sandy |
-| **Ctrl+C / close** | ✅ | ✅ | ✅ | ✅ | ✅ | Console signal handler → terminates child first → `CleanupSandbox()` |
+| **Timeout** | ✅ | ✅ | ✅ | ✅ | ✅ | Watchdog ends the whole process tree → normal cleanup → exit 130 |
+| **Ctrl+C / Ctrl+Break** | ✅ | ✅ | ✅ | ✅ | ✅ | Signal handler ends the child tree → the main thread runs the normal cleanup → exit `0xC000013A` |
 | **Sandy crash (SEH)** | ✅ | ✅ | ✅ | ✅ | ✅ | `__except` handler → terminates child first → `CleanupSandbox()` |
-| **Power loss / taskkill** | ✅ | ✅ | ✅ | ✅ | ✅ | Scheduled task at logon → `sandy.exe --cleanup` |
+| **Console close** | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | Windows allows about 5 seconds: Sandy ends the child tree; recovery (see below) does the rest |
+| **Power loss / taskkill** | ⏳ | ⏳ | ⏳ | ⏳ | ⏳ | Recovery: the next Sandy start, `sandy.exe --cleanup`, or the scheduled task at logon |
+
+✅ cleaned before Sandy exits · ⏳ cleaned by recovery
 
 ### How it works
 
-1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID[|DENY:1]` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks) and `_container` (AppContainer profile name). The recovery ledger is written *before* the system state is modified.
+1. **Write-ahead logging:** Before modifying any ACL, Sandy persists each grant as `TYPE|PATH|SID[|DENY:1][|THIS:1][|OWNER:I|OWNER:O]` to `HKCU\Software\Sandy\Grants\<UUID>`. The subkey also stores `_pid` (for liveness checks), `_container` (AppContainer profile name) and `_desktop_sid` (desktop access of a restricted-token run). The recovery ledger is written *before* the system state is modified: a kill at any moment leaves a record for every ACE that exists. If a kill cut a recursive grant short, recovery re-propagates inheritance from the root of the rule, so no descendant keeps an ACE of the dead run.
 
-2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon — for both normal and profile-mode (`-p`) runs. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit.
+2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon — for both normal and profile-mode (`-p`) runs. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit. Sandy registers the task for the current user through the Task Scheduler API; no elevation is needed.
 
 3. **Multi-instance safety:** Each instance generates a UUID at startup and uses a unique SID for all ACL operations — AppContainer uses a UUID-derived profile SID (`S-1-15-2-*`), Restricted Token uses a GUID-derived SID (`S-1-9-*`). This means concurrent instances have completely independent file grants that cannot interfere with each other. On exit, each instance removes only its own ACEs via `RemoveSidFromDacl`. Registry subkeys use the UUID as the key name, with stored PID for liveness checks during `--cleanup`.
 
    > **For agents and automation:** Multiple Sandy instances can safely run concurrently with overlapping folder grants. Each instance's sandbox is fully isolated. Use `--status` to inspect active instances and `--cleanup` to clear any stale state.
 
-4. **Stale entry warning:** On startup, Sandy checks for leftover registry entries and warns:
+4. **Start-up recovery:** Each Sandy start first cleans the state of dead instances (grants, desktop ACEs, containers, tasks). Sandy writes what it recovered to the session log, not to the console: the child's output stream stays clean. If state remains that Sandy could not recover, it warns on stderr (when no session log is active):
    ```
-   [Sandy] WARNING: Stale registry entries detected from a previous crashed run.
-           Grants: HKCU\Software\Sandy\Grants
+   [Sandy] WARNING: Stale or incomplete recovery metadata detected.
+           Grants: 1 stale, 0 incomplete (0 active) under HKCU\Software\Sandy\Grants
+           Containers: 0 stale, 0 incomplete (0 active) under HKCU\Software\Sandy\TransientContainers
            Run 'sandy.exe --cleanup' to restore original state.
-           If another sandy instance is running, its entries are expected.
    ```
 
-5. **Liveness-gated cleanup:** `--cleanup` and startup cleanup correlate every transient AppContainer profile with the owning Sandy instance's PID and creation time before taking destructive action. Only resources belonging to dead instances are cleaned. Live instances retain their loopback exemptions and AppContainer profiles. Stale cleanup is **path+SID-precise**: when two instances share a path but use different SIDs, only the dead instance's ACEs are cleaned while the live instance's are preserved. Saved profiles (created via `--create-profile`) are permanently protected and never cleaned as stale. System helper processes (`schtasks.exe`, `CheckNetIsolation.exe`) are launched from fully-qualified `System32` paths to prevent search-order hijacking.
+5. **Liveness-gated cleanup:** `--cleanup` and startup cleanup correlate every transient AppContainer profile with the owning Sandy instance's PID and creation time before taking destructive action. Only resources belonging to dead instances are cleaned. Live instances retain their loopback exemptions and AppContainer profiles. Stale cleanup is **path+SID-precise**: when two instances share a path but use different SIDs, only the dead instance's ACEs are cleaned while the live instance's are preserved. Saved profiles (created via `--create-profile`) are permanently protected and never cleaned as stale. The system helper process `CheckNetIsolation.exe` is launched from its fully-qualified `System32` path to prevent search-order hijacking.
 
 ### Cleanup guarantees
 
 | Guarantee | Mechanism |
 |-----------|-----------|
-| **ACL grants restored** on clean exit | RAII guard (`SandboxGuard::RunAll`) + `RemoveSidFromDacl` per SID |
+| **ACL grants restored** on clean exit | `RemoveSidFromDacl` per path and SID |
+| **DACLs identical** after cleanup | Sandy removes only the ACEs it added. ACE order, protection flag and ACEs of other identities are never changed |
 | **Registry grants cleared** on clean exit | `RegDeleteTreeW` on instance subkey |
 | **Loopback exemption removed** on clean exit | `CheckNetIsolation.exe LoopbackExempt -d` |
-| **Scheduled task deleted** on clean exit | `schtasks /Delete` |
+| **Scheduled task deleted** on clean exit | Task Scheduler API |
 | **Stale ACLs restored** after crash | `--cleanup` parses persisted `TYPE|PATH|SID` records, removes SID's ACEs |
 | **Parent registry keys permanent** | `Software\Sandy`, `Grants`, and `Profiles` are never deleted — preserved for visual tracking |
 
 **Best-effort behaviors** (not guaranteed):
-- **Desktop/window-station ACL cleanup** depends on `GetProcessWindowStation()` and `OpenDesktopW()` succeeding — these may fail in service or headless contexts. Failures are logged with error codes.
+- **Desktop/window-station ACL cleanup** depends on `GetProcessWindowStation()` and `OpenDesktopW()` succeeding — these may fail in service or headless contexts. Failures are logged with error codes. The desktop access of a run is recorded in its ledger, so recovery also removes these ACEs after a kill.
 - **Loopback cleanup** depends on `CheckNetIsolation.exe` being available and the process running with sufficient privileges.
 - **Persisted grant records** that are malformed (invalid TYPE, empty PATH, non-SID strings, or unknown flags) are skipped and logged — they will not cause cleanup to fail or corrupt system state.
 
@@ -637,7 +677,15 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 ## Building
 
-Open `sandy.sln` in Visual Studio and build the `x64 Release` configuration. No external dependencies required.
+Sandy needs one header-only library at build time: [toml11](https://github.com/ToruNiina/toml11). Put it next to the Sandy folder, so that `..\toml11\include` exists. There is no other dependency, and the built `sandy.exe` needs no runtime.
+
+Open `sandy.sln` in Visual Studio and build the `x64 Release` configuration, or use MSBuild:
+
+```
+& 'C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe' sandy.sln /p:Configuration=Release /p:Platform=x64 /v:minimal
+```
+
+The output is `x64\Release\sandy.exe`.
 
 ## License
 

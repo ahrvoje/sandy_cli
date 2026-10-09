@@ -41,6 +41,8 @@ blocked    = arena / "blocked"
 inner      = blocked / "inner"
 carve      = blocked / "carve"
 carve_sub  = carve / "sub"
+full       = blocked / "full"
+full_sub   = full / "sub"
 slot       = blocked / "slot"
 slot_inner = slot / "inner"
 
@@ -69,45 +71,57 @@ test("inner: read file: denied",   not can_read(inner / "hidden.txt"))
 test("inner: create file: denied", not can_write(inner / "intruder.txt"))
 
 # =====================================================================
-# Z4: arena/blocked/carve — allow.deep write under the deny.
-# The pipeline must strip the inherited deny ACEs from the WHOLE carve
-# subtree before granting (STRIP_DENY subtree).  Reads pass via the
-# user baseline once the deny is gone; writes via the grant.
+# Z4: arena/blocked/carve — allow.deep write under the deny.all.
+# The nearer rule wins, right by right: the carve gives write, and only
+# write.  The rights it does not name stay denied by the deny above it —
+# an allow of one level must not hand back every other level.
 # =====================================================================
-print("--- Z4: arena/blocked/carve (allow.deep under deny -> subtree strip) ---")
-test("carve: list dir",       can_listdir(carve),
-     "inherited deny must be stripped from the carve dir")
-test("carve: read file",      can_read(carve / "seed.txt"),
-     "inherited deny must be stripped from files inside carve")
-test("carve: overwrite file", can_write(carve / "seed.txt"))
+print("--- Z4: arena/blocked/carve (allow.deep write under deny.all -> write only) ---")
+test("carve: overwrite file", can_write(carve / "seed.txt"),
+     "the allow on the carve must win over the deny inherited from blocked/")
 test("carve: create file",    can_write(carve / "created.txt"))
+test("carve: list dir: denied",  not can_listdir(carve),
+     "allow.write must not remove the inherited deny of read")
+test("carve: read file: denied", not can_read(carve / "seed.txt"),
+     "allow.write must not remove the inherited deny of read")
 
 # =====================================================================
-# Z5: arena/blocked/carve/sub — strip and grant must propagate deep
+# Z5: arena/blocked/carve/sub — both rules are inherited here; the allow
+# from the nearer folder still comes first
 # =====================================================================
-print("--- Z5: arena/blocked/carve/sub (strip propagates) ---")
-test("carve/sub: read file",   can_read(carve_sub / "nested.txt"),
-     "subtree strip must reach nested levels")
-test("carve/sub: create file", can_write(carve_sub / "created.txt"))
+print("--- Z5: arena/blocked/carve/sub (nearer inherited rule wins) ---")
+test("carve/sub: create file",       can_write(carve_sub / "created.txt"))
+test("carve/sub: read file: denied", not can_read(carve_sub / "nested.txt"))
+
+# =====================================================================
+# Z5b: arena/blocked/full — allow.deep all under the deny.all: a full
+# carve-out, at every depth
+# =====================================================================
+print("--- Z5b: arena/blocked/full (allow.deep all under deny.all -> full access) ---")
+test("full: list dir",        can_listdir(full))
+test("full: read file",       can_read(full / "seed.txt"))
+test("full: overwrite file",  can_write(full / "seed.txt"))
+test("full/sub: read file",   can_read(full_sub / "nested.txt"))
+test("full/sub: create file", can_write(full_sub / "created.txt"))
 
 # =====================================================================
 # Z6: arena/blocked/slot — allow.this all under the deny.
-# Dir-only carve-out: the strip applies to the slot DIRECTORY only.
-# Pre-existing children keep their inherited deny ACEs.
+# Single-object carve-out: the allow applies to the slot DIRECTORY only.
+# Its children keep the inherited deny.
 # =====================================================================
-print("--- Z6: arena/blocked/slot (allow.this under deny -> dir-only strip) ---")
+print("--- Z6: arena/blocked/slot (allow.this under deny -> directory only) ---")
 test("slot: list dir",    can_listdir(slot),
-     "dir-only strip must clear the deny on the slot dir itself")
+     "allow.this must win over the inherited deny on the slot dir itself")
 test("slot: create file", can_write(slot / "created.txt"))
 test("slot: read pre-existing file: denied", not can_read(slot / "note.txt"),
-     "pre-existing files must keep the inherited deny (strip is dir-only)")
+     "files in slot must keep the inherited deny (the allow is single-object)")
 
 # =====================================================================
-# Z7: arena/blocked/slot/inner — dir-only strip must NOT recurse
+# Z7: arena/blocked/slot/inner — the single-object allow must NOT recurse
 # =====================================================================
 print("--- Z7: arena/blocked/slot/inner (deny kept below this-carve) ---")
 test("slot/inner: read file: denied",   not can_read(slot_inner / "deep.txt"),
-     "dir-only strip must not recurse into subdirs")
+     "allow.this must not reach sub-directories")
 test("slot/inner: create file: denied", not can_write(slot_inner / "intruder.txt"))
 
 # =====================================================================

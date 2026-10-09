@@ -5,10 +5,10 @@
 #     workspace/          [allow.deep] all
 #       src/              (inherits all)
 #       build/            [deny.deep] write → read OK, write blocked
-#       secrets/          [deny.deep] all → everything blocked
+#       secrets/          [deny.deep] all → everything blocked (delete too)
 #     data/               [allow.deep] read
 #       public/           (inherits read)
-#       private/          [deny.deep] read → fully blocked (deny > allow)
+#       private/          [deny.deep] read → read blocked (deny > allow)
 #     logs/               [allow.deep] append
 #     tools/              [allow.deep] execute → read+exec, no write
 
@@ -17,15 +17,15 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-execute = ['C:\Users\H\test_acl\tools']
-read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_acl\scripts', 'C:\Users\H\test_acl\data']
-append = ['C:\Users\H\test_acl\logs']
-all = ['C:\Users\H\test_acl\workspace']
+execute = ['%USERPROFILE%\test_acl\tools']
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_acl\scripts', '%USERPROFILE%\test_acl\data']
+append = ['%USERPROFILE%\test_acl\logs']
+all = ['%USERPROFILE%\test_acl\workspace']
 
 [deny.deep]
-read    = ['C:\Users\H\test_acl\data\private']
-write   = ['C:\Users\H\test_acl\workspace\build']
-all     = ['C:\Users\H\test_acl\workspace\secrets']
+read    = ['%USERPROFILE%\test_acl\data\private']
+write   = ['%USERPROFILE%\test_acl\workspace\build']
+all     = ['%USERPROFILE%\test_acl\workspace\secrets']
 [environment]
 inherit = true
 

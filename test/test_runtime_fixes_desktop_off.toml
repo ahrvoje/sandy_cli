@@ -1,0 +1,12 @@
+# Runtime fixes test — desktop = false.
+# The sandbox must not see or reach the windows of other processes.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[privileges]
+desktop = false
+
+[environment]
+inherit = true

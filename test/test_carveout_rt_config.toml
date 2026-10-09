@@ -1,8 +1,8 @@
 # Carve-out test — Restricted Token mode
 #
-# Exercises the STRIP_DENY pipeline path: allow grants nested UNDER a deny.
-# The pipeline must strip inherited deny ACEs from the allow target before
-# granting — subtree strip for allow.deep, dir-only strip for allow.this.
+# Allow rules nested UNDER a deny.  The rule on the nearer folder wins,
+# right by right: an allow gives back exactly the rights it names, at its
+# own scope (subtree for allow.deep, the one directory for allow.this).
 #
 # FOLDER TREE:
 #   test_carveout/
@@ -10,10 +10,12 @@
 #       open/               (inherits all — sanity zone)
 #       blocked/            [deny.deep] all → everything below denied...
 #         inner/            (inherits deny)
-#         carve/            [allow.deep] write → deep carve-out (subtree strip)
-#           sub/            (strip + grant propagate here)
-#         slot/             [allow.this] all → dir-only carve-out (dir strip)
-#           inner/          (keeps inherited deny — strip must not recurse)
+#         carve/            [allow.deep] write → write-only carve-out
+#           sub/            (write allowed, read still denied)
+#         full/             [allow.deep] all → full carve-out
+#           sub/            (full access)
+#         slot/             [allow.this] all → single-directory carve-out
+#           inner/          (keeps inherited deny — the allow must not recurse)
 #     scripts/              [allow.deep] read
 
 [sandbox]
@@ -21,15 +23,15 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-read  = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_carveout\scripts']
-all   = ['C:\Users\H\test_carveout\arena']
-write = ['C:\Users\H\test_carveout\arena\blocked\carve']
+read  = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_carveout\scripts']
+all   = ['%USERPROFILE%\test_carveout\arena', '%USERPROFILE%\test_carveout\arena\blocked\full']
+write = ['%USERPROFILE%\test_carveout\arena\blocked\carve']
 
 [allow.this]
-all = ['C:\Users\H\test_carveout\arena\blocked\slot']
+all = ['%USERPROFILE%\test_carveout\arena\blocked\slot']
 
 [deny.deep]
-all = ['C:\Users\H\test_carveout\arena\blocked']
+all = ['%USERPROFILE%\test_carveout\arena\blocked']
 
 [environment]
 inherit = true

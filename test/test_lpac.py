@@ -75,7 +75,7 @@ def expect_ok(label, fn):
         failed += 1
 
 
-ROOT = os.path.join(os.environ.get("USERPROFILE", r"C:\Users\H"), "test_lpac")
+ROOT = os.path.join(os.environ["USERPROFILE"], "test_lpac")
 WORKSPACE = os.path.join(ROOT, "workspace")
 SCRIPTS = os.path.join(ROOT, "scripts")
 
@@ -108,7 +108,7 @@ expect_blocked("List C:\\Windows\\Temp",
 
 # 5. User profile — no grant
 print("  [5] User profile (no grant)")
-desktop = os.path.join(os.environ.get("USERPROFILE", r"C:\Users\H"), "Desktop")
+desktop = os.path.join(os.environ["USERPROFILE"], "Desktop")
 expect_blocked("List user Desktop",
     lambda: f"listed {len(os.listdir(desktop))} entries")
 

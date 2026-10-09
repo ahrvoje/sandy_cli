@@ -1,0 +1,18 @@
+# Runtime fixes test — strict restricted token.
+# A strict sandbox must be able to start its own child processes.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+strict = true
+
+[allow.deep]
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+all     = ['%USERPROFILE%\test_runtime_fixes\work']
+read    = ['%USERPROFILE%\test_runtime_fixes\scripts']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

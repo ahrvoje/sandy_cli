@@ -19,14 +19,14 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read    = ['C:\Users\H\test_gmatrix\scripts', 'C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\deep_hole', 'C:\Users\H\test_gmatrix\file_vs_dir']
-all     = ['C:\Users\H\test_gmatrix\overlap\inner', 'C:\Users\H\test_gmatrix\deep_hole\gap\bottom']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read    = ['%USERPROFILE%\test_gmatrix\scripts', '%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\deep_hole', '%USERPROFILE%\test_gmatrix\file_vs_dir']
+all     = ['%USERPROFILE%\test_gmatrix\overlap\inner', '%USERPROFILE%\test_gmatrix\deep_hole\gap\bottom']
 
 [allow.this]
-read    = ['C:\Users\H\test_gmatrix\overlap', 'C:\Users\H\test_gmatrix\multi_this']
-write   = ['C:\Users\H\test_gmatrix\same_path', 'C:\Users\H\test_gmatrix\multi_this\mid', 'C:\Users\H\test_gmatrix\file_vs_dir\target.txt']
-all     = ['C:\Users\H\test_gmatrix\multi_this\mid\leaf']
+read    = ['%USERPROFILE%\test_gmatrix\overlap', '%USERPROFILE%\test_gmatrix\multi_this']
+write   = ['%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\multi_this\mid', '%USERPROFILE%\test_gmatrix\file_vs_dir\target.txt']
+all     = ['%USERPROFILE%\test_gmatrix\multi_this\mid\leaf']
 
 [environment]
 inherit = true

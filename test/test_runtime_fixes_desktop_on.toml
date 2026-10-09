@@ -1,0 +1,12 @@
+# Runtime fixes test — control run: desktop = true.
+# The sandbox can see the windows of other processes.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[privileges]
+desktop = true
+
+[environment]
+inherit = true

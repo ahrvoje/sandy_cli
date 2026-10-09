@@ -5,7 +5,7 @@
 token = 'appcontainer'
 
 [allow.deep]
-all = ['C:\Users\H\test_RW']
+all = ['%USERPROFILE%\test_RW']
 
 [deny.deep]
-write = ['C:\Users\H\test_RW']
+write = ['%USERPROFILE%\test_RW']

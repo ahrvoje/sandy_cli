@@ -3,7 +3,7 @@ for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Proces
 setlocal EnableDelayedExpansion
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 
@@ -157,20 +157,6 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 del "%TEMP%\sneaky_2b.txt" 2>nul
-
-REM 2c: named_pipes on AC — must reject
-echo --- 2c: named_pipes on appcontainer ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nnamed_pipes = true" >"%TEMP%\sneaky_2c.txt" 2>&1
-findstr /C:"named_pipes" "%TEMP%\sneaky_2c.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] 2c: named_pipes on AC rejected
-    set /a PASS+=1
-) else (
-    echo   [FAIL] 2c: named_pipes on AC should be rejected
-    type "%TEMP%\sneaky_2c.txt"
-    set /a FAIL+=1
-)
-del "%TEMP%\sneaky_2c.txt" 2>nul
 
 REM 2d: desktop on AC — must reject
 echo --- 2d: desktop on appcontainer ---
@@ -546,7 +532,7 @@ echo [allow.this]>>"%TEMP%\sneaky_scope_run.toml"
 echo stat = ['!SCOPE_ROOT!\stat_only']>>"%TEMP%\sneaky_scope_run.toml"
 echo [allow.deep]>>"%TEMP%\sneaky_scope_run.toml"
 echo read = ['!SCOPE_ROOT!\deep_read', '!SCOPE_ROOT!\scripts']>>"%TEMP%\sneaky_scope_run.toml"
-echo execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']>>"%TEMP%\sneaky_scope_run.toml"
+echo execute = ['%LOCALAPPDATA%\Programs\Python\Python314']>>"%TEMP%\sneaky_scope_run.toml"
 echo [environment]>>"%TEMP%\sneaky_scope_run.toml"
 echo inherit = false>>"%TEMP%\sneaky_scope_run.toml"
 echo pass = ['SNEAKY_SCOPE_ROOT', 'PATH', 'TEMP', 'SYSTEMROOT']>>"%TEMP%\sneaky_scope_run.toml"

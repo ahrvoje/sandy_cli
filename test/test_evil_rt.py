@@ -1,11 +1,12 @@
 """RT version of evil/adversarial test — expectations adjusted for Restricted Token.
 
 Key RT difference:
-  - deny.write on records/ with PROTECTED_DACL → read also blocked
+  - deny.write on records/ blocks writes only; reads stay allowed
+  - deny.all on vault/ also blocks rename and delete of vault/ itself
 """
 import os, sys, ctypes, subprocess
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_evil')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_evil')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 
@@ -115,13 +116,13 @@ traversal_write = os.path.join(p('passage'), '..', 'vault', 'hack.tmp')
 test("traversal: write vault/hack.tmp via ..", False,
      lambda: open(traversal_write, 'w').write('pwned'))
 
-raw_traversal = p('passage') + r'\..\..\vault\secret.txt'
+raw_traversal = p('passage') + r'\..\vault\secret.txt'
 test("traversal: raw path (no normalization)", False,
      lambda: open(raw_traversal, 'r').read())
 
 # ===========================================================================
 # ATTACK 4: ADS
-#   RT: deny.write + PROTECTED_DACL → read also blocked on records/
+#   deny.write on records/ covers alternate streams; read stays allowed
 # ===========================================================================
 print("\n=== ATTACK 4: Alternate Data Streams ===")
 ads_target = p('records', 'report.txt') + ':hidden_stream'
@@ -132,8 +133,7 @@ ads_folder = p('records') + ':folder_stream'
 test("ADS: write stream on deny-write folder", False,
      lambda: open(ads_folder, 'w').write('secret data'))
 
-# RT: PROTECTED_DACL blocks read too (no inherited user ACE)
-test("records: read report.txt (RT: blocked by PROTECTED_DACL)", False,
+test("records: read report.txt (deny.write keeps read)", True,
      lambda: open(p('records', 'report.txt'), 'r').read())
 
 # ===========================================================================
@@ -166,7 +166,8 @@ except OSError as e:
 print("\n=== ATTACK 6: Rename escape ===")
 try:
     os.rename(p('vault'), p('vault_escaped'))
-    print("  [INFO] rename vault -> vault_escaped SUCCEEDED")
+    print("  [FAIL] rename vault -> vault_escaped SUCCEEDED (deny.all must block rename)")
+    results.append(('FAIL', 'rename: vault renamed'))
     test("rename: list escaped vault", False,
          lambda: os.listdir(p('vault_escaped')))
     test("rename: read escaped secret", False,

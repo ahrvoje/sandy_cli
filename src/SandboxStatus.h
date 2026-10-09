@@ -271,8 +271,12 @@ inline int HandleCleanup()
 
     // Remove test registry tree (tests use Software\Sandy\Test\ instead of
     // production keys so they never interfere with real sandbox state)
-    if (DeleteRegTreeIfExists(HKEY_CURRENT_USER, L"Software\\Sandy\\Test"))
-        printf("  [TEST]    Software\\Sandy\\Test -> cleaned\n");
+    HKEY hTestKey = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Sandy\\Test", 0, KEY_READ, &hTestKey) == ERROR_SUCCESS) {
+        RegCloseKey(hTestKey);
+        if (DeleteRegTreeIfExists(HKEY_CURRENT_USER, L"Software\\Sandy\\Test"))
+            printf("  [TEST]    Software\\Sandy\\Test -> cleaned\n");
+    }
 
     printf("Sandy - cleanup complete.\n");
     return 0;

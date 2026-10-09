@@ -10,9 +10,9 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_phantom\scripts', 'C:\Users\H\test_phantom\arena\readonly']
-all = ['C:\Users\H\test_phantom\arena\workspace']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_phantom\scripts', '%USERPROFILE%\test_phantom\arena\readonly']
+all = ['%USERPROFILE%\test_phantom\arena\workspace']
 
 [privileges]
 child_processes = false

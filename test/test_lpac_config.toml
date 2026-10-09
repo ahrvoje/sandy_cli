@@ -8,11 +8,11 @@
 token = 'lpac'
 
 [allow.deep]
-read    = ['C:\Users\H\test_lpac\scripts']
-all     = ['C:\Users\H\test_lpac\workspace']
+read    = ['%USERPROFILE%\test_lpac\scripts']
+all     = ['%USERPROFILE%\test_lpac\workspace']
 
 [allow.this]
-stat    = ['C:\Users\H\test_lpac']
+stat    = ['%USERPROFILE%\test_lpac']
 
 [privileges]
 network   = false

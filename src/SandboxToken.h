@@ -11,6 +11,36 @@
 namespace Sandbox {
 
     // -----------------------------------------------------------------------
+    // GrantSidInDefaultDacl — give `pSid` full access to the objects a
+    // process with this token creates without an explicit security
+    // descriptor (its child processes, threads, events, sections ...).
+    // -----------------------------------------------------------------------
+    inline bool GrantSidInDefaultDacl(HANDLE hToken, PSID pSid)
+    {
+        DWORD size = 0;
+        GetTokenInformation(hToken, TokenDefaultDacl, nullptr, 0, &size);
+        std::vector<BYTE> buf(size);
+        auto* pDefault = reinterpret_cast<TOKEN_DEFAULT_DACL*>(buf.data());
+        if (size == 0 || !GetTokenInformation(hToken, TokenDefaultDacl, pDefault, size, &size))
+            return false;
+
+        EXPLICIT_ACCESSW ea{};
+        ea.grfAccessPermissions = GENERIC_ALL;
+        ea.grfAccessMode = GRANT_ACCESS;
+        ea.grfInheritance = NO_INHERITANCE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(pSid);
+
+        PACL pNewDacl = nullptr;
+        if (SetEntriesInAclW(1, &ea, pDefault->DefaultDacl, &pNewDacl) != ERROR_SUCCESS)
+            return false;
+        TOKEN_DEFAULT_DACL updated{ pNewDacl };
+        bool ok = SetTokenInformation(hToken, TokenDefaultDacl, &updated, sizeof(updated)) != 0;
+        LocalFree(pNewDacl);
+        return ok;
+    }
+
+    // -----------------------------------------------------------------------
     // Create a restricted sandbox token (alternative to AppContainer).
     // Uses restricting SIDs + configurable integrity level.
     // il:           Low = stronger isolation, Medium = wider compat.
@@ -169,28 +199,46 @@ namespace Sandbox {
         // --- Set integrity level ---
         // Low (0x1000): strongest isolation, blocks writes to Medium objects.
         //   May break apps that depend on api-ms-win-core-path API set.
-        // Medium: inherits parent's level; relies solely on restricting SIDs.
+        // Medium (0x2000): relies solely on restricting SIDs.
+        // The level is always set, never inherited: when Sandy runs elevated
+        // its own token is High, and 'medium' must still mean Medium.
         // Fail closed: a token left at the parent's integrity level is weaker
-        // than configured — don't hand it back as if Low had been applied.
-        if (ok && hRestricted && il == IntegrityLevel::Low) {
+        // than configured — don't hand it back as if the level had been applied.
+        if (ok && hRestricted) {
+            const DWORD levelRid = (il == IntegrityLevel::Low)
+                ? SECURITY_MANDATORY_LOW_RID
+                : SECURITY_MANDATORY_MEDIUM_RID;
             bool ilSet = false;
             SID_IDENTIFIER_AUTHORITY mlAuth = SECURITY_MANDATORY_LABEL_AUTHORITY;
-            PSID pLowSid = nullptr;
-            if (AllocateAndInitializeSid(&mlAuth, 1, SECURITY_MANDATORY_LOW_RID,
-                    0, 0, 0, 0, 0, 0, 0, &pLowSid)) {
+            PSID pLevelSid = nullptr;
+            if (AllocateAndInitializeSid(&mlAuth, 1, levelRid,
+                    0, 0, 0, 0, 0, 0, 0, &pLevelSid)) {
                 TOKEN_MANDATORY_LABEL tml = {};
-                tml.Label.Sid = pLowSid;
+                tml.Label.Sid = pLevelSid;
                 tml.Label.Attributes = SE_GROUP_INTEGRITY;
                 ilSet = SetTokenInformation(hRestricted, TokenIntegrityLevel,
-                    &tml, sizeof(tml) + GetLengthSid(pLowSid)) != 0;
-                FreeSid(pLowSid);
+                    &tml, sizeof(tml) + GetLengthSid(pLevelSid)) != 0;
+                FreeSid(pLevelSid);
             }
             if (!ilSet) {
-                g_logger.LogFmt(L"ERROR: setting Low integrity level failed (error %lu)", GetLastError());
+                g_logger.LogFmt(L"ERROR: setting integrity level 0x%04X failed (error %lu)",
+                                levelRid, GetLastError());
                 CloseHandle(hRestricted);
                 hRestricted = nullptr;
                 ok = FALSE;
             }
+        }
+
+        // strict: the user SID is not a restricting SID, so the default DACL
+        // (user + SYSTEM) gives the process no access to the objects it
+        // creates itself.  It could not even start a child process.  The
+        // per-instance SID gets that access instead.
+        if (ok && hRestricted && strict && pInstanceSid &&
+            !GrantSidInDefaultDacl(hRestricted, pInstanceSid)) {
+            g_logger.LogFmt(L"ERROR: default DACL update for strict token failed (error %lu)", GetLastError());
+            CloseHandle(hRestricted);
+            hRestricted = nullptr;
+            ok = FALSE;
         }
 
         // Cleanup

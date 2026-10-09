@@ -6,7 +6,7 @@ token = 'restricted'
 integrity = 'low'
 
 [allow.deep]
-read    = ['C:\Users\H\test_sandy_profile\data']
+read    = ['%USERPROFILE%\test_sandy_profile\data']
 [environment]
 inherit = true
 

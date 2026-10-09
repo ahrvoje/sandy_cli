@@ -16,7 +16,7 @@ Expected results:
 """
 import os, sys
 
-root = sys.argv[1]  # e.g. C:\Users\H\test_sandy_profile\scope
+root = sys.argv[1]  # e.g. %USERPROFILE%\test_sandy_profile\scope
 
 tests = [
     ("deep_dir",                       True),

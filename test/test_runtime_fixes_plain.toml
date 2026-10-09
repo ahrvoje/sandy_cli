@@ -1,0 +1,11 @@
+# Runtime fixes test — plain restricted token, low integrity.
+# Used for the checks on the session log and on command-line forwarding.
+# At low integrity the child cannot open the log file by its path, so a
+# handle that it holds can only be an inherited one.
+
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+
+[environment]
+inherit = true

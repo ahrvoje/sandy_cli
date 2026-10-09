@@ -13,18 +13,18 @@
 # ============================================================
 
 [sandbox]
-token = 'appcontainer'     # 'appcontainer' or 'restricted'
+token = 'appcontainer'     # 'appcontainer', 'lpac', or 'restricted'
 # integrity = 'low'        # required (restricted only): 'low' or 'medium'
-# workdir = 'inherit'      # optional (default: exe folder)
+# workdir = 'inherit'      # optional (default: Sandy's current working directory; or an absolute folder path)
 
 # ============================================================
 # ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
 # Grant the sandboxed process access to specific folders or files.
 # Use single quotes for Windows paths (no backslash escaping needed).
+# A path can hold environment variables: '%USERPROFILE%\project'.
 
 [allow.deep]
-# peek    = []              # non-recursive: list dir + stat only (path traversal)
 # read = [
 #     'C:\data\config.json',          # single file
 #     'C:\Python314',                 # entire folder (recursive)
@@ -34,6 +34,10 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # append = []
 # delete = []
 # all = []
+# run = []                  # execute only: start the binary, no read
+# stat = []                 # existence, size and timestamps only
+# touch = []                # change timestamps and attributes
+# create = []               # create new files and sub-folders, no overwrite
 
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
@@ -41,13 +45,12 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # PRIVILEGES — Optional, safe defaults shown
 # ============================================================
 # AppContainer: network, lan, stdin, clipboard_*, child_processes
-# Restricted:   named_pipes, desktop, stdin, clipboard_*, child_processes
+# Restricted:   desktop, stdin, clipboard_*, child_processes
 
 # [privileges]
 # network = false            # default false (appcontainer only)
 # lan = false                # false | 'with localhost' | 'without localhost' (appcontainer only)
-# named_pipes = false        # default false (restricted only)
-# desktop = true             # default true (restricted only, WinSta0 + Desktop)
+# desktop = true             # default true (restricted only). false = no access to windows of other processes
 # stdin = false              # default false (NUL)
 # clipboard_read = false     # default false
 # clipboard_write = false    # default false
@@ -73,6 +76,6 @@ token = 'appcontainer'     # 'appcontainer' or 'restricted'
 # ============================================================
 
 # [limit]
-# timeout = 0               # 0 = no timeout, positive = kill after N seconds
+# timeout = 0               # 0 = no timeout, positive = end the whole process tree after N seconds
 # memory = 0                # 0 = no cap, positive = limit in MB
 # processes = 0             # 0 = no cap, positive = max active processes

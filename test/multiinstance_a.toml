@@ -3,8 +3,8 @@
 token = 'appcontainer'
 
 [allow.deep]
-read = ['C:\Users\H\test_multiinstance\scripts']
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-all = ['C:\Users\H\test_multiinstance\shared']
+read = ['%USERPROFILE%\test_multiinstance\scripts']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+all = ['%USERPROFILE%\test_multiinstance\shared']
 [environment]
 inherit = true

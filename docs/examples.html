@@ -279,25 +279,24 @@ ROOT = pathlib.Path(<span class="code-string">"."</span>)          <span class="
 <span class="code-key">workdir</span>   = <span class="code-string">'C:\repos\snipps'</span>
 
 <span class="code-section">[allow.deep]</span>
-<span class="code-key">write</span> = [<span class="code-string">'C:\Users\H\.claude'</span>]   <span class="code-comment"># session state / cache</span>
+<span class="code-key">write</span> = [<span class="code-string">'%USERPROFILE%\.claude'</span>]   <span class="code-comment"># session state / cache</span>
 <span class="code-key">all</span>   = [<span class="code-string">'C:\repos\snipps'</span>]    <span class="code-comment"># project — full access</span>
 
 <span class="code-section">[deny.deep]</span>
 <span class="code-key">all</span> = [
-  <span class="code-string">'C:\Users\H\.codex'</span>,
-  <span class="code-string">'C:\Users\H\.gemini'</span>,
-  <span class="code-string">'C:\Users\H\.ssh'</span>,
-  <span class="code-string">'C:\Users\H\.ollama'</span>,
-  <span class="code-string">'C:\Users\H\.antigravity'</span>,
-  <span class="code-string">'C:\Users\H\Downloads'</span>,
-  <span class="code-string">'C:\Users\H\OneDrive'</span>,
+  <span class="code-string">'%USERPROFILE%\.codex'</span>,
+  <span class="code-string">'%USERPROFILE%\.gemini'</span>,
+  <span class="code-string">'%USERPROFILE%\.ssh'</span>,
+  <span class="code-string">'%USERPROFILE%\.ollama'</span>,
+  <span class="code-string">'%USERPROFILE%\.antigravity'</span>,
+  <span class="code-string">'%USERPROFILE%\Downloads'</span>,
+  <span class="code-string">'%USERPROFILE%\OneDrive'</span>,
   <span class="code-string">'C:\store'</span>,
   <span class="code-string">'C:\repos'</span>,   <span class="code-comment"># deny all other projects</span>
 ]
 
 <span class="code-section">[privileges]</span>
-<span class="code-key">named_pipes</span> = <span class="code-value">true</span>   <span class="code-comment"># Bun/Node IPC</span>
-<span class="code-key">stdin</span>       = <span class="code-value">true</span>   <span class="code-comment"># interactive CLI</span>
+<span class="code-key">stdin</span>           = <span class="code-value">true</span>   <span class="code-comment"># interactive CLI</span>
 <span class="code-key">child_processes</span> = <span class="code-value">true</span>   <span class="code-comment"># Claude spawns node, git, etc.</span>
 
 <span class="code-section">[environment]</span>
@@ -309,15 +308,16 @@ ROOT = pathlib.Path(<span class="code-string">"."</span>)          <span class="
     <div class="callout info" style="margin-top:20px;">
       <div class="callout-title">💡 Why Restricted Token medium?</div>
       <p>
-        Claude Code is an interactive CLI that spawns Node.js, Bun, and git — all of which use named pipes for IPC. AppContainer blocks named pipes entirely. Restricted Low would block writes to most of <code>C:\Users\H</code> due to Mandatory Integrity Control. Restricted Medium with explicit <code>[deny.deep]</code> on sensitive dirs gives Claude the process compat it needs while still hard-blocking credentials, other projects, and secrets at the kernel level.
+        Claude Code is an interactive CLI that spawns Node.js, Bun, and git — all of which use named pipes for IPC. AppContainer blocks named pipes entirely. A restricted token always has named pipes. Restricted Low would block writes to most of <code>%USERPROFILE%</code> due to Mandatory Integrity Control. Restricted Medium with explicit <code>[deny.deep]</code> on sensitive dirs gives Claude the process compat it needs while still hard-blocking credentials, other projects, and secrets at the kernel level.
       </p>
     </div>
 
     <div class="callout success" style="margin-top:0;">
       <div class="callout-title">✅ How the allow-inside-deny pipeline works here</div>
       <p>
-        <code>deny.all = ['C:\repos']</code> blocks all access to the entire <code>repos</code> tree. Then <code>allow.all = ['C:\repos\snipps']</code> is detected as inside a deny — Sandy automatically strips the deny ACEs from <code>snipps</code> and grants full access. The pipeline log shows:<br>
-        <code style="font-size:0.8rem;display:block;margin-top:8px;color:var(--text-muted);">PIPELINE: DENY [ALL] C:\repos → ALLOW [ALL] C:\repos\snipps ← strip deny (subtree)</code>
+        <code>deny.all = ['C:\repos']</code> blocks all access to the entire <code>repos</code> tree. <code>allow.all = ['C:\repos\snipps']</code> puts an explicit allow ACE on <code>snipps</code>. Windows evaluates explicit ACEs before ACEs inherited from further up, so the rule on the nearest folder wins: <code>snipps</code> has full access. Sandy does not strip the deny ACE. The pipeline log has one line per rule, sorted by path depth. The lines for these two rules:<br>
+        <code style="font-size:0.8rem;display:block;margin-top:8px;color:var(--text-muted);white-space:pre;">    DENY  [ALL    ] C:\repos
+    ALLOW [ALL    ] C:\repos\snipps</code>
       </p>
     </div>
   </div>

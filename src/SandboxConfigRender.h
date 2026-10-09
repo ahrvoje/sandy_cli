@@ -80,7 +80,6 @@ inline void PrintResolvedConfig(const SandboxConfig& config)
         printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
         printf("lan             = %ls\n", LanModeTomlDisplayValue(config.lanMode));
     } else {
-        printf("named_pipes     = %ls\n", config.allowNamedPipes ? L"true" : L"false");
         printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
     }
     if (config.stdinMode == L"NUL")

@@ -10,7 +10,11 @@
 #include "SandboxTypes.h"
 #include "SandboxGrants.h"
 #include "SandboxProcess.h"
-#include <sstream>
+#include <objbase.h>
+#include <oleauto.h>
+#include <taskschd.h>
+
+#pragma comment(lib, "taskschd.lib")
 
 namespace Sandbox {
 
@@ -57,6 +61,11 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Per-instance scheduled task naming.
     // Deleted on clean exit; stale tasks cleaned by --cleanup.
+    //
+    // The tasks are managed through the Task Scheduler API, not schtasks.exe:
+    //   - a task with a logon trigger for the current user can be registered
+    //     without elevation (schtasks /SC ONLOGON needs an administrator);
+    //   - no helper process is started, and only the root folder is listed.
     // -----------------------------------------------------------------------
     constexpr const wchar_t* kCleanupTaskPrefix = L"SandyCleanup_";
 
@@ -87,6 +96,173 @@ namespace Sandbox {
         return state == CleanupTaskState::Retained ? "retained" : "orphaned";
     }
 
+    // Owning COM interface pointer / owning BSTR for the calls below.
+    template <class T>
+    struct ComRef {
+        T* p = nullptr;
+        ComRef() = default;
+        ~ComRef() { if (p) p->Release(); }
+        ComRef(const ComRef&) = delete;
+        ComRef& operator=(const ComRef&) = delete;
+        T** operator&() { return &p; }
+        T* operator->() const { return p; }
+    };
+
+    struct ComString {
+        BSTR b;
+        explicit ComString(const std::wstring& s)
+            : b(SysAllocStringLen(s.data(), static_cast<UINT>(s.size()))) {}
+        ~ComString() { SysFreeString(b); }
+        ComString(const ComString&) = delete;
+        ComString& operator=(const ComString&) = delete;
+        operator BSTR() const { return b; }
+    };
+
+    // -----------------------------------------------------------------------
+    // TaskRootFolder — a connection to the root folder of the Task Scheduler.
+    // ok() is false when the service cannot be reached.
+    // -----------------------------------------------------------------------
+    struct TaskRootFolder {
+        ComRef<ITaskService> service;
+        ComRef<ITaskFolder>  folder;
+        bool                 comInitialized = false;
+
+        TaskRootFolder()
+        {
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            comInitialized = SUCCEEDED(hr);
+            if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+                return;
+            if (FAILED(CoCreateInstance(__uuidof(TaskScheduler), nullptr, CLSCTX_INPROC_SERVER,
+                                        __uuidof(ITaskService), reinterpret_cast<void**>(&service))))
+                return;
+            VARIANT none;
+            VariantInit(&none);
+            if (FAILED(service->Connect(none, none, none, none)))
+                return;
+            service->GetFolder(ComString(L"\\"), &folder);
+        }
+
+        ~TaskRootFolder()
+        {
+            // Release the interfaces before COM goes away.
+            if (folder.p)  { folder.p->Release();  folder.p = nullptr; }
+            if (service.p) { service.p->Release(); service.p = nullptr; }
+            if (comInitialized)
+                CoUninitialize();
+        }
+
+        TaskRootFolder(const TaskRootFolder&) = delete;
+        TaskRootFolder& operator=(const TaskRootFolder&) = delete;
+
+        bool ok() const { return folder.p != nullptr; }
+    };
+
+    // "DOMAIN\user" of the current process; empty on failure.
+    inline std::wstring CurrentUserAccountName()
+    {
+        HANDLE hToken = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+            return {};
+        std::wstring account;
+        DWORD size = 0;
+        GetTokenInformation(hToken, TokenUser, nullptr, 0, &size);
+        std::vector<BYTE> buf(size);
+        if (size && GetTokenInformation(hToken, TokenUser, buf.data(), size, &size)) {
+            wchar_t name[256], domain[256];
+            DWORD nameLen = 256, domainLen = 256;
+            SID_NAME_USE use;
+            if (LookupAccountSidW(nullptr, reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid,
+                                  name, &nameLen, domain, &domainLen, &use))
+                account = std::wstring(domain) + L"\\" + name;
+        }
+        CloseHandle(hToken);
+        return account;
+    }
+
+    inline bool CurrentProcessIsElevated()
+    {
+        HANDLE hToken = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+            return false;
+        TOKEN_ELEVATION elevation{};
+        DWORD size = sizeof(elevation);
+        bool elevated = GetTokenInformation(hToken, TokenElevation, &elevation, size, &size) &&
+                        elevation.TokenIsElevated;
+        CloseHandle(hToken);
+        return elevated;
+    }
+
+    // -----------------------------------------------------------------------
+    // RegisterLogonTask — register `taskName` to run `exePath arguments` at
+    // the next logon of the current user.  Runs with the highest run level
+    // only when Sandy itself is elevated.
+    // Returns S_OK, or the HRESULT of the step that failed.
+    // -----------------------------------------------------------------------
+    inline HRESULT RegisterLogonTask(const std::wstring& taskName,
+                                     const std::wstring& exePath,
+                                     const std::wstring& arguments)
+    {
+        TaskRootFolder root;
+        if (!root.ok())
+            return E_FAIL;
+        std::wstring user = CurrentUserAccountName();
+        if (user.empty())
+            return E_FAIL;
+
+        ComRef<ITaskDefinition> definition;
+        HRESULT hr = root.service->NewTask(0, &definition);
+        if (FAILED(hr)) return hr;
+
+        ComRef<IPrincipal> principal;
+        hr = definition->get_Principal(&principal);
+        if (FAILED(hr)) return hr;
+        principal->put_UserId(ComString(user));
+        principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN);
+        principal->put_RunLevel(CurrentProcessIsElevated() ? TASK_RUNLEVEL_HIGHEST
+                                                           : TASK_RUNLEVEL_LUA);
+
+        ComRef<ITriggerCollection> triggers;
+        ComRef<ITrigger> trigger;
+        ComRef<ILogonTrigger> logonTrigger;
+        hr = definition->get_Triggers(&triggers);
+        if (SUCCEEDED(hr)) hr = triggers->Create(TASK_TRIGGER_LOGON, &trigger);
+        if (SUCCEEDED(hr)) hr = trigger->QueryInterface(__uuidof(ILogonTrigger),
+                                                        reinterpret_cast<void**>(&logonTrigger));
+        if (SUCCEEDED(hr)) hr = logonTrigger->put_UserId(ComString(user));
+        if (FAILED(hr)) return hr;
+
+        ComRef<IActionCollection> actions;
+        ComRef<IAction> action;
+        ComRef<IExecAction> execAction;
+        hr = definition->get_Actions(&actions);
+        if (SUCCEEDED(hr)) hr = actions->Create(TASK_ACTION_EXEC, &action);
+        if (SUCCEEDED(hr)) hr = action->QueryInterface(__uuidof(IExecAction),
+                                                       reinterpret_cast<void**>(&execAction));
+        if (SUCCEEDED(hr)) hr = execAction->put_Path(ComString(exePath));
+        if (SUCCEEDED(hr)) hr = execAction->put_Arguments(ComString(arguments));
+        if (FAILED(hr)) return hr;
+
+        // A recovery task must also run on battery power.
+        ComRef<ITaskSettings> settings;
+        if (SUCCEEDED(definition->get_Settings(&settings))) {
+            settings->put_DisallowStartIfOnBatteries(VARIANT_FALSE);
+            settings->put_StopIfGoingOnBatteries(VARIANT_FALSE);
+        }
+
+        VARIANT userId, none;
+        VariantInit(&userId);
+        VariantInit(&none);
+        userId.vt = VT_BSTR;
+        userId.bstrVal = SysAllocString(user.c_str());
+        ComRef<IRegisteredTask> registered;
+        hr = root.folder->RegisterTaskDefinition(ComString(taskName), definition.p,
+                                                 TASK_CREATE_OR_UPDATE, userId, none,
+                                                 TASK_LOGON_INTERACTIVE_TOKEN, none, &registered);
+        VariantClear(&userId);
+        return hr;
+    }
+
     // -----------------------------------------------------------------------
     // CreateCleanupTask — register a per-instance scheduled task.
     //
@@ -99,15 +275,22 @@ namespace Sandbox {
         if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) return;
 
         std::wstring taskName = CleanupTaskName(instanceId);
-        std::wstring args = L"/Create /TN \"";
-        args += taskName;
-        args += L"\" /TR \"\\\"";
-        args += exePath;
-        args += L"\\\" --cleanup\" /SC ONLOGON /F /RL HIGHEST";
-
-        if (RunSchtasks(args) == 0) {
+        HRESULT hr = RegisterLogonTask(taskName, exePath, L"--cleanup");
+        if (SUCCEEDED(hr))
             g_logger.Log((L"SCHTASK: created " + taskName).c_str());
-        }
+        else
+            g_logger.LogFmt(L"SCHTASK: create %s FAILED (0x%08X) — after a kill, cleanup waits for the next Sandy run",
+                            taskName.c_str(), hr);
+    }
+
+    // Delete one task in the root folder.  True when the task is gone.
+    inline bool DeleteRootTask(const std::wstring& taskName)
+    {
+        TaskRootFolder root;
+        if (!root.ok())
+            return false;
+        HRESULT hr = root.folder->DeleteTask(ComString(taskName), 0);
+        return SUCCEEDED(hr) || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     }
 
     // -----------------------------------------------------------------------
@@ -119,13 +302,8 @@ namespace Sandbox {
     inline void DeleteCleanupTask(const std::wstring& instanceId)
     {
         std::wstring taskName = CleanupTaskName(instanceId);
-        std::wstring args = L"/Delete /TN \"";
-        args += taskName;
-        args += L"\" /F";
-
-        if (RunSchtasks(args) == 0) {
+        if (DeleteRootTask(taskName))
             g_logger.Log((L"SCHTASK: deleted " + taskName).c_str());
-        }
     }
 
     inline void FinalizeCleanupTaskForCurrentRun()
@@ -139,37 +317,43 @@ namespace Sandbox {
         DeleteCleanupTask(g_instanceId);
     }
 
-    inline bool TryParseCleanupTaskNameFromCsvLine(const std::wstring& csvLine,
-                                                   std::wstring& taskName)
+    // Names of all SandyCleanup_* tasks in the root folder.
+    inline std::vector<std::wstring> EnumCleanupTaskNames()
     {
-        taskName.clear();
-        auto q1 = csvLine.find(L'"');
-        auto q2 = (q1 == std::wstring::npos) ? std::wstring::npos : csvLine.find(L'"', q1 + 1);
-        if (q1 == std::wstring::npos || q2 == std::wstring::npos)
-            return false;
+        std::vector<std::wstring> names;
+        TaskRootFolder root;
+        if (!root.ok())
+            return names;
 
-        auto taskPath = csvLine.substr(q1 + 1, q2 - q1 - 1);
-        auto bs = taskPath.find_last_of(L'\\');
-        taskName = (bs != std::wstring::npos) ? taskPath.substr(bs + 1) : taskPath;
-        return taskName.rfind(kCleanupTaskPrefix, 0) == 0;
+        ComRef<IRegisteredTaskCollection> tasks;
+        if (FAILED(root.folder->GetTasks(TASK_ENUM_HIDDEN, &tasks)))
+            return names;
+        LONG count = 0;
+        tasks->get_Count(&count);
+        for (LONG i = 1; i <= count; i++) {
+            VARIANT index;
+            VariantInit(&index);
+            index.vt = VT_I4;
+            index.lVal = i;
+            ComRef<IRegisteredTask> task;
+            BSTR name = nullptr;
+            if (FAILED(tasks->get_Item(index, &task)) || FAILED(task->get_Name(&name)) || !name)
+                continue;
+            std::wstring taskName(name, SysStringLen(name));
+            SysFreeString(name);
+            if (taskName.rfind(kCleanupTaskPrefix, 0) == 0)
+                names.push_back(std::move(taskName));
+        }
+        return names;
     }
 
     inline std::vector<CleanupTaskInventoryEntry> BuildCleanupTaskInventory()
     {
         std::vector<CleanupTaskInventoryEntry> tasks;
-        HiddenProcessResult query = RunSchtasksCapture(L"/Query /FO CSV /NH");
-        if (query.status != HiddenProcessStatus::Completed)
-            return tasks;
-
-        std::istringstream stream(query.output);
-        std::string line;
-        while (std::getline(stream, line)) {
-            std::wstring wline(line.begin(), line.end());
+        for (auto& taskName : EnumCleanupTaskNames()) {
             CleanupTaskInventoryEntry task;
-            if (!TryParseCleanupTaskNameFromCsvLine(wline, task.taskName))
-                continue;
-
-            task.instanceId = task.taskName.substr(wcslen(kCleanupTaskPrefix));
+            task.instanceId = taskName.substr(wcslen(kCleanupTaskPrefix));
+            task.taskName = std::move(taskName);
             if (task.instanceId.empty())
                 continue;
 
@@ -185,18 +369,17 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // DeleteStaleCleanupTasks — remove tasks whose recovery ledgers are gone.
     //
-    // Lists all SandyCleanup_* tasks via schtasks, extracts instance IDs,
-    // and deletes tasks only after the run no longer has any recovery ledger.
+    // Lists all SandyCleanup_* tasks, extracts instance IDs, and deletes
+    // tasks only after the run no longer has any recovery ledger.
     // Called by startup recovery, --cleanup, and emergency cleanup.
     // -----------------------------------------------------------------------
     inline void DeleteStaleCleanupTasks()
     {
         for (const auto& task : BuildCleanupTaskInventory()) {
             if (task.state == CleanupTaskState::Orphaned) {
-                std::wstring delArgs = L"/Delete /TN \"" + task.taskName + L"\" /F";
-                if (RunSchtasks(delArgs) == 0) {
+                if (DeleteRootTask(task.taskName)) {
                     g_logger.LogFmt(L"SCHTASK_STALE: deleted %ls (orphaned)", task.taskName.c_str());
-                    printf("  [TASK] %ls -> deleted\n", task.taskName.c_str());
+                    RecoveryPrintf("  [TASK] %ls -> deleted\n", task.taskName.c_str());
                 }
             }
         }
@@ -333,7 +516,7 @@ namespace Sandbox {
         for (const auto& name : containerNames) {
             std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + name + L"\"";
             RunHiddenProcess(cmd, 5000, cniExe);
-            printf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
+            RecoveryPrintf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
         }
         if (!containerNames.empty())
             g_logger.LogFmt(L"LOOPBACK: force-disabled %zu stale exemption(s)", containerNames.size());

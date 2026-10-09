@@ -58,6 +58,11 @@ echo.
 echo --- Pre-Sandy SDDL snapshots ---
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%').Sddl" 2^>nul') do set "PRE_SHARED=%%S"
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%\locked').Sddl" 2^>nul') do set "PRE_LOCKED=%%S"
+REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
+for %%V in (PRE_SHARED PRE_LOCKED) do if not defined %%V (
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    exit /b 1
+)
 echo   shared/:  %PRE_SHARED:~0,60%...
 echo   locked/:  %PRE_LOCKED:~0,60%...
 
@@ -66,12 +71,12 @@ REM Phase 1: Start Alice in background, capture Sandy PID
 REM =====================================================================
 echo.
 echo === Phase 1: Starting Alice (background) ===
-start "" /b "%SANDY%" -c "%ALICE_CFG%" -x "C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe" "%ROOT%\scripts\alice.py" > "%ROOT%\alice_output.txt" 2>&1
+start "" /b "%SANDY%" -c "%ALICE_CFG%" -x "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ROOT%\scripts\alice.py" > "%ROOT%\alice_output.txt" 2>&1
 
-REM Capture Alice's sandy.exe PID (most recently started sandy.exe)
+REM Capture Alice's sandy.exe PID (the sandy.exe that runs alice.py, no other)
 set "ALICE_SANDY_PID="
 ping -n 2 127.0.0.1 >nul
-for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "ALICE_SANDY_PID=%%P"
+for /f %%P in ('powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*alice.py*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { $p }"') do set "ALICE_SANDY_PID=%%P"
 
 REM Wait for Alice to initialize
 ping -n 3 127.0.0.1 >nul
@@ -80,12 +85,12 @@ REM =====================================================================
 REM Phase 2: Start Bob in background (while Alice is running)
 REM =====================================================================
 echo === Phase 2: Starting Bob (background, Alice still running) ===
-start "" /b "%SANDY%" -c "%BOB_CFG%" -x "C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe" "%ROOT%\scripts\bob.py" > "%ROOT%\bob_output.txt" 2>&1
+start "" /b "%SANDY%" -c "%BOB_CFG%" -x "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ROOT%\scripts\bob.py" > "%ROOT%\bob_output.txt" 2>&1
 
 REM Capture Bob's sandy.exe PID
 set "BOB_SANDY_PID="
 ping -n 2 127.0.0.1 >nul
-for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "BOB_SANDY_PID=%%P"
+for /f %%P in ('powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*bob.py*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { $p }"') do set "BOB_SANDY_PID=%%P"
 
 REM =====================================================================
 REM Phase 3: Wait for both to finish (use signal files, not stdout)
@@ -136,9 +141,17 @@ if !WAIT_COUNT! GEQ !WAIT_MAX! (
 goto wait_loop
 
 :both_done
-REM Give Sandy cleanup time to finish after probes exit
 echo   [OK] Both probes finished (after !WAIT_COUNT! polls). Waiting for Sandy cleanup...
-ping -n 11 127.0.0.1 >nul
+REM The probes are done, but each Sandy instance still has to revoke its grants.
+REM Wait for the instances of THIS test (found by their command line), not for
+REM a fixed time: a revoke on a large tree has no fixed duration.
+set "LIVE=1"
+for /l %%W in (1,1,60) do if "!LIVE!"=="1" (
+    set "LIVE=0"
+    for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*test_collusion*' }).Count"') do if %%N GTR 0 set "LIVE=1"
+    if "!LIVE!"=="1" ping -n 2 127.0.0.1 >nul
+)
+if "!LIVE!"=="1" echo   [WARN] A Sandy instance of this test is still running after the wait
 
 REM =====================================================================
 REM Phase 4: Results

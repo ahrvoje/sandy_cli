@@ -8,7 +8,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_deep_acl_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set TEST=%~dp0test_deep_acl_rt.py
 set ROOT=%USERPROFILE%\test_deep
 set PASS=0
@@ -49,6 +49,9 @@ echo module>"%ROOT%\library\stable\v1\mod.py"
 echo beta>"%ROOT%\library\experimental\beta\beta.py"
 echo helper>"%ROOT%\scripts\common\utils\helper.bat"
 echo admin>"%ROOT%\scripts\restricted\admin\root.bat"
+REM A real program for the deny.execute check: same file in an allowed and a denied folder
+copy /y "%SystemRoot%\System32\whoami.exe" "%ROOT%\scripts\common\utils\tool.exe" >nul
+copy /y "%SystemRoot%\System32\whoami.exe" "%ROOT%\scripts\restricted\admin\tool.exe" >nul
 
 REM --- Copy test script into the test tree ---
 copy /y "%~dp0test_deep_acl_rt.py" "%ROOT%\scripts\test_deep_acl.py" >nul
@@ -66,7 +69,7 @@ echo.
 
 REM Check no RT SIDs on app/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\app" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\app" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on app/ tree
     set /a PASS+=1
@@ -77,7 +80,7 @@ if !SC! EQU 0 (
 
 REM Check no RT SIDs on library/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\library" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\library" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on library/ tree
     set /a PASS+=1
@@ -88,7 +91,7 @@ if !SC! EQU 0 (
 
 REM Check no RT SIDs on scripts/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\scripts" /t 2^>nul ^| findstr /c:"S-1-9-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\scripts" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No Restricted Token SIDs on scripts/ tree
     set /a PASS+=1

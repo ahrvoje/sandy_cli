@@ -5,7 +5,7 @@
 # creation (Flutter, Chromium, Mojo IPC frameworks).
 #
 # Trade-offs vs AppContainer:
-#   + Named pipe creation (configurable)
+#   + Named pipe creation (always available)
 #   + Registry grants (configurable)
 #   - No network isolation (unrestricted)
 #   - No object namespace isolation (shared)
@@ -17,30 +17,35 @@
 [sandbox]
 token = 'restricted'
 integrity = 'low'          # required: 'low' or 'medium'
-# workdir = 'inherit'      # optional (default: exe folder)
+# workdir = 'inherit'      # optional (default: Sandy's current working directory; or an absolute folder path)
 
 # ============================================================
 # ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
+# A path can hold environment variables: '%USERPROFILE%\project'.
 
 # [allow.deep]
-# peek    = []              # non-recursive: list dir + stat only
 # read    = []              # read files, list dirs (recursive)
 # write   = []              # create/modify files (recursive)
 # execute = []              # read + execute (recursive)
 # append  = []              # append only (recursive)
 # delete  = []              # delete only (recursive)
 # all     = []              # full access (recursive)
+# run     = []              # execute only: start the binary, no read (recursive)
+# stat    = []              # existence, size and timestamps only (recursive)
+# touch   = []              # change timestamps and attributes (recursive)
+# create  = []              # create new files and sub-folders, no overwrite (recursive)
 
 # [deny.deep]                    # optional, default: no denies
+# A deny removes only the rights of its level (deny write keeps read).
+# The rule on the nearest folder wins; on the same path, deny wins.
 
 # ============================================================
 # PRIVILEGES — Optional, safe defaults shown
 # ============================================================
 
 # [privileges]
-# named_pipes     = false   # default false: no named pipe creation
-# desktop         = true    # default true: grant WinSta0 + Desktop access
+# desktop         = true    # default true. false = no access to windows of other processes
 # stdin           = false   # default false (NUL). true=inherit, path=file
 # clipboard_read  = false   # default false
 # clipboard_write = false   # default false
@@ -71,6 +76,6 @@ integrity = 'low'          # required: 'low' or 'medium'
 # ============================================================
 
 # [limit]
-# timeout = 0               # 0 = no timeout
+# timeout = 0               # 0 = no timeout (covers the whole process tree)
 # memory = 0                # 0 = no cap (MB)
 # processes = 0             # 0 = no cap

@@ -1,7 +1,7 @@
 # Sandy — AppContainer Config Template
 # ============================================================
-# AppContainer is the default sandbox mode. It provides kernel-enforced
-# isolation with network control and object namespace isolation.
+# AppContainer mode provides kernel-enforced isolation with network
+# control and object namespace isolation.
 # Named pipe creation is blocked (kernel restriction).
 #
 # Only [sandbox] token is required. All other sections are optional
@@ -9,20 +9,24 @@
 
 [sandbox]
 token = 'appcontainer'
-# workdir = 'inherit'      # optional (default: exe folder)
+# workdir = 'inherit'      # optional (default: Sandy's current working directory; or an absolute folder path)
 
 # ============================================================
 # ACCESS — File and folder grants (optional, default: no grants)
 # ============================================================
+# A path can hold environment variables: '%USERPROFILE%\project'.
 
 # [allow.deep]
-# peek    = []              # non-recursive: list dir + stat only
 # read    = []              # read files, list dirs (recursive)
 # write   = []              # create/modify files (recursive)
 # execute = []              # read + execute (recursive)
 # append  = []              # append only (recursive)
 # delete  = []              # delete only (recursive)
 # all     = []              # full access (recursive)
+# run     = []              # execute only: start the binary, no read (recursive)
+# stat    = []              # existence, size and timestamps only (recursive)
+# touch   = []              # change timestamps and attributes (recursive)
+# create  = []              # create new files and sub-folders, no overwrite (recursive)
 
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
@@ -38,7 +42,7 @@ token = 'appcontainer'
 # clipboard_write = false   # default false
 # child_processes = true    # default true
 
-# NOTE: named_pipes, desktop are not available in AppContainer mode.
+# NOTE: desktop is not available in AppContainer mode.
 # NOTE: [registry] section is not available in AppContainer mode.
 
 # ============================================================
@@ -54,6 +58,6 @@ token = 'appcontainer'
 # ============================================================
 
 # [limit]
-# timeout = 0               # 0 = no timeout
+# timeout = 0               # 0 = no timeout (covers the whole process tree)
 # memory = 0                # 0 = no cap (MB)
 # processes = 0             # 0 = no cap

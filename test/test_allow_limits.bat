@@ -8,7 +8,7 @@ REM Self-contained: uses %USERPROFILE%\test_limits for all scripts.
 REM ---------------------------------------------------------------
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_limits
 
 echo === Sandy Allow ^& Limits Test Runner ===
@@ -31,6 +31,11 @@ echo.
 
 "%SANDY%" -c "%~dp0test_allow_limits_config.toml" -x "%PYTHON%" "%ROOT%\scripts\test_allow_limits.py"
 set PART1_EXIT=!ERRORLEVEL!
+set FAIL=0
+if !PART1_EXIT! NEQ 0 (
+    echo   [FAIL] Part 1: probe exited with code !PART1_EXIT!
+    set /a FAIL+=1
+)
 echo.
 
 REM --- Part 2: Timeout enforcement ---
@@ -47,10 +52,13 @@ echo.
 echo   Elapsed:   ~!ELAPSED! seconds
 echo   Exit code: !TIMEOUT_EXIT!
 
-if !TIMEOUT_EXIT! NEQ 0 (
-    echo   [PASS] Timeout: process killed in ~!ELAPSED!s
+REM 130 is Sandy's exit code for "killed by the timeout watchdog".  Any other
+REM non-zero code (config error, launch failure) is not a timeout.
+if !TIMEOUT_EXIT! EQU 130 (
+    echo   [PASS] Timeout: process killed in ~!ELAPSED!s ^(exit 130^)
 ) else (
-    echo   [FAIL] Timeout: process exited normally - timeout did not trigger!
+    echo   [FAIL] Timeout: exit code !TIMEOUT_EXIT!, expected 130
+    set /a FAIL+=1
 )
 echo.
 
@@ -66,16 +74,18 @@ if !STRICT_EXIT! NEQ 0 (
     echo   [PASS] LPAC mode: execution blocked
 ) else (
     echo   [FAIL] LPAC mode: process ran - should have been blocked!
+    set /a FAIL+=1
 )
 echo.
 
 echo === Summary ===
 echo   Part 1 (allow/limits): exit !PART1_EXIT!
 echo   Part 2 (timeout):      killed in ~!ELAPSED!s
-echo   Part 3 (LPAC mode):    blocked
+echo   Part 3 (LPAC mode):    exit !STRICT_EXIT!
 
 REM === Cleanup ===
 "%SANDY%" --cleanup >nul 2>nul
 if exist "%ROOT%" rmdir /s /q "%ROOT%"
 
+if !FAIL! GTR 0 exit /b 1
 exit /b 0

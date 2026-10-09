@@ -619,7 +619,7 @@
 
 <span class="code-flag">sandy.exe</span> -c cleanup.toml -x cmd.exe /c <span class="code-string">"del /s /q * &amp;&amp; rd /s /q ."</span>
 
-<span class="code-comment"># cleanup.toml — only 6 lines needed:</span>
+<span class="code-comment"># cleanup.toml — only 7 lines needed:</span>
 <span class="code-keyword">[sandbox]</span>
 token = <span class="code-string">'appcontainer'</span>
 workdir = <span class="code-string">'C:\project\test\output'</span>
@@ -815,8 +815,8 @@ timeout = 30
           integrity level — <code>low</code> or <code>medium</code>.
         </p>
         <ul style="margin-top: 12px; padding-left: 20px; color: var(--text-secondary); font-size: 0.9rem;">
-          <li>Real <code>DENY_ACCESS</code> ACEs — kernel evaluates deny-before-allow</li>
-          <li>Named pipe support (Flutter, Chromium, Mojo IPC)</li>
+          <li>Real <code>DENY_ACCESS</code> ACEs — the standard Windows ACE order decides; the rule on the nearest folder wins</li>
+          <li>Named pipes always available (Flutter, Chromium, Mojo, Bun/Node IPC work)</li>
           <li>COM/RPC server access for complex applications</li>
           <li>Configurable registry grants (<code>[registry]</code> section)</li>
           <li>Medium integrity for wider app compatibility</li>
@@ -893,7 +893,7 @@ timeout = 30
           <tr><td><strong>Read</strong></td><td><code>read</code></td><td>Read files, list directories</td><td>No <code>FILE_EXECUTE</code> — can't load DLLs</td></tr>
           <tr><td><strong>Write</strong></td><td><code>write</code></td><td>Create and modify files</td><td>No read — write-blind</td></tr>
           <tr><td><strong>Execute</strong></td><td><code>execute</code></td><td>Read + execute</td><td>Standard <code>(RX)</code> — for running programs</td></tr>
-          <tr><td><strong>Append</strong></td><td><code>append</code></td><td>Append data to files</td><td>No overwrite, no read</td></tr>
+          <tr><td><strong>Append</strong></td><td><code>append</code></td><td>Append data to files</td><td>No overwrite, no read. On a folder: also create sub-folders</td></tr>
           <tr><td><strong>Delete</strong></td><td><code>delete</code></td><td>Delete files and directories</td><td>No read, no write</td></tr>
           <tr><td><strong>All</strong></td><td><code>all</code></td><td>Full data control</td><td>No <code>WRITE_DAC</code>, <code>WRITE_OWNER</code>, <code>FILE_DELETE_CHILD</code></td></tr>
           <tr><td><strong>Run</strong></td><td><code>run</code></td><td>Execute only, no read</td><td>OS loader can run binary, sandbox can't copy it</td></tr>
@@ -919,17 +919,18 @@ timeout = 30
       <div class="card">
         <span class="tag rt" style="margin-bottom: 12px;">Restricted Token</span>
         <p>
-          Uses real <code>DENY_ACCESS</code> ACEs. The Windows kernel evaluates DENY before ALLOW
-          as expected — straightforward and reliable.
+          Uses real <code>DENY_ACCESS</code> ACEs. A deny rule denies only the rights that define its
+          level; the other levels stay usable. Example: <code>deny.write</code> blocks write, append and
+          attribute changes, but read, list, execute and delete still work. Every deny also denies
+          "change permissions" and "take ownership", so the sandboxed process cannot edit the rule away.
         </p>
       </div>
       <div class="card">
         <span class="tag ac" style="margin-bottom: 12px;">AppContainer</span>
         <p>
-          The kernel <strong>ignores</strong> DENY ACEs for AppContainer SIDs. Sandy rejects deny rules for AC mode
-          via <strong>allow-mask reduction</strong> — reading the existing ALLOW ACE, subtracting the
-          denied bits (preserving shared bits like <code>SYNCHRONIZE</code>), and writing back a reduced
-          mask with <code>PROTECTED_DACL</code> to break inheritance.
+          The kernel <strong>ignores</strong> DENY ACEs for AppContainer SIDs. Sandy rejects
+          <code>[deny.*]</code> for AppContainer / LPAC at config load (exit 128). There is no mask
+          reduction and no other deny emulation.
         </p>
       </div>
     </div>
@@ -938,7 +939,10 @@ timeout = 30
     <h3 style="margin-top: 40px;">Depth-Sorted Pipeline — Allow Inside Deny (Restricted Token)</h3>
     <p style="color: var(--text-secondary); font-size: 0.93rem; margin-bottom: 16px;">
       Sandy supports carving out allowed subtrees from within denied areas. All allow and deny entries
-      are merged into a single pipeline, sorted by path depth. The most specific (deepest) path always wins:
+      are merged into a single pipeline, sorted by path depth. The standard Windows ACE order decides;
+      Sandy adds nothing on top and does not strip a deny ACE to make a carve-out. The rule on the nearest
+      folder wins, right by right. On the same path and scope, the deny wins. An <code>allow.this</code>
+      on a folder that has a <code>deny.deep</code> wins on the folder itself for the rights it names:
     </p>
     <pre><code><span class="code-comment"># Config: deny all of C:\repos, but allow C:\repos\snipps</span>
 <span class="code-keyword">[deny.deep]</span>
@@ -953,8 +957,8 @@ timeout = 30
 <span class="code-comment"># Pipeline execution log:</span>
 PIPELINE: sorted 3 entries by path depth:
     DENY  [ALL    ] C:\repos
-    ALLOW [STAT   ] C:\repos            &lt;- strip deny (dir only)
-    ALLOW [ALL    ] C:\repos\snipps     &lt;- strip deny (subtree)</code></pre>
+    ALLOW [STAT   ] C:\repos  (this object only)
+    ALLOW [ALL    ] C:\repos\snipps</code></pre>
   </div>
 </section>
 
@@ -976,9 +980,10 @@ PIPELINE: sorted 3 entries by path depth:
         <tbody>
           <tr><td>Clean exit</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>RAII guard</td></tr>
           <tr><td>Child crash</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Child exit ≠ Sandy exit</td></tr>
-          <tr><td>Ctrl+C / close</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Console signal handler</td></tr>
+          <tr><td>Ctrl+C / Ctrl+Break</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Sandy ends the child tree, runs the complete cleanup, and exits with <code>0xC000013A</code></td></tr>
+          <tr><td>Console close</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Sandy ends the child tree. Not a full cleanup in-process: the next Sandy start, <code>--cleanup</code> or the logon task does the rest</td></tr>
           <tr><td>Sandy crash (SEH)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>__except handler</td></tr>
-          <tr><td>Power loss / taskkill</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Scheduled task at logon</td></tr>
+          <tr><td>Power loss / taskkill</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Recovery: the next Sandy start, <code>sandy.exe --cleanup</code>, or the scheduled task at logon</td></tr>
         </tbody>
       </table>
     </div>
@@ -988,7 +993,7 @@ PIPELINE: sorted 3 entries by path depth:
         <h3>Write-Ahead Logging</h3>
         <p>
           Before modifying any ACL, Sandy persists each grant as
-          <code>TYPE|PATH|SID</code> to <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code>.
+          <code>TYPE|PATH|SID[|DENY:1][|THIS:1][|OWNER:I|OWNER:O]</code> to <code>HKCU\Software\Sandy\Grants\&lt;UUID&gt;</code>.
           The registry write happens <em>before</em> the filesystem modification — if Sandy crashes
           mid-grant, the record survives for later cleanup.
         </p>
@@ -997,7 +1002,8 @@ PIPELINE: sorted 3 entries by path depth:
         <h3>Per-Instance Scheduled Task</h3>
         <p>
           A <code>SandyCleanup_&lt;UUID&gt;</code> task is registered in Task Scheduler,
-          configured to run <code>sandy.exe --cleanup</code> at next logon. It only fires
+          configured to run <code>sandy.exe --cleanup</code> at next logon. Sandy registers it
+          through the Task Scheduler API for the current user. No elevation is needed. It only fires
           if Sandy didn't clean up normally. Deleted on clean exit.
         </p>
       </li>
@@ -1012,9 +1018,11 @@ PIPELINE: sorted 3 entries by path depth:
       <li>
         <h3>ACE-Level Restoration</h3>
         <p>
-          Cleanup walks each stale grant, removes only the ACEs matching the dead instance's SID
-          via <code>RemoveSidFromDacl</code>, and deletes the registry subkey. Live instances'
-          grants are never touched.
+          Cleanup walks each stale grant and removes exactly the ACEs that the dead instance added:
+          the ACEs of its SID (via <code>RemoveSidFromDacl</code>) and the helper ACEs next to its deny
+          rules (<code>OWNER RIGHTS</code> ACE, delete guard on the parent folder). Then it deletes the
+          registry subkey. After cleanup the DACL is identical to the one before the run: same ACEs,
+          same order, same protection and auto-inherit flags. Live instances' grants are never touched.
         </p>
       </li>
     </ol>

@@ -1,0 +1,22 @@
+# DACL fidelity test — AppContainer mode
+#
+# Allow rules on protected and on inheriting objects (AppContainer has no
+# deny rules).  After the run each DACL must be identical to the one before.
+
+[sandbox]
+token = 'appcontainer'
+
+[allow.deep]
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read    = ['%USERPROFILE%\test_dacl_fidelity\scripts', '%USERPROFILE%\test_dacl_fidelity\arena\secret']
+all     = ['%USERPROFILE%\test_dacl_fidelity\arena\frozen']
+
+[allow.this]
+read  = ['%USERPROFILE%\test_dacl_fidelity\single']
+write = ['%USERPROFILE%\test_dacl_fidelity\arena\lockfile.txt', '%USERPROFILE%\test_dacl_fidelity\arena\keep\victim.txt']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 60

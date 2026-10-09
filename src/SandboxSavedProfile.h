@@ -47,7 +47,7 @@ namespace Sandbox {
                         loopbackOk ? L"OK" : L"FAILED",
                         containerName.c_str(),
                         containerOk ? L"deleted-or-absent" : L"FAILED");
-        printf("  [CONTAINER] %ls -> %s\n", containerName.c_str(),
+        RecoveryPrintf("  [CONTAINER] %ls -> %s\n", containerName.c_str(),
                containerOk ? "deleted/already absent" : "FAILED");
 
         return loopbackOk && containerOk;
@@ -253,7 +253,6 @@ namespace Sandbox {
     //   _allow_network      REG_DWORD  0 | 1
     //   _lan_mode           REG_SZ     "off" | "with_localhost" | "without_localhost"
 
-    //   _allow_named_pipes   REG_DWORD  0 | 1
     //   _allow_desktop       REG_DWORD  0 | 1
     //   _strict              REG_DWORD  0 | 1
     //   _allow_clipboard_r   REG_DWORD  0 | 1
@@ -292,7 +291,6 @@ namespace Sandbox {
         ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
         ok &= TryWriteRegSz(hKey, L"_lan_mode", LanModeRegistryName(cfg.lanMode));
 
-        ok &= TryWriteRegDword(hKey, L"_allow_named_pipes",   cfg.allowNamedPipes  ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_strict",              cfg.strict           ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_allow_clipboard_r",   cfg.allowClipboardRead  ? 1 : 0);
@@ -397,7 +395,6 @@ namespace Sandbox {
         if (!TryParseLanModeRegistryValue(lanModeStr, cfg.lanMode))
             cfg.lanMode = LanMode::Off;
 
-        cfg.allowNamedPipes     = ReadRegDword(hKey, L"_allow_named_pipes") != 0;
         {
             DWORD desktopVal = 0;
             if (!TryReadRegDword(hKey, L"_allow_desktop", desktopVal)) {
@@ -947,7 +944,7 @@ namespace Sandbox {
                         status.grantsRestored ? L"OK" : L"FAILED",
                         status.containerCleanOk ? L"OK" : L"FAILED",
                         status.desktopCleanOk ? L"OK" : L"FAILED");
-        printf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
+        RecoveryPrintf("  [STAGING] Profile '%ls' rollback incomplete — metadata preserved for retry.\n",
                name.c_str());
     }
 
@@ -956,20 +953,20 @@ namespace Sandbox {
         if (!DeleteProfileRegistryState(name, L"STAGING_CLEANUP")) {
             g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' metadata delete failed, preserving metadata",
                             name.c_str());
-            printf("  [STAGING] Profile '%ls' metadata delete failed — preserved for retry.\n",
+            RecoveryPrintf("  [STAGING] Profile '%ls' metadata delete failed — preserved for retry.\n",
                    name.c_str());
             return false;
         }
 
         g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' rolled back", name.c_str());
-        printf("  [STAGING] Profile '%ls' rolled back.\n", name.c_str());
+        RecoveryPrintf("  [STAGING] Profile '%ls' rolled back.\n", name.c_str());
         return true;
     }
 
     inline void RollbackStagingProfile(const std::wstring& name)
     {
         g_logger.LogFmt(L"STAGING_CLEANUP: profile '%s' left in staging — rolling back", name.c_str());
-        printf("  [STAGING] Rolling back incomplete profile '%ls'...\n", name.c_str());
+        RecoveryPrintf("  [STAGING] Rolling back incomplete profile '%ls'...\n", name.c_str());
 
         HKEY hKey = nullptr;
         if (OpenSavedProfileRegistryKey(name, KEY_READ, hKey)) {

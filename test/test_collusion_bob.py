@@ -6,7 +6,7 @@ without leaving zombie AppContainer SIDs from Alice's prior run.
 """
 import os, sys, time
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_collusion')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_collusion')
 SHARED = os.path.join(ROOT, 'shared')
 LOCKED = os.path.join(SHARED, 'locked')
 RELAY = os.path.join(SHARED, 'relay')

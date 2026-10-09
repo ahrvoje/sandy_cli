@@ -19,7 +19,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0stress_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PROBE=%~dp0stress_probe.py
 set DIR_A=%USERPROFILE%\test_stress_A
 set DIR_B=%USERPROFILE%\test_stress_B
@@ -64,19 +64,19 @@ REM Phase 1: Inject stale registry entries from fake dead PIDs
 REM =====================================================================
 echo.
 echo === Phase 1: Inject stale entries ===
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _pid /t REG_DWORD /d 99901 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v _container /t REG_SZ /d "Sandy_dead-0001" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0001" /v _pid /t REG_DWORD /d 99901 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0001" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0001" /v _container /t REG_SZ /d "Sandy_dead-0001" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0001" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path|D:(A;;FA;;;WD)" /f >nul 2>nul
 
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _pid /t REG_DWORD /d 99902 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _ctime /t REG_QWORD /d 2 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v _container /t REG_SZ /d "Sandy_dead-0002" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path2|D:(A;;FA;;;WD)" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0002" /v _pid /t REG_DWORD /d 99902 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0002" /v _ctime /t REG_QWORD /d 2 /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0002" /v _container /t REG_SZ /d "Sandy_dead-0002" /f >nul 2>nul
+reg add "HKCU\Software\Sandy\Grants\dead-test-stress-0002" /v 3 /t REG_SZ /d "FILE|C:\fake_stale_path2|D:(A;;FA;;;WD)" /f >nul 2>nul
 
 echo   Injected 2 stale Grants entries
 
-reg query "HKCU\Software\Sandy\Test\Grants\dead-0001-0001-0001-000000000001" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\dead-test-stress-0001" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale entry 1 injected
     set /a PASS+=1
@@ -85,7 +85,7 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\Test\Grants\dead-0002-0002-0002-000000000002" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants\dead-test-stress-0002" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Stale entry 2 injected
     set /a PASS+=1
@@ -181,13 +181,14 @@ REM Run --cleanup to handle any stale entries that remain
 "!SANDY!" --cleanup >nul 2>nul
 
 REM 5.1: No Grants registry entries should remain
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+set GREMAIN=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set GREMAIN=%%N
+if !GREMAIN! EQU 0 (
     echo   [PASS] All Grants registry entries cleaned
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Grants registry entries still exist:
-    reg query "HKCU\Software\Sandy\Test\Grants" /s 2>nul
+    echo   [FAIL] !GREMAIN! Grants registry entries still exist:
+    reg query "HKCU\Software\Sandy\Grants" /s 2>nul
     set /a FAIL+=1
 )
 

@@ -200,7 +200,6 @@ if __name__ == "__main__":
             'strict': 1,
             'stdin_mode': 'NUL',
             'booleans': [
-                ('_allow_named_pipes',  0, 'named_pipes'),
                 ('_allow_desktop',      1, 'desktop'),
                 ('_allow_clipboard_r',  1, 'clipboard_read'),
                 ('_allow_clipboard_w',  0, 'clipboard_write'),

@@ -1,24 +1,30 @@
-# Test config for new access levels in Restricted Token mode:
+# Test config for access levels in Restricted Token mode:
 # run, stat, touch, create — both allow and deny
+#
+# strict = true: the user SID is not a restricting SID, so each allow level
+# gives exactly its own rights (as in AppContainer mode).  Medium integrity:
+# the levels that change something (touch, create) are not blocked by the
+# integrity level of the test tree.
 
 [sandbox]
 token = 'restricted'
-integrity = 'low'
+integrity = 'medium'
+strict = true
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_new_levels\scripts']
-run = ['C:\Users\H\test_new_levels\run_dir']
-stat = ['C:\Users\H\test_new_levels\stat_dir']
-touch = ['C:\Users\H\test_new_levels\touch_dir']
-create = ['C:\Users\H\test_new_levels\create_dir']
-all = ['C:\Users\H\test_new_levels\denied']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_new_levels\scripts']
+run = ['%USERPROFILE%\test_new_levels\run_dir']
+stat = ['%USERPROFILE%\test_new_levels\stat_dir']
+touch = ['%USERPROFILE%\test_new_levels\touch_dir']
+create = ['%USERPROFILE%\test_new_levels\create_dir']
+all = ['%USERPROFILE%\test_new_levels\denied']
 
 [deny.deep]
-run = ['C:\Users\H\test_new_levels\denied\no_run']
-stat = ['C:\Users\H\test_new_levels\denied\no_stat']
-touch = ['C:\Users\H\test_new_levels\denied\no_touch']
-create = ['C:\Users\H\test_new_levels\denied\no_create']
+run = ['%USERPROFILE%\test_new_levels\denied\no_run']
+stat = ['%USERPROFILE%\test_new_levels\denied\no_stat']
+touch = ['%USERPROFILE%\test_new_levels\denied\no_touch']
+create = ['%USERPROFILE%\test_new_levels\denied\no_create']
 
 [environment]
 inherit = true

@@ -196,7 +196,7 @@
 
     <div class="callout warning">
       <div class="callout-title">⚠️ AppContainer: Allow-Only Model</div>
-      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. Sandy therefore rejects <code>[deny.*]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules.—Mask Reduction—for AC.</p>
+      <p>The Windows Kernel <strong>silently ignores</strong> standard <code>DENY_ACCESS</code> ACEs when evaluating access for an AppContainer SID. Sandy therefore rejects <code>[deny.*]</code> for AppContainer mode at config validation time (exit 128). Use Restricted Token mode for deny rules. There is no mask reduction and no other deny emulation in AppContainer mode.</p>
     </div>
 
     <!-- Case 1: Standard Allow -->
@@ -233,17 +233,16 @@ write = ['C:\Data']</code></pre>
         <table>
           <thead><tr><th>Pipeline</th><th>Action</th></tr></thead>
           <tbody>
-            <tr><td><span class="tag rt">Restricted Token</span></td><td>Injects a <code>DENY_ACCESS_ACE</code> (Write) before the <code>ACCESS_ALLOWED_ACE</code> (All). Windows evaluates Deny first.</td></tr>
-            <tr><td><span class="tag ac">AppContainer</span></td><td>Since <code>DENY_ACCESS</code> is ignored, Sandy performs <strong>Mask Reduction</strong>. It subtracts Write bits from the All mask <em>(preserving shared Read bits like SYNCHRONIZE)</em>, and injects a single <code>ACCESS_ALLOWED_ACE</code> with the resulting <code>(All - Write)</code> mask.</td></tr>
+            <tr><td><span class="tag rt">Restricted Token</span></td><td>Injects a <code>DENY_ACCESS_ACE</code> (Write) before the <code>ACCESS_ALLOWED_ACE</code> (All), both in one DACL write. Windows evaluates the explicit Deny first: on the same path and scope, the deny wins. The deny mask holds only the rights that define <code>write</code> (write data, append data, write extended attributes, write attributes) plus "change permissions" and "take ownership". Read, list, execute and delete still work.</td></tr>
+            <tr><td><span class="tag ac">AppContainer</span></td><td>Not supported. Sandy rejects a config with <code>[deny.*]</code> at load (exit 128).</td></tr>
           </tbody>
         </table>
       </div>
       <div class="diagram-box">
         [ RT DACL for C:\Data ]<br>
-        <strong style="color:var(--danger);">1. Deny Sandy_SID (Write)</strong><br>
-        <strong style="color:var(--accent);">2. Allow Sandy_SID (All)</strong><br><br>
-        [ AC DACL for C:\Data ]<br>
-        <strong style="color:var(--accent);">1. Allow Sandy_SID (All minus Write bits)</strong>
+        <strong style="color:var(--danger);">1. Deny Sandy_SID (Write rights + change permissions + take ownership)</strong><br>
+        <strong style="color:var(--accent);">2. Allow Sandy_SID (All)</strong><br>
+        <strong style="color:var(--accent);">3. Allow OWNER RIGHTS (read permissions + change permissions) — only with strict = false</strong>
       </div>
     </div>
 
@@ -255,21 +254,28 @@ all = ['C:\Data']
 
 [deny.deep]
 write = ['C:\Data\Temp']</code></pre>
-      <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">The <code>C:\Data</code> grant uses <code>TreeSetNamedSecurityInfoW</code> to recursively propagate inheritable ACEs to all child folders, including <code>\Temp</code>. Sandy then targets <code>\Temp</code> explicitly.</p>
+      <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">The <code>C:\Data</code> grant is one DACL write with <code>SetNamedSecurityInfoW</code>. Windows auto-inheritance propagates the inheritable ACE to all descendants, including <code>\Temp</code>. Sandy then writes the DACL of <code>\Temp</code> once.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Pipeline</th><th>Action</th></tr></thead>
           <tbody>
-            <tr><td><span class="tag rt">Restricted Token</span></td><td>Places an explicit <code>DENY_ACCESS_ACE</code> (Write) on <code>\Temp</code>. Because Windows evaluates explicit ACEs before inherited ACEs, Deny Write wins over the inherited Allow All.</td></tr>
-            <tr><td><span class="tag ac">AppContainer</span></td><td>Replaces the DACL on <code>\Temp</code> with the reduced mask (All - Write), but applies it with the <code>PROTECTED_DACL_SECURITY_INFORMATION</code> flag to sever inheritance. This prevents the parent's Allow All from flowing back down and overriding the reduced mask.</td></tr>
+            <tr><td><span class="tag rt">Restricted Token</span></td><td>Places an explicit <code>DENY_ACCESS_ACE</code> (Write) on <code>\Temp</code>. Because Windows evaluates explicit ACEs before inherited ACEs, Deny Write wins over the inherited Allow All. In <code>\Temp</code> read, list, execute and delete still work; write, append and attribute changes are blocked. Sandy does not change DACL protection: inheritance stays as it was.</td></tr>
+            <tr><td><span class="tag ac">AppContainer</span></td><td>Not supported. Sandy rejects a config with <code>[deny.*]</code> at load (exit 128).</td></tr>
           </tbody>
         </table>
       </div>
     </div>
     
     <div class="callout info">
-      <div class="callout-title">💡 The Overlap Cleanup Pipeline</div>
-      <p>If you specify an <code>allow</code> <em>inside</em> a <code>deny</code> (e.g., Allow on <code>\Temp\Cache</code>), the ACL Pipeline sorts paths by depth and applies them shallow-to-deep. When applying the deepest allow, it actively scrubs inherited sandbox deny/reduced ACEs off the target subtree to ensure the allow rule wins definitively over the parent deny.</p>
+      <div class="callout-title">💡 Allow Inside Deny: the Nearest Rule Wins</div>
+      <p>If you specify an <code>allow</code> <em>inside</em> a <code>deny</code> (e.g., Allow on <code>\Temp\Cache</code>), the ACL Pipeline sorts the rules by path depth and writes one DACL per object, shallow-to-deep. The standard Windows ACE order decides; Sandy adds nothing on top. Explicit ACEs on an object are evaluated before ACEs inherited from further up, so the rule on the nearest folder wins, right by right. The allow gives back exactly the rights that it names, at its own scope. On the same path and scope, the deny wins. On a folder with <code>deny.deep</code> and <code>allow.this</code>, the <code>allow.this</code> wins on the folder itself for the rights it names; descendants keep the full deny. Sandy never strips or rewrites ACEs of other identities and never sets or clears <code>PROTECTED_DACL</code>.</p>
+    </div>
+
+    <div class="callout info">
+      <div class="callout-title">💡 ACEs That Sandy Adds Next to a Deny Rule</div>
+      <p><strong>Owner protection:</strong> with <code>strict = false</code> the sandbox token counts as owner of the user's files. Windows gives an owner "read permissions" and "change permissions" before it reads the DACL; a deny ACE cannot take that away. Sandy therefore adds one <code>OWNER RIGHTS</code> (<code>S-1-3-4</code>) allow ACE (read permissions + change permissions) next to each deny. That ACE switches the implicit owner grant off for the object, so the deny on "change permissions" holds. The real user keeps the same rights as before. Sandy does not add the ACE when the object already holds an <code>OWNER RIGHTS</code> ACE of its own.<br>
+      <strong>Delete guard:</strong> <code>deny.delete</code> and <code>deny.all</code> also put one deny ACE (delete child, change permissions, take ownership; this folder only, not inherited) on the parent folder of the denied path. Without it Windows lets a process delete or rename a child through the delete-child right of the parent, whatever the DACL of the child says. Result: an object under <code>deny.delete</code> / <code>deny.all</code> cannot be deleted or renamed, and neither can the denied folder itself. Other children of that parent are not affected. Log line: <code>DENY_GUARD: &lt;parent&gt; -&gt; OK</code>.<br>
+      Sandy removes both ACEs at cleanup.</p>
     </div>
 
   </div>
@@ -285,10 +291,10 @@ write = ['C:\Data\Temp']</code></pre>
       <!-- Standard Clean Exit -->
       <div class="card">
         <h3 style="margin-bottom:12px;">Standard Clean Exits</h3>
-        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">When the sandbox process finishes normally (exit code 0), Sandy meticulously unwinds all isolation state via a specialized RAII Pipeline.</p>
+        <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">When the sandbox process ends (with any exit code), Sandy unwinds all isolation state via a specialized RAII Pipeline.</p>
         <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
-          <li><strong style="color:var(--accent);">DACL Restoration:</strong> Sandy doesn't wipe ACLs. It loops through every grant, searches the DACL for ACEs matching the instance's unique SID, and precisely deletes them. Native permissions remain untouched.</li>
-          <li><strong style="color:var(--accent);">Profile Cleanup:</strong> The temporary AppContainer profile and all mapping rules from the kernel's firewall (WFP) are cleanly removed.</li>
+          <li><strong style="color:var(--accent);">DACL Restoration:</strong> Sandy doesn't wipe ACLs. It loops through every grant and removes exactly the ACEs of the instance's unique SID, its <code>OWNER RIGHTS</code> companion ACE and its delete guards. After cleanup the DACL is identical to the one before the run: same ACEs, same order, same protection and auto-inherit flags. Native permissions remain untouched.</li>
+          <li><strong style="color:var(--accent);">Profile Cleanup:</strong> The temporary AppContainer profile and its loopback exemption are removed.</li>
           <li><strong style="color:var(--accent);">Persistent State Clear:</strong> The registry entries tracking the grants for this instance ID are gracefully deleted to mark the session entirely clean.</li>
           <li><strong style="color:var(--accent);">Loopback Cleanup:</strong> If UWP loopback exemptions were granted, they are removed from the AppContainer.</li>
         </ul>
@@ -299,10 +305,10 @@ write = ['C:\Data\Temp']</code></pre>
         <h3 style="margin-bottom:12px;">Irregular Exits & Resilience</h3>
         <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px;">What happens if the power dies, or a user runs <code>taskkill /f /im sandy.exe</code>? The RAII cleanup is completely bypassed.</p>
         <ul style="color:var(--text-secondary);font-size:0.85rem;margin-left:20px;line-height:1.6;">
-          <li><strong style="color:var(--accent2);">Durable Recovery Metadata:</strong> Sandy records the minimum ownership metadata needed to recover transient run state after abnormal termination. Profile-owned state is tracked separately from run-owned state so recovery can distinguish durable identities from crashed one-shot runs.</li>
-          <li><strong style="color:var(--accent2);">Detection &amp; Warning:</strong> A new instance audits stale run metadata, orphaned cleanup tasks, and transient containers at startup, then reports what was recovered or still needs attention.</li>
+          <li><strong style="color:var(--accent2);">Durable Recovery Metadata:</strong> Sandy records the minimum ownership metadata needed to recover transient run state after abnormal termination. Profile-owned state is tracked separately from run-owned state so recovery can distinguish durable identities from crashed one-shot runs. The ledger is write-ahead: the record of a grant goes to <code>HKCU\Software\Sandy\Grants\&lt;instance-id&gt;</code> before the DACL changes. A kill at any moment leaves a record for every ACE that exists. If a kill cut a recursive grant short, cleanup re-propagates inheritance from the root of the rule (log: <code>ACL_REPROPAGATE</code>).</li>
+          <li><strong style="color:var(--accent2);">Detection &amp; Warning:</strong> A new instance audits stale run metadata, orphaned cleanup tasks, and transient containers at startup, then reports what was recovered or still needs attention. Recovery messages of a normal run go to the session log only (they still print for <code>--cleanup</code>). Sandy prints nothing on the child's stdout.</li>
           <li><strong style="color:var(--accent2);">Manual Recovery:</strong> Running <code>sandy.exe --cleanup</code> performs the same recovery work on demand: remove orphaned run ACLs, loopback state, scheduled tasks, and transient AppContainer profiles while preserving live runs and durable saved profiles.</li>
-          <li><strong style="color:var(--accent2);">Scheduled Fallback:</strong> Each run also registers a per-instance logon task that invokes <code>--cleanup</code>. Sandy deletes its own task on clean exit; if the process or machine dies unexpectedly, the task provides a later self-healing path on the next logon.</li>
+          <li><strong style="color:var(--accent2);">Scheduled Fallback:</strong> Each run also registers a per-instance logon task (<code>SandyCleanup_&lt;uuid&gt;</code>) that invokes <code>--cleanup</code>. Sandy registers it through the Task Scheduler API for the current user; no elevation is needed and Sandy does not start <code>schtasks.exe</code>. Sandy deletes its own task on clean exit; if the process or machine dies unexpectedly, the task provides a later self-healing path on the next logon.</li>
         </ul>
       </div>
     </div>

@@ -289,7 +289,6 @@ namespace Sandbox {
     {
         static const std::map<std::wstring, bool SandboxConfig::*> kPrivilegeBoolKeys = {
             {L"network", &SandboxConfig::allowNetwork},
-            {L"named_pipes", &SandboxConfig::allowNamedPipes},
             {L"desktop", &SandboxConfig::allowDesktop},
             {L"clipboard_read", &SandboxConfig::allowClipboardRead},
             {L"clipboard_write", &SandboxConfig::allowClipboardWrite},
@@ -328,6 +327,42 @@ namespace Sandbox {
     constexpr size_t kMaxRulesPerSection = 256;
 
     enum class ConfigPathKind { Any, File, Directory };
+    // -----------------------------------------------------------------------
+    // ExpandConfigPath — replace %NAME% environment references in a path.
+    //
+    // A config can name the user's folders without the user name:
+    //   '%USERPROFILE%\project', '%LOCALAPPDATA%\Programs\Python\Python314'
+    // The values come from Sandy's own environment at config load.  Windows
+    // leaves a reference to a variable that is not set as it is; the path
+    // then fails validation (see HintUnsetVariable).
+    // -----------------------------------------------------------------------
+    inline std::wstring ExpandConfigPath(const std::wstring& path)
+    {
+        if (path.find(L'%') == std::wstring::npos)
+            return path;
+        DWORD needed = ExpandEnvironmentStringsW(path.c_str(), nullptr, 0);
+        if (needed == 0)
+            return path;
+        std::wstring expanded(needed, L'\0');
+        DWORD written = ExpandEnvironmentStringsW(path.c_str(), &expanded[0], needed);
+        if (written == 0 || written > needed)
+            return path;
+        expanded.resize(written - 1);
+        return expanded;
+    }
+
+    // A "%NAME%" that is still in a rejected path names a variable that is
+    // not set.  Say so: "not an absolute path" alone does not show the cause.
+    inline void HintUnsetVariable(const std::wstring& path)
+    {
+        size_t open = path.find(L'%');
+        size_t close = open == std::wstring::npos ? open : path.find(L'%', open + 1);
+        if (close == std::wstring::npos || close == open + 1)
+            return;
+        fprintf(stderr, "  Environment variable '%ls' is not set.\n",
+                path.substr(open + 1, close - open - 1).c_str());
+    }
+
     enum class ConfigPathValidationError { None, NotAbsolute, Missing, ExpectedFile, ExpectedDirectory };
 
     inline bool IsAbsoluteFilesystemPath(const std::wstring& path)
@@ -382,6 +417,8 @@ namespace Sandbox {
         default:
             return;
         }
+        if (error == ConfigPathValidationError::NotAbsolute || error == ConfigPathValidationError::Missing)
+            HintUnsetVariable(path);
         parseError = true;
     }
 
@@ -399,15 +436,19 @@ namespace Sandbox {
         return false;
     }
 
+    // Every configured filesystem path enters the config through this
+    // function: expansion and normalization cannot be skipped for one kind
+    // of path.
     inline void NormalizeConfigFilesystemPaths(SandboxConfig& config)
     {
-        config.workdir = NormalizeFsPath(config.workdir);
+        auto ingest = [](const std::wstring& path) { return NormalizeFsPath(ExpandConfigPath(path)); };
+        config.workdir = ingest(config.workdir);
         if (!config.stdinMode.empty() && _wcsicmp(config.stdinMode.c_str(), L"NUL") != 0)
-            config.stdinMode = NormalizeFsPath(config.stdinMode);
+            config.stdinMode = ingest(config.stdinMode);
         for (auto& e : config.folders)
-            e.path = NormalizeFsPath(e.path);
+            e.path = ingest(e.path);
         for (auto& e : config.denyFolders)
-            e.path = NormalizeFsPath(e.path);
+            e.path = ingest(e.path);
     }
 
     inline void ValidateModeSpecificConfig(const SandboxConfig& config,
@@ -435,10 +476,6 @@ namespace Sandbox {
         }
 
         if (isAC) {
-            if (privSeen.count(L"named_pipes")) {
-                fprintf(stderr, "Error: 'named_pipes' is not available in appcontainer/lpac mode (named pipes are always blocked).\n");
-                parseError = true;
-            }
             if (privSeen.count(L"desktop")) {
                 fprintf(stderr, "Error: 'desktop' is not available in appcontainer/lpac mode (desktop access is inherited from creator token).\n");
                 parseError = true;
@@ -481,6 +518,7 @@ namespace Sandbox {
             if (GetFileAttributesW(e.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 fprintf(stderr, "Error: Path does not exist: %ls (in [%ls])\n",
                         e.path.c_str(), section);
+                HintUnsetVariable(e.path);
                 parseError = true;
             }
 

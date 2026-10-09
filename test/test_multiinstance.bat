@@ -17,7 +17,7 @@ REM Requires: Python 3 (for probe scripts)
 REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set TEST=%~dp0
 set ROOT=%USERPROFILE%\test_multiinstance
 set ERRORS=0
@@ -85,9 +85,17 @@ if exist "%ROOT%\shared\marker_b.txt" (
 )
 echo.
 
-REM Wait for A to finish
-echo   Waiting for instance A to finish (12s)...
-ping -n 13 127.0.0.1 >nul
+REM Wait for A and B to finish.  The probes end at a known time, but each Sandy
+REM instance still has to revoke its grants, and a revoke on a large tree has no
+REM fixed duration.  Wait for the instances of THIS test (found by their command line).
+echo   Waiting for the instances to finish...
+set "LIVE=1"
+for /l %%W in (1,1,90) do if "!LIVE!"=="1" (
+    set "LIVE=0"
+    for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*test_multiinstance*' }).Count"') do if %%N GTR 0 set "LIVE=1"
+    if "!LIVE!"=="1" ping -n 2 127.0.0.1 >nul
+)
+if "!LIVE!"=="1" echo   [WARN] An instance of this test is still running after the wait
 
 REM =====================================================================
 REM TEST 3: Both exited — check DACL restored clean
@@ -146,7 +154,7 @@ icacls "%ROOT%\shared" > "%ROOT%\dacl_before_kill.txt" 2>nul
 echo   Starting instance to kill...
 start "" /b "%SANDY%" -c "%TEST%multiinstance_a.toml" -l "%ROOT%\log_kill.txt" -x "%PYTHON%" "%ROOT%\scripts\multiinstance_probe.py" a 60 "%ROOT%\shared"
 ping -n 2 127.0.0.1 >nul
-for /f %%P in ('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Sort-Object ProcessId -Descending | Select-Object -First 1).ProcessId"') do set "KILL_PID=%%P"
+for /f %%P in ('powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*log_kill.txt*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($p) { $p }"') do set "KILL_PID=%%P"
 ping -n 6 127.0.0.1 >nul
 
 echo   Killing instance (PID !KILL_PID!)...

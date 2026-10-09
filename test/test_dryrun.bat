@@ -56,7 +56,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM Verify no registry grant key was created
-reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] DR1d: No registry grant created
     set /a PASS+=1

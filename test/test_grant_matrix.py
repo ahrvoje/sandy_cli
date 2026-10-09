@@ -13,7 +13,7 @@ Tests risky grant combinations designed to provoke incorrect ACL state:
 """
 import os, sys, pathlib
 
-ROOT = pathlib.Path(os.environ.get("USERPROFILE", r"C:\Users\H")) / "test_gmatrix"
+ROOT = pathlib.Path(os.environ["USERPROFILE"]) / "test_gmatrix"
 MODE = os.environ.get("TEST_MODE", "AC")  # AC or RT
 
 pass_count = 0
@@ -237,20 +237,19 @@ if MODE == "RT":
 
     # =================================================================
     # Z8: deny.deep all + allow.this read on SAME PATH (deny_clash/)
-    # deny.deep all blocks Sandy SID access recursively. However,
-    # user-owned files are still readable via BUILTIN\Users baseline.
-    # deny.deep all DOES block write (which requires Sandy SID grant).
-    # ALSO has allow.deep write — deny.deep all should cancel it.
+    # deny.deep all blocks the directory and every descendant.
+    # allow.this read is the more specific rule for the directory itself:
+    # the directory can be listed, and nothing else in it can be read.
+    # ALSO has allow.deep write — deny.deep all on the same path cancels it.
     # =================================================================
     print("=== [RT] Z8: deny.deep all + allow.this read (same path) ===")
-    # Reads succeed via user baseline even with deny.deep all
-    test("Z8: deny_clash/ read (RT, user baseline wins)",       True,
-         lambda: open(p("deny_clash", "file.txt"), "r").read())
-    test("Z8: deny_clash/ list (RT, user baseline wins)",        True,
+    test("Z8: deny_clash/ list (allow.this wins on the directory)", True,
          lambda: os.listdir(p("deny_clash")))
+    test("Z8: deny_clash/ read file DENIED (deny.deep all)",      False,
+         lambda: open(p("deny_clash", "file.txt"), "r").read())
     test("Z8: deny_clash/ write DENIED",       False,
          lambda: open(p("deny_clash", "hack.tmp"), "w").write("x"))
-    test("Z8: deny_clash/child/ read (RT, user baseline wins)",  True,
+    test("Z8: deny_clash/child/ read DENIED (deny.deep all)",     False,
          lambda: open(p("deny_clash", "child", "file.txt"), "r").read())
     test("Z8: deny_clash/child/ write DENIED", False,
          lambda: open(p("deny_clash", "child", "hack.tmp"), "w").write("x"))

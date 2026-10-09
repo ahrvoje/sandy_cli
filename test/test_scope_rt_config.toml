@@ -4,19 +4,19 @@ token     = 'restricted'
 integrity = 'low'
 
 [allow.deep]
-all     = ['C:\Users\H\test_scope\deep', 'C:\Users\H\test_scope\deep_all']
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_scope\scripts']
+all     = ['%USERPROFILE%\test_scope\deep', '%USERPROFILE%\test_scope\deep_all']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_scope\scripts']
 
 [allow.this]
-all = ['C:\Users\H\test_scope\this']
+all = ['%USERPROFILE%\test_scope\this']
 
 # deny tests: deny_deep and deny_this get NO allow grants
 # RT low has BUILTIN\Users read from OS, so deny must override that
 [deny.deep]
-all = ['C:\Users\H\test_scope\deny_deep']
+all = ['%USERPROFILE%\test_scope\deny_deep']
 
 [deny.this]
-all = ['C:\Users\H\test_scope\deny_this']
+all = ['%USERPROFILE%\test_scope\deny_this']
 
 [environment]
 inherit = true

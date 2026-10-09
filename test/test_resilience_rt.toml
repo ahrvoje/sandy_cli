@@ -4,9 +4,9 @@
 [sandbox]
 token = 'restricted'
 integrity = 'low'
-workdir = 'C:\Users\H'
+workdir = '%USERPROFILE%'
 
 [allow.deep]
-read    = ['C:\Users\H']
+read    = ['%USERPROFILE%']
 [environment]
 inherit = true

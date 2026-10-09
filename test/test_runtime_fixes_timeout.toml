@@ -1,0 +1,16 @@
+# Runtime fixes test — timeout on a process tree.
+# The root process ends at once; a descendant stays.  The timeout must
+# still end the run (exit code 130) and the descendant with it.
+
+[sandbox]
+token = 'restricted'
+integrity = 'medium'
+
+[allow.deep]
+all = ['%USERPROFILE%\test_runtime_fixes\work']
+
+[environment]
+inherit = true
+
+[limit]
+timeout = 3

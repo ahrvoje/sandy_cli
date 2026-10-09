@@ -16,12 +16,12 @@ token = 'restricted'
 integrity = 'low'
 
 [allow.deep]
-read = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deny_prec\scripts']
-all  = ['C:\Users\H\test_deny_prec\readzone', 'C:\Users\H\test_deny_prec\writezone']
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_deny_prec\scripts']
+all  = ['%USERPROFILE%\test_deny_prec\readzone', '%USERPROFILE%\test_deny_prec\writezone']
 
 [deny.deep]
-read  = ['C:\Users\H\test_deny_prec\readzone']
-write = ['C:\Users\H\test_deny_prec\writezone']
+read  = ['%USERPROFILE%\test_deny_prec\readzone']
+write = ['%USERPROFILE%\test_deny_prec\writezone']
 
 [environment]
 inherit = true

@@ -4,24 +4,24 @@ setlocal EnableDelayedExpansion
 REM =====================================================================
 REM Sandy Carve-Out Test — Restricted Token Mode
 REM
-REM Exercises STRIP_DENY: allow grants nested UNDER a deny subtree.
-REM   allow.deep under deny → subtree strip (deny removed from whole carve)
-REM   allow.this under deny → dir-only strip (children keep the deny)
-REM Verifies in-sandbox enforcement, post-exit ACE cleanup (including the
-REM deny copies auto-inherited onto pre-existing children), and that host
+REM Allow grants nested UNDER a deny subtree: the nearer rule wins.
+REM   allow.deep write under deny.all → write only, at every depth
+REM   allow.deep all under deny.all   → full access, at every depth
+REM   allow.this under deny           → that directory only
+REM Verifies in-sandbox enforcement, post-exit ACE cleanup, and that host
 REM access to the denied zone is restored after Sandy exits.
 REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_carveout_rt_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_carveout
 set PASS=0
 set FAIL=0
 
 echo =====================================================================
 echo  Sandy Carve-Out Test — Restricted Token Mode
-echo  7 zones, 18 sandbox assertions + post-exit cleanup checks
+echo  8 zones, 23 sandbox assertions + post-exit cleanup checks
 echo =====================================================================
 echo.
 
@@ -34,6 +34,7 @@ mkdir "%ROOT%\scripts"
 mkdir "%ROOT%\arena\open"
 mkdir "%ROOT%\arena\blocked\inner"
 mkdir "%ROOT%\arena\blocked\carve\sub"
+mkdir "%ROOT%\arena\blocked\full\sub"
 mkdir "%ROOT%\arena\blocked\slot\inner"
 
 echo open note>"%ROOT%\arena\open\note.txt"
@@ -41,12 +42,14 @@ echo top secret>"%ROOT%\arena\blocked\secret.txt"
 echo hidden>"%ROOT%\arena\blocked\inner\hidden.txt"
 echo carve seed>"%ROOT%\arena\blocked\carve\seed.txt"
 echo nested>"%ROOT%\arena\blocked\carve\sub\nested.txt"
+echo full seed>"%ROOT%\arena\blocked\full\seed.txt"
+echo nested>"%ROOT%\arena\blocked\full\sub\nested.txt"
 echo slot note>"%ROOT%\arena\blocked\slot\note.txt"
 echo deep>"%ROOT%\arena\blocked\slot\inner\deep.txt"
 
 REM --- Copy test script into the test tree ---
 copy /y "%~dp0test_carveout.py" "%ROOT%\scripts\test_carveout.py" >nul
-echo   [OK] Folder tree created (7 zones, 7 seed files)
+echo   [OK] Folder tree created (8 zones, 9 seed files)
 echo.
 
 REM === Run test inside sandbox ===
@@ -59,9 +62,7 @@ REM === Post-Exit Cleanup Verification ===
 echo === Cleanup Verification (after clean Sandy exit) ===
 echo.
 
-REM Check no RT SIDs remain anywhere on the tree — this includes the deny
-REM copies that auto-inheritance stamped onto pre-existing children of the
-REM this-scope carve (slot\note.txt, slot\inner\...).
+REM Check no RT SIDs remain anywhere on the tree.
 set SC=0
 for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-9-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (

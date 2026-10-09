@@ -12,12 +12,12 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_new_levels\scripts']
-run = ['C:\Users\H\test_new_levels\run_dir']
-stat = ['C:\Users\H\test_new_levels\stat_dir']
-touch = ['C:\Users\H\test_new_levels\touch_dir']
-create = ['C:\Users\H\test_new_levels\create_dir']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_new_levels\scripts']
+run = ['%USERPROFILE%\test_new_levels\run_dir']
+stat = ['%USERPROFILE%\test_new_levels\stat_dir']
+touch = ['%USERPROFILE%\test_new_levels\touch_dir']
+create = ['%USERPROFILE%\test_new_levels\create_dir']
 
 [environment]
 inherit = true

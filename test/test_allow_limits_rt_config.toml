@@ -7,8 +7,8 @@ integrity = 'medium'
 
 [allow.deep]
 read = [
-    'C:\Users\H\AppData\Local\Programs\Python\Python314',
-    'C:\Users\H\test_limits\scripts',
+    '%LOCALAPPDATA%\Programs\Python\Python314',
+    '%USERPROFILE%\test_limits\scripts',
 ]
 [environment]
 inherit = true

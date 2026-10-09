@@ -30,6 +30,46 @@ namespace Sandbox {
     // console-ctrl handler thread (Ctrl+C / close events).
     inline std::atomic<HANDLE> g_childProcess{ nullptr };
     inline std::atomic<HANDLE> g_childJob{ nullptr };
+    // Shared: a thread that uses the handles.  Exclusive: the main thread,
+    // when it withdraws them before it closes them.
+    inline SRWLOCK             g_childHandlesLock = SRWLOCK_INIT;
+
+    // -----------------------------------------------------------------------
+    // Shutdown request — set by the console-ctrl handler.
+    //
+    // The main thread is the only owner of cleanup.  A signal never cleans
+    // up on its own thread: it sets this flag and ends the child tree; the
+    // main thread then leaves its wait (or stops at its next step) and runs
+    // the same teardown as a normal exit.  Two threads can therefore never
+    // be inside cleanup at the same time, and the process cannot end while
+    // one of them is half way through it.
+    // -----------------------------------------------------------------------
+    inline std::atomic<bool> g_shutdownRequested{ false };
+
+    inline bool ShutdownRequested()
+    {
+        return g_shutdownRequested.load();
+    }
+
+    // End the sandboxed process tree, if one is running.  Safe from any thread.
+    inline void TerminateRunningChild()
+    {
+        AcquireSRWLockShared(&g_childHandlesLock);
+        if (HANDLE hJob = g_childJob)
+            TerminateJobObject(hJob, 1);
+        else if (HANDLE hChild = g_childProcess)
+            TerminateProcess(hChild, 1);
+        ReleaseSRWLockShared(&g_childHandlesLock);
+    }
+
+    // Publish / withdraw the child handles for TerminateRunningChild.
+    inline void PublishChildHandles(HANDLE hProcess, HANDLE hJob)
+    {
+        AcquireSRWLockExclusive(&g_childHandlesLock);
+        g_childProcess = hProcess;
+        g_childJob = hJob;
+        ReleaseSRWLockExclusive(&g_childHandlesLock);
+    }
 
     // Emergency cleanup only needs the transient AppContainer teardown target.
     // Run-ledger presence and cleanup-task retention are derived from the
@@ -52,25 +92,22 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // RecordGrant callback — bridges SandboxACL.h → SandboxGrants.h
     // -----------------------------------------------------------------------
-    inline void RecordGrantCallback(const std::wstring& path,
-                                     SE_OBJECT_TYPE objType,
-                                     const std::wstring& sidString,
-                                     const std::wstring& trappedSids,
-                                     bool isDeny,
-                                     bool isPeek)
+    inline bool RecordGrantCallback(const GrantRecordSpec& spec)
     {
-        RecordGrant(path, objType, sidString, trappedSids, isDeny, isPeek);
+        return RecordGrant(spec);
     }
 
     // -----------------------------------------------------------------------
-    // ApplyAccessPipeline — depth-sorted grant/deny execution.
+    // ApplyAccessPipeline — one DACL write per configured object.
     //
-    // Merges all allow + deny entries into a single pipeline sorted by path
-    // depth (shallowest first).  When an allow path is under a previously
-    // applied deny, strips the deny ACEs from the allow subtree first, then
-    // grants.  Peek strips are non-recursive (directory only).
-    //
-    // This ensures the most specific (deepest) path always wins.
+    // All allow + deny entries are grouped by the object they name.  Each
+    // object gets its ACEs in one write, shallowest path first.  Windows then
+    // decides which rule wins, from the canonical ACE order alone:
+    //   - on one object, an explicit deny comes before an explicit allow;
+    //   - an ACE on a nearer object comes before an ACE inherited from
+    //     farther up, so the most specific (deepest) rule wins, right by
+    //     right.
+    // Sandy never strips an inherited deny and never changes DACL protection.
     // -----------------------------------------------------------------------
 
     struct PipelineEntry {
@@ -92,9 +129,6 @@ namespace Sandbox {
         if (!normalized.empty() && normalized.back() == L'\\') d--;
         return d;
     }
-
-    // IsPathUnder / IsPathUnderAny — defined in SandboxTypes.h (also used by
-    // grant cleanup in SandboxGrants.h for carve-out detection).
 
     inline void AppendPipelineEntries(const std::vector<FolderEntry>& entries,
                                       bool isDeny,
@@ -123,16 +157,6 @@ namespace Sandbox {
         return pipeline;
     }
 
-    inline std::vector<std::wstring> CollectDenyPaths(const AccessPipeline& pipeline)
-    {
-        std::vector<std::wstring> denyPaths;
-        for (const auto& entry : pipeline) {
-            if (entry.isDeny)
-                denyPaths.push_back(entry.path);
-        }
-        return denyPaths;
-    }
-
     inline std::wstring SidToStringOrEmpty(PSID pSid)
     {
         std::wstring sidStr;
@@ -144,135 +168,204 @@ namespace Sandbox {
         return sidStr;
     }
 
-    inline std::vector<std::wstring> CollectDeepDenyPaths(const AccessPipeline& pipeline)
-    {
-        std::vector<std::wstring> deepDenyPaths;
-        for (const auto& entry : pipeline) {
-            if (entry.isDeny && entry.scope == GrantScope::Deep)
-                deepDenyPaths.push_back(entry.path);
-        }
-        return deepDenyPaths;
-    }
-
-    // ShouldStripDenyForAllow — does this allow entry carve a deny out of its
-    // target?  Two cases, matching the documented "most specific wins" rule:
-    //   1. The allow path is strictly UNDER a deny (proper descendant) — the
-    //      normal subtree/dir carve-out, any allow scope.
-    //   2. The allow is THIS-scope and its path exactly equals a DEEP deny —
-    //      a single-object allow is more specific than the recursive deny for
-    //      that object, so it carves the object (dir only) while descendants
-    //      keep the deny.
-    // A same-path DEEP allow never strips (equal specificity → deny wins), and
-    // an allow over a same-path THIS deny never strips (equal specificity).
-    inline bool ShouldStripDenyForAllow(const PipelineEntry& entry,
-                                        const std::vector<std::wstring>& activeDenyPaths,
-                                        const std::vector<std::wstring>& activeDeepDenyPaths)
-    {
-        if (IsPathStrictlyUnderAny(entry.path, activeDenyPaths))
-            return true;
-        return entry.scope == GrantScope::This &&
-               PathEqualsAny(entry.path, activeDeepDenyPaths);
-    }
-
     inline void LogAccessPipelinePlan(const AccessPipeline& pipeline)
     {
         g_logger.LogFmt(L"PIPELINE: sorted %zu entries by path depth:", pipeline.size());
-        std::vector<std::wstring> preDenyPaths = CollectDenyPaths(pipeline);
-        std::vector<std::wstring> preDeepDenyPaths = CollectDeepDenyPaths(pipeline);
         for (const auto& e : pipeline) {
-            bool underDeny = !e.isDeny &&
-                ShouldStripDenyForAllow(e, preDenyPaths, preDeepDenyPaths);
-            if (e.isDeny) {
-                g_logger.LogFmt(L"    DENY  [%-7s] %s",
-                    AccessTag(e.access), e.path.c_str());
-            } else if (underDeny && e.scope == GrantScope::This) {
-                g_logger.LogFmt(L"    ALLOW [%-7s] %s  <- strip deny (dir only)",
-                    AccessTag(e.access), e.path.c_str());
-            } else if (underDeny) {
-                g_logger.LogFmt(L"    ALLOW [%-7s] %s  <- strip deny (subtree)",
-                    AccessTag(e.access), e.path.c_str());
-            } else {
-                g_logger.LogFmt(L"    ALLOW [%-7s] %s",
-                    AccessTag(e.access), e.path.c_str());
-            }
+            g_logger.LogFmt(L"    %s [%-7s] %s%s",
+                e.isDeny ? L"DENY " : L"ALLOW",
+                AccessTag(e.access), e.path.c_str(),
+                e.scope == GrantScope::This ? L"  (this object only)" : L"");
         }
     }
 
-    inline bool ApplyDenyPipelineEntry(PSID pSid,
-                                       const PipelineEntry& entry,
-                                       std::vector<std::wstring>& activeDenyPaths,
-                                       std::vector<std::wstring>& activeDeepDenyPaths)
-    {
-        DWORD rc = DenyObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback,
-                                    SE_FILE_OBJECT, entry.scope);
-        if (rc != ERROR_SUCCESS) {
-            g_logger.LogFmt(L"DENY: [%s] %s -> FAILED (0x%08X: %s)",
-                            AccessTag(entry.access), entry.path.c_str(),
-                            rc, GetSystemErrorMessage(rc).c_str());
-            return false;
-        }
+    // The delete guard of a denied object: one object-only deny ACE on its
+    // parent directory.  Windows lets a process delete or rename an object
+    // when it holds FILE_DELETE_CHILD on the parent, whatever the DACL of the
+    // object says.  WRITE_DAC | WRITE_OWNER keep the guard itself in place.
+    constexpr DWORD kDeleteGuardMask = FILE_DELETE_CHILD | kDenyTamperMask;
 
-        g_logger.LogFmt(L"DENY: [%s] %s -> OK (mask=0x%08X)",
-                        AccessTag(entry.access), entry.path.c_str(),
-                        AccessMask(entry.access));
-        activeDenyPaths.push_back(entry.path);
-        if (entry.scope == GrantScope::Deep)
-            activeDeepDenyPaths.push_back(entry.path);
+    // -----------------------------------------------------------------------
+    // PathRules — every configured rule that names one filesystem object.
+    //
+    // "Dirs" masks belong to rules that inherit to sub-directories only
+    // (see DeepInheritFlags).
+    // -----------------------------------------------------------------------
+    struct PathRules {
+        std::wstring               path;
+        std::vector<PipelineEntry> entries;        // the rules, for the log
+        DWORD allowDeep = 0, allowDeepDirs = 0, allowThis = 0;
+        DWORD denyDeep  = 0, denyDeepDirs  = 0, denyThis  = 0;
+        bool  deleteGuard = false;                 // guards a denied child of this directory
+    };
+
+    // "C:\a\b" -> "C:\a", "C:\a" -> "C:\"; empty when the path has no parent.
+    inline std::wstring ParentDirectory(const std::wstring& path)
+    {
+        size_t slash = path.find_last_of(L'\\');
+        if (slash == std::wstring::npos || slash + 1 >= path.size())
+            return {};
+        std::wstring parent = path.substr(0, slash);
+        if (!parent.empty() && parent.back() == L':')
+            parent += L'\\';
+        return parent;
+    }
+
+    // Can this user delete children of `directory` through the directory
+    // itself?  If not, no token made from the user's token can either, and
+    // the directory needs no delete guard.
+    inline bool UserCanDeleteChildren(const std::wstring& directory)
+    {
+        HANDLE h = CreateFileW(directory.c_str(), FILE_DELETE_CHILD,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return false;
+        CloseHandle(h);
         return true;
     }
 
-    inline bool ApplyAllowPipelineEntry(PSID pSid,
-                                        const PipelineEntry& entry,
-                                        const std::wstring& sidStr,
-                                        const std::vector<std::wstring>& activeDenyPaths,
-                                        const std::vector<std::wstring>& activeDeepDenyPaths)
+    // Group the pipeline by object.  Config paths are normalized at ingest,
+    // so a case-insensitive compare identifies the object.
+    inline std::vector<PathRules> BuildPathPlan(const AccessPipeline& pipeline)
     {
-        // Strip a deny only when this allow is more specific than it (a strict
-        // descendant, or a single-object THIS allow over a recursive DEEP deny
-        // on the same path).  An equal-specificity same-path deny must win, so
-        // a same-path DEEP allow never strips — see ShouldStripDenyForAllow.
-        bool underDeny = ShouldStripDenyForAllow(entry, activeDenyPaths, activeDeepDenyPaths);
-        if (underDeny) {
-            bool isThis = (entry.scope == GrantScope::This);
-            if (!sidStr.empty()) {
-                g_logger.LogFmt(L"STRIP_DENY: %s (%s)",
-                                entry.path.c_str(), isThis ? L"dir only" : L"subtree");
-                RemoveSidFromDacl(entry.path, sidStr, SE_FILE_OBJECT,
-                                  DaclProtectionIntent::ForceProtected,
-                                  isThis, AceRemovalMode::DenyOnly);
-            } else {
-                g_logger.LogFmt(L"STRIP_DENY: skipped for %s (SID conversion failed)",
-                                entry.path.c_str());
+        std::vector<PathRules> plan;
+        auto indexOf = [&plan](const std::wstring& path) -> size_t {
+            for (size_t i = 0; i < plan.size(); i++) {
+                if (_wcsicmp(plan[i].path.c_str(), path.c_str()) == 0)
+                    return i;
             }
+            plan.emplace_back();
+            plan.back().path = path;
+            return plan.size() - 1;
+        };
+
+        for (const auto& e : pipeline) {
+            PathRules& rules = plan[indexOf(e.path)];
+            rules.entries.push_back(e);
+            const DWORD mask = e.isDeny ? DenyMask(e.access) : AccessMask(e.access);
+            const bool dirsOnly = DeepInheritFlags(e.access) == CONTAINER_INHERIT_ACE;
+            if (e.scope == GrantScope::This)
+                (e.isDeny ? rules.denyThis : rules.allowThis) |= mask;
+            else if (dirsOnly)
+                (e.isDeny ? rules.denyDeepDirs : rules.allowDeepDirs) |= mask;
+            else
+                (e.isDeny ? rules.denyDeep : rules.allowDeep) |= mask;
         }
 
-        DWORD rc = GrantObjectAccess(pSid, entry.path, entry.access, RecordGrantCallback,
-                                     SE_FILE_OBJECT, entry.scope);
-        if (rc != ERROR_SUCCESS) {
-            g_logger.LogFmt(L"GRANT: [%s] %s -> FAILED (0x%08X: %s)",
-                            AccessTag(entry.access), entry.path.c_str(),
-                            rc, GetSystemErrorMessage(rc).c_str());
-            return false;
+        for (const auto& e : pipeline) {
+            if (!e.isDeny || !DenyBlocksDelete(e.access))
+                continue;
+            std::wstring parent = ParentDirectory(e.path);
+            if (parent.empty() || !UserCanDeleteChildren(parent))
+                continue;
+            PathRules& guard = plan[indexOf(parent)];
+            guard.denyThis |= kDeleteGuardMask;
+            guard.deleteGuard = true;
         }
-
-        g_logger.LogFmt(L"GRANT: [%s] %s -> OK (mask=0x%08X)",
-                        AccessTag(entry.access), entry.path.c_str(),
-                        AccessMask(entry.access));
-        return true;
+        return plan;
     }
 
-    inline bool ExecuteAccessPipeline(PSID pSid, const AccessPipeline& pipeline)
+    // -----------------------------------------------------------------------
+    // CompilePathAces — the ACEs that express the rules of one object.
+    //
+    // Same-object precedence is decided here, once:
+    //   - a deny beats an allow of the same scope (the ACE order does it);
+    //   - an allow.this beats a deny.deep on the directory itself: the
+    //     single-object rule is the more specific one.  The recursive deny
+    //     becomes inherit-only, and the directory keeps the denied rights
+    //     that the allow.this does not name.  Descendants keep the full deny.
+    // -----------------------------------------------------------------------
+    inline std::vector<AceSpec> CompilePathAces(const PathRules& rules, bool isDirectory)
     {
-        bool allOk = true;
-        std::vector<std::wstring> activeDenyPaths;
-        std::vector<std::wstring> activeDeepDenyPaths;
+        const BYTE kAllDescendants = OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
+        const BYTE kSubDirectories = CONTAINER_INHERIT_ACE;
+        std::vector<AceSpec> aces;
+
+        if (!isDirectory) {
+            // A file has no descendants: every rule is a rule about the file.
+            DWORD deny = ((rules.denyDeep | rules.denyDeepDirs) & ~rules.allowThis) | rules.denyThis;
+            DWORD allow = rules.allowDeep | rules.allowDeepDirs | rules.allowThis;
+            if (deny)  aces.push_back({ true, 0, deny });
+            if (allow) aces.push_back({ false, 0, allow });
+            return aces;
+        }
+
+        DWORD objectDeny = rules.denyThis;
+        auto addDeepDeny = [&](DWORD mask, BYTE inheritFlags) {
+            if (!mask)
+                return;
+            if (mask & rules.allowThis) {
+                aces.push_back({ true, static_cast<BYTE>(inheritFlags | INHERIT_ONLY_ACE), mask });
+                objectDeny |= mask & ~rules.allowThis;
+            } else {
+                aces.push_back({ true, inheritFlags, mask });
+            }
+        };
+        addDeepDeny(rules.denyDeep, kAllDescendants);
+        addDeepDeny(rules.denyDeepDirs, kSubDirectories);
+        if (objectDeny)
+            aces.push_back({ true, 0, objectDeny });
+
+        if (rules.allowDeep)     aces.push_back({ false, kAllDescendants, rules.allowDeep });
+        if (rules.allowDeepDirs) aces.push_back({ false, kSubDirectories, rules.allowDeepDirs });
+        if (rules.allowThis)     aces.push_back({ false, 0, rules.allowThis });
+        return aces;
+    }
+
+    inline bool ApplyPathRules(PSID pSid,
+                               const std::wstring& sidStr,
+                               const PathRules& rules,
+                               bool neutralizeOwner)
+    {
+        DWORD attrs = GetFileAttributesW(rules.path.c_str());
+        bool isDirectory = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+        DWORD rc = AddAcesToObject(rules.path, SE_FILE_OBJECT, pSid, sidStr,
+                                   CompilePathAces(rules, isDirectory),
+                                   neutralizeOwner, RecordGrantCallback);
+
+        for (const auto& entry : rules.entries) {
+            const wchar_t* verb = entry.isDeny ? L"DENY" : L"GRANT";
+            if (rc == ERROR_SUCCESS) {
+                g_logger.LogFmt(L"%s: [%s] %s -> OK (mask=0x%08X)",
+                                verb, AccessTag(entry.access), entry.path.c_str(),
+                                entry.isDeny ? DenyMask(entry.access) : AccessMask(entry.access));
+            } else {
+                g_logger.LogFmt(L"%s: [%s] %s -> FAILED (0x%08X: %s)",
+                                verb, AccessTag(entry.access), entry.path.c_str(),
+                                rc, GetSystemErrorMessage(rc).c_str());
+            }
+        }
+        if (rules.deleteGuard) {
+            if (rc == ERROR_SUCCESS)
+                g_logger.LogFmt(L"DENY_GUARD: %s -> OK (denied child cannot be deleted or renamed)",
+                                rules.path.c_str());
+            else
+                g_logger.LogFmt(L"DENY_GUARD: %s -> FAILED (0x%08X: %s)",
+                                rules.path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
+        }
+        return rc == ERROR_SUCCESS;
+    }
+
+    inline bool ExecuteAccessPipeline(PSID pSid, const AccessPipeline& pipeline, bool neutralizeOwner)
+    {
+        if (pipeline.empty())
+            return true;
+
+        // No SID string, no cleanup record; no record, no ACE.
         std::wstring sidStr = SidToStringOrEmpty(pSid);
+        if (sidStr.empty()) {
+            g_logger.LogFmt(L"ERROR: SID conversion failed (error %lu) — no grants applied", GetLastError());
+            return false;
+        }
 
-        for (const auto& entry : pipeline) {
-            bool ok = entry.isDeny
-                ? ApplyDenyPipelineEntry(pSid, entry, activeDenyPaths, activeDeepDenyPaths)
-                : ApplyAllowPipelineEntry(pSid, entry, sidStr, activeDenyPaths, activeDeepDenyPaths);
-            if (!ok)
+        bool allOk = true;
+        for (const auto& rules : BuildPathPlan(pipeline)) {
+            if (ShutdownRequested()) {
+                g_logger.Log(L"PIPELINE: interrupted — remaining grants skipped");
+                return false;
+            }
+            if (!ApplyPathRules(pSid, sidStr, rules, neutralizeOwner))
                 allOk = false;
         }
         return allOk;
@@ -282,7 +375,10 @@ namespace Sandbox {
     {
         AccessPipeline pipeline = BuildAccessPipeline(config);
         LogAccessPipelinePlan(pipeline);
-        return ExecuteAccessPipeline(pSid, pipeline);
+        // strict = false puts the user SID in the restricting list: the
+        // sandboxed process is then an owner of the user's objects (OwnerAce).
+        bool neutralizeOwner = IsRestrictedTokenMode(config.tokenMode) && !config.strict;
+        return ExecuteAccessPipeline(pSid, pipeline, neutralizeOwner);
     }
 
     // -----------------------------------------------------------------------
@@ -291,12 +387,17 @@ namespace Sandbox {
     inline bool GrantRegistryAccess(PSID pSid, const SandboxConfig& config)
     {
         bool allOk = true;
+        std::wstring sidStr = SidToStringOrEmpty(pSid);
         struct RegGrant { const std::vector<std::wstring>& keys; AccessLevel level; const wchar_t* tag; };
         for (auto& rg : { RegGrant{config.registryRead, AccessLevel::Read, L"R"},
                           RegGrant{config.registryWrite, AccessLevel::Write, L"W"} }) {
             for (const auto& key : rg.keys) {
                 std::wstring win32Path = RegistryToWin32Path(key);
-                DWORD rc = GrantObjectAccess(pSid, win32Path, rg.level, RecordGrantCallback, SE_REGISTRY_KEY);
+                DWORD rc = sidStr.empty()
+                    ? static_cast<DWORD>(ERROR_INVALID_SID)
+                    : AddAcesToObject(win32Path, SE_REGISTRY_KEY, pSid, sidStr,
+                                      { { false, CONTAINER_INHERIT_ACE, RegistryAccessMask(rg.level) } },
+                                      false, RecordGrantCallback);
                 bool ok = (rc == ERROR_SUCCESS);
                 if (!ok) allOk = false;
                 if (ok) {
@@ -391,8 +492,6 @@ namespace Sandbox {
         g_logger.Log(config.integrity == IntegrityLevel::Low
                      ? L"MODE: restricted token (Low integrity)"
                      : L"MODE: restricted token (Medium integrity)");
-        g_logger.Log(config.allowNamedPipes ? L"Named Pipes: allowed (Everyone in restricting SIDs)"
-                                           : L"Named Pipes: blocked (Everyone excluded)");
         r.ok = true;
         return r;
     }
@@ -435,22 +534,29 @@ namespace Sandbox {
         std::vector<wchar_t>  envBlock;
         HANDLE                hStdin = nullptr;
         HANDLE                hStdinFile = nullptr;
+        const wchar_t*        failedStep = nullptr;  // set when PrepareLaunchState returns false
     };
 
     enum class ChildStartStatus {
         Ready,
         LaunchFailed,
         JobAssignmentFailed,
-        WatchdogFailed
+        WatchdogFailed,
+        Interrupted
     };
 
+    // Not copyable: the watchdog thread holds a pointer to timeoutCtx.
     struct ManagedChildState {
         ChildStartStatus     status = ChildStartStatus::LaunchFailed;
         DWORD                launchError = 0;
         PROCESS_INFORMATION  pi{};
         HANDLE               hJob = nullptr;
-        TimeoutContext       timeoutCtx{};
+        TimeoutContext       timeoutCtx;
         HANDLE               hTimeoutThread = nullptr;
+
+        ManagedChildState() = default;
+        ManagedChildState(const ManagedChildState&) = delete;
+        ManagedChildState& operator=(const ManagedChildState&) = delete;
     };
 
     inline void ResetEmergencyCleanupState()
@@ -532,12 +638,15 @@ namespace Sandbox {
             return true;
         }
 
-        InitializeRunLedger(containerName);
+        // Reset first: a failure while the ledger is created must stay visible
+        // to the GrantTrackingHealthy() check below.
+        ResetGrantTrackingHealth();
+        // Only AppContainer runs own a container; a restricted run records none.
+        InitializeRunLedger(isRestricted ? L"" : containerName);
         // P2: Create cleanup task AFTER the ledger exists so concurrent
         // DeleteStaleCleanupTasks won't discard our freshly created task.
         CreateCleanupTask(g_instanceId);
         ULONGLONG tGrantStart = GetTickCount64();
-        ResetGrantTrackingHealth();
         guard.Add([]() { RevokeAllGrants(); });
 
         bool grantFailed = false;
@@ -567,7 +676,7 @@ namespace Sandbox {
                                               SandboxGuard& guard)
     {
         if (!config.allowDesktop) {
-            g_logger.Log(L"DESKTOP: disabled (desktop = false)");
+            g_logger.Log(L"DESKTOP: isolated (desktop = false, enforced by job UI limits)");
             return true;
         }
 
@@ -576,8 +685,18 @@ namespace Sandbox {
             return true;
         }
 
-        if (!GrantDesktopAccess(pSid))
+        // Record the SID before the ACEs exist, so stale recovery can remove
+        // them after a kill.
+        std::wstring sidStr = SidToStringOrEmpty(pSid);
+        if (sidStr.empty() || !PersistDesktopGrantIntent(sidStr)) {
+            g_logger.Log(L"DESKTOP: cannot record the desktop grant for recovery — not granting");
             return false;
+        }
+
+        if (!GrantDesktopAccess(pSid)) {
+            RevokeDesktopAccess();  // one of the two objects can already hold the ACE
+            return false;
+        }
 
         g_logger.Log(L"DESKTOP: granted WinSta0 + Default access");
         guard.Add([]() { RevokeDesktopAccess(); });
@@ -618,6 +737,7 @@ namespace Sandbox {
             if (state.caps.failed) {
                 g_logger.Log(L"ERROR: capability SID allocation failed — aborting before launch");
                 FreeCapabilities(state.caps);
+                state.failedStep = L"capability failure";
                 return false;
             }
             state.sc.AppContainerSid = pSid;
@@ -626,18 +746,29 @@ namespace Sandbox {
             guard.Add([&state]() { FreeCapabilities(state.caps); });
         }
 
-        state.attrs = BuildAttributeList(config, isAppContainer ? &state.sc : nullptr, isRestricted);
-        if (!state.attrs.valid)
+        // The child inherits its three standard handles and nothing else.
+        LogStdinMode(config.stdinMode);
+        if (!SetupStdinHandle(config.stdinMode, state.hStdin, state.hStdinFile)) {
+            state.failedStep = L"stdin setup failure";
             return false;
+        }
+
+        state.attrs = BuildAttributeList(config, isAppContainer ? &state.sc : nullptr, isRestricted,
+                                         { state.hStdin,
+                                           GetStdHandle(STD_OUTPUT_HANDLE),
+                                           GetStdHandle(STD_ERROR_HANDLE) });
+        if (!state.attrs.valid) {
+            state.failedStep = L"attribute list failure";
+            return false;
+        }
         guard.Add([&state]() { FreeAttributeList(state.attrs); });
 
-        LogStdinMode(config.stdinMode);
         state.envBlock = BuildEnvironmentBlock(config);
         LogEnvironmentState(config);
         if (!g_logger.IsActive())
             PrintConfigSummary(config, exePath, exeArgs);
 
-        return SetupStdinHandle(config.stdinMode, state.hStdin, state.hStdinFile);
+        return true;
     }
 
     inline bool ValidateRestrictedTokenIntegrity(const SandboxConfig& config,
@@ -699,12 +830,10 @@ namespace Sandbox {
                                      const wchar_t* containerContext,
                                      int sandyExit = SandyExit::SetupError)
     {
-        // Terminate BEFORE clearing the emergency globals.  If a CTRL_C fires
-        // between the clear and the terminate, the handler would see nullptrs
-        // and skip killing the child that is still alive.
+        // Withdraw the handles before AbortLaunchedChild closes them: the
+        // console-ctrl handler must not use a closed handle.
+        PublishChildHandles(nullptr, nullptr);
         AbortLaunchedChild(pi, hJob, terminateCode);
-        g_childProcess = nullptr;
-        g_childJob = nullptr;
         if (isAppContainer && identity.deleteContainerOnExit)
             TeardownTransientContainerForCurrentRun(containerName, containerContext);
         guard.RunAll();
@@ -722,20 +851,21 @@ namespace Sandbox {
         }
     }
 
-    inline ManagedChildState StartManagedChild(const SandboxConfig& config,
-                                               const std::wstring& exeFolder,
-                                               const std::wstring& exePath,
-                                               const std::wstring& exeArgs,
-                                               bool isRestricted,
-                                               HANDLE hRestrictedToken,
-                                               LaunchPreparationState& prep)
+    // Fills `child` in place: the watchdog thread keeps a pointer into it.
+    inline void StartManagedChild(const SandboxConfig& config,
+                                  const std::wstring& exeFolder,
+                                  const std::wstring& exePath,
+                                  const std::wstring& exeArgs,
+                                  bool isRestricted,
+                                  HANDLE hRestrictedToken,
+                                  LaunchPreparationState& prep,
+                                  ManagedChildState& child)
     {
-        ManagedChildState child;
-
         bool launched = LaunchChildProcess(
             isRestricted,
             isRestricted ? hRestrictedToken : nullptr,
-            prep.attrs.pAttrList, prep.envBlock, exeFolder, exePath, exeArgs,
+            prep.attrs.pAttrList, prep.attrs.inheritedHandles,
+            prep.envBlock, exeFolder, exePath, exeArgs,
             prep.hStdin, child.pi);
         DWORD launchError = launched ? ERROR_SUCCESS : GetLastError();
         CloseLaunchStdinHandle(prep);
@@ -743,31 +873,38 @@ namespace Sandbox {
         if (!launched) {
             child.status = ChildStartStatus::LaunchFailed;
             child.launchError = launchError;
-            return child;
+            return;
         }
 
         child.hJob = AssignJobObject(config, child.pi.hProcess);
         if (NeedJobTracking(config) && !child.hJob) {
             child.status = ChildStartStatus::JobAssignmentFailed;
-            return child;
+            return;
         }
 
-        g_childProcess = child.pi.hProcess;
-        g_childJob = child.hJob;
+        // Publish, then look at the flag.  The handler sets the flag, then
+        // looks at the handles.  At least one side sees the other, so a
+        // signal at this moment cannot leave the child running unwatched.
+        PublishChildHandles(child.pi.hProcess, child.hJob);
+        if (ShutdownRequested()) {
+            child.status = ChildStartStatus::Interrupted;
+            return;
+        }
 
         ResumeThread(child.pi.hThread);
         g_logger.Log(L"CHILD: resumed");
         CloseHandleIfValid(child.pi.hThread);
 
-        child.timeoutCtx = { child.pi.hProcess, child.hJob, config.timeoutSeconds, false };
+        child.timeoutCtx.hProcess = child.pi.hProcess;
+        child.timeoutCtx.hJob = child.hJob;
+        child.timeoutCtx.seconds = config.timeoutSeconds;
         child.hTimeoutThread = StartTimeoutWatchdog(child.timeoutCtx);
         if (config.timeoutSeconds > 0 && !child.hTimeoutThread) {
             child.status = ChildStartStatus::WatchdogFailed;
-            return child;
+            return;
         }
 
         child.status = ChildStartStatus::Ready;
-        return child;
     }
 
     inline DWORD WaitForManagedChild(const SandboxConfig& config, ManagedChildState& child)
@@ -815,8 +952,7 @@ namespace Sandbox {
     {
         LogChildExitClassification(exitCode, timeoutCtx.timedOut, timeoutSeconds);
 
-        g_childProcess = nullptr;  // clear before close — emergency path must not use stale handle
-        g_childJob = nullptr;
+        PublishChildHandles(nullptr, nullptr);  // withdraw before close — no thread may use a stale handle
         ReleaseLaunchedChildHandles(pi, hJob);
 
         if (identity.persistentProfile)
@@ -916,13 +1052,20 @@ namespace Sandbox {
         LaunchPreparationState prep;
         if (!PrepareLaunchState(config, exePath, exeArgs, isRestricted, isAppContainer,
                                 resolved.pSid, guard, prep)) {
-            const wchar_t* reason = (isAppContainer && prep.caps.failed)
-                ? L"CLEANUP: complete (capability failure)"
-                : (!prep.attrs.valid)
-                    ? L"CLEANUP: complete (attribute list failure)"
-                    : L"CLEANUP: complete (stdin setup failure)";
+            std::wstring reason = L"CLEANUP: complete (";
+            reason += prep.failedStep ? prep.failedStep : L"launch preparation failure";
+            reason += L")";
+            CloseLaunchStdinHandle(prep);
             return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
-                                     SandyExit::SetupError, reason);
+                                     SandyExit::SetupError, reason.c_str());
+        }
+
+        // A signal during setup: nothing runs yet, so undo the setup and stop.
+        if (ShutdownRequested()) {
+            CloseLaunchStdinHandle(prep);
+            return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                     SandyExit::SetupError,
+                                     L"CLEANUP: complete (interrupted before launch)");
         }
 
         // =================================================================
@@ -943,11 +1086,19 @@ namespace Sandbox {
                                      L"CLEANUP: complete (token validation failure)");
         }
 
-        ManagedChildState child = StartManagedChild(config, exeFolder, exePath, exeArgs,
-                                                    isRestricted, resolved.hRestrictedToken, prep);
+        ManagedChildState child;
+        StartManagedChild(config, exeFolder, exePath, exeArgs,
+                          isRestricted, resolved.hRestrictedToken, prep, child);
         if (child.status == ChildStartStatus::LaunchFailed) {
             return HandleLaunchFailure(child.launchError, isAppContainer, identity,
                                        resolved.containerName, guard);
+        }
+        if (child.status == ChildStartStatus::Interrupted) {
+            g_logger.Log(L"LAUNCH: interrupted — child terminated before it ran");
+            return AbortAfterChildLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         child.pi, child.hJob, SandyExit::SetupError,
+                                         L"CLEANUP: complete (interrupted at launch)",
+                                         L"INTERRUPTED");
         }
         if (child.status == ChildStartStatus::JobAssignmentFailed) {
             g_logger.Log(L"ERROR: job object assignment failed — aborting (limits NOT enforced)");
@@ -982,6 +1133,8 @@ namespace Sandbox {
                                 const std::wstring& configSource,
                                 const std::wstring& profileName = L"")
     {
+        // From here on stdout belongs to the child (see RecoveryPrintf).
+        g_recoveryConsoleOutput = false;
         ResetGrantMetadataPreservation();
         ResetDeferredCleanupRequest();
         CleanupStaleStartupState(exePath);
@@ -1034,7 +1187,11 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // CleanupSandbox — emergency cleanup for Ctrl+C / SEH crash paths.
+    // CleanupSandbox — emergency cleanup for the SEH crash path.
+    //
+    // Runs on the main thread, after its normal teardown was cut short by a
+    // fatal exception.  Console signals do not come here: they set the
+    // shutdown request and the main thread runs its normal teardown.
     //
     // MUST terminate the child process before dismantling sandbox state.
     // If the child cannot be confirmed dead, skip in-place teardown and

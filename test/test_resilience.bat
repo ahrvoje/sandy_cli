@@ -12,7 +12,7 @@ set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
 set RT_CONFIG=%~dp0test_resilience_rt.toml
 set LPAC_CONFIG=%~dp0test_lpac_minimal_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 
@@ -39,14 +39,21 @@ REM Test 2: Clean run leaves no registry entries
 REM ===================================================================
 echo.
 echo --- Test 2: Clean run leaves no stale registry ---
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "print('clean')" >nul 2>nul
-
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] No stale Grants key after clean run
+"!SANDY!" -s "[sandbox]\ntoken = 'appcontainer'" -q -x "%SystemRoot%\System32\cmd.exe" /c exit 0 >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Clean run completed with exit code 0
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Grants key still exists after clean run
+    echo   [FAIL] Clean run did not complete ^(exit !ERRORLEVEL!^)
+    set /a FAIL+=1
+)
+
+reg query "HKCU\Software\Sandy\Grants" 2>nul | findstr /C:"Sandy\Grants\\" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] No ledger subkey under Grants after clean run
+    set /a PASS+=1
+) else (
+    echo   [FAIL] A ledger subkey still exists under Grants after clean run
     set /a FAIL+=1
 )
 
@@ -306,36 +313,67 @@ REM Test 8: Multiple stale PIDs are all cleaned
 REM ===================================================================
 echo.
 echo --- Test 8: Multiple stale PIDs cleaned ---
-reg add "HKCU\Software\Sandy\Test\Grants\11111" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-11111" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\22222" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-22222" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\33333" /v 0 /t REG_SZ /d "FILE|C:\c|S-1-5-21-0-0-0-33333" /f >nul 2>nul
+for %%I in (11111 22222 33333) do (
+    reg add "HKCU\Software\Sandy\Grants\dead-test-multi-%%I" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+    reg add "HKCU\Software\Sandy\Grants\dead-test-multi-%%I" /v _pid /t REG_DWORD /d 9%%I /f >nul 2>nul
+    reg add "HKCU\Software\Sandy\Grants\dead-test-multi-%%I" /v 0 /t REG_SZ /d "FILE|C:\sandy_no_such_dir_%%I|S-1-5-21-0-0-0-%%I" /f >nul 2>nul
+)
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+set LEFT=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"dead-test-multi-" ^| find /c /v ""') do set LEFT=%%N
+if !LEFT! EQU 0 (
     echo   [PASS] All 3 stale grant PIDs cleaned
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Grants still exist after cleanup
+    echo   [FAIL] !LEFT! stale ledgers still exist after cleanup
     set /a FAIL+=1
 )
 
 REM ===================================================================
-REM Test 9: Normal run does NOT touch other instances' stale entries
+REM Test 9: A normal run recovers a dead instance's ledger at startup and
+REM         leaves an incomplete ledger alone (its writer can still be alive)
 REM ===================================================================
 echo.
-echo --- Test 9: Normal run preserves other PIDs ---
-reg add "HKCU\Software\Sandy\Test\Grants\77777" /v 0 /t REG_SZ /d "FILE|C:\other|S-1-5-21-0-0-0-77777" /f >nul 2>nul
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
+echo --- Test 9: Normal run: startup recovery ---
+set "DEAD9=HKCU\Software\Sandy\Grants\dead-test-run-0000-0000-000000077777"
+set "INC9=HKCU\Software\Sandy\Grants\incomplete-test-run-0000-0000-000000077778"
+reg add "!DEAD9!" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "!DEAD9!" /v _pid /t REG_DWORD /d 77777 /f >nul 2>nul
+reg add "!DEAD9!" /v 0 /t REG_SZ /d "FILE|C:\sandy_no_such_dir_77777|S-1-5-21-0-0-0-77777" /f >nul 2>nul
+reg add "!INC9!" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+"!SANDY!" -s "[sandbox]\ntoken = 'appcontainer'" -q -x "%SystemRoot%\System32\cmd.exe" /c exit 0 >"%TEMP%\sandy_run9_out.txt" 2>nul
 
-reg query "HKCU\Software\Sandy\Test\Grants\77777" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Other PID's grants preserved during normal run
+reg query "!DEAD9!" >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] Normal run recovered the dead instance's ledger
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Other PID's grants were deleted by normal run
+    echo   [FAIL] Dead instance's ledger still exists after a normal run
     set /a FAIL+=1
 )
+
+reg query "!INC9!" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Normal run preserved the incomplete ledger
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Incomplete ledger was deleted by a normal run
+    set /a FAIL+=1
+)
+
+REM Recovery during a run must not write to stdout: it belongs to the child
+for %%S in ("%TEMP%\sandy_run9_out.txt") do set OUT9=%%~zS
+if !OUT9! EQU 0 (
+    echo   [PASS] Startup recovery wrote nothing to the child's stdout
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Startup recovery wrote to stdout:
+    type "%TEMP%\sandy_run9_out.txt"
+    set /a FAIL+=1
+)
+reg delete "!INC9!" /f >nul 2>nul
+del "%TEMP%\sandy_run9_out.txt" 2>nul
 
 REM Clean up
 "!SANDY!" --cleanup >nul 2>nul
@@ -348,7 +386,19 @@ echo --- Test 10: Scheduled task lifecycle ---
 REM Clean up any pre-existing SandyCleanup_ tasks via --cleanup (not direct schtasks)
 "!SANDY!" --cleanup >nul 2>nul
 
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" -c "pass" >nul 2>nul
+REM A run that lives for some seconds: its task must exist meanwhile.
+REM The task has a logon trigger for the current user, so no elevation is needed.
+start "" /b "!SANDY!" -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'" -q -x "!PYTHON!" -c "import time; time.sleep(5)" >nul 2>nul
+ping -n 4 127.0.0.1 >nul
+schtasks /Query /FO LIST 2>nul | findstr /C:"SandyCleanup_" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Scheduled task exists while the run is live
+    set /a PASS+=1
+) else (
+    echo   [FAIL] No scheduled task while the run is live
+    set /a FAIL+=1
+)
+ping -n 6 127.0.0.1 >nul
 
 REM Check no SandyCleanup_ tasks exist after clean exit
 schtasks /Query /FO LIST 2>nul | findstr /C:"SandyCleanup_" >nul 2>nul
@@ -469,10 +519,13 @@ REM Test 13: Malformed persisted records are skipped, cleanup still succeeds
 REM ===================================================================
 echo.
 echo --- Test 13: Malformed persisted record handling ---
-reg add "HKCU\Software\Sandy\Test\Grants\44444" /v _pid /t REG_DWORD /d 44444 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\44444" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\44444" /v 0 /t REG_SZ /d "BOGUS|relative|notsid|WHAT:1" /f >nul 2>nul
-"!SANDY!" --cleanup >nul 2>nul
+set "MAL13=HKCU\Software\Sandy\Grants\dead-test-malformed-0000-000000044444"
+set "LOG13=%TEMP%\sandy_malformed_cleanup.log"
+del "!LOG13!*" 2>nul
+reg add "!MAL13!" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "!MAL13!" /v _pid /t REG_DWORD /d 44444 /f >nul 2>nul
+reg add "!MAL13!" /v 0 /t REG_SZ /d "BOGUS|relative|notsid|WHAT:1" /f >nul 2>nul
+"!SANDY!" -l "!LOG13!" --cleanup >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Cleanup tolerates malformed persisted record
     set /a PASS+=1
@@ -480,7 +533,7 @@ if !ERRORLEVEL! EQU 0 (
     echo   [FAIL] Cleanup failed on malformed persisted record
     set /a FAIL+=1
 )
-reg query "HKCU\Software\Sandy\Test\Grants\44444" >nul 2>nul
+reg query "!MAL13!" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] Malformed stale key removed during cleanup
     set /a PASS+=1
@@ -488,6 +541,15 @@ if !ERRORLEVEL! NEQ 0 (
     echo   [FAIL] Malformed stale key still exists after cleanup
     set /a FAIL+=1
 )
+findstr /C:"GRANT_PARSE: malformed record" "!LOG13!" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] Malformed record reported in the cleanup log
+    set /a PASS+=1
+) else (
+    echo   [FAIL] Cleanup log does not report the malformed record
+    set /a FAIL+=1
+)
+del "!LOG13!*" 2>nul
 
 REM ===================================================================
 REM Summary

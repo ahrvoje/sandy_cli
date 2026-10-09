@@ -9,6 +9,7 @@
 #pragma once
 
 #include "SandboxTypes.h"
+#include "SandboxProcess.h"
 
 namespace Sandbox {
 
@@ -123,6 +124,9 @@ namespace Sandbox {
     struct AttributeListState {
         LPPROC_THREAD_ATTRIBUTE_LIST pAttrList = nullptr;
         std::vector<BYTE>           attrBuf;
+        // The handles the child inherits (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
+        // The attribute list points into this vector.
+        std::vector<HANDLE>         inheritedHandles;
         bool                        valid = false;
 
         AttributeListState() = default;
@@ -138,21 +142,34 @@ namespace Sandbox {
     // For AppContainer: SECURITY_CAPABILITIES + optional strict isolation +
     //                   optional child process restriction.
     // For Restricted:   optional child process restriction only.
+    // For both:         the handle list — the child inherits the given
+    //                   standard handles and no other handle of Sandy.
     //
     // Inputs:  config        — sandbox configuration
     //          pSC           — pointer to SECURITY_CAPABILITIES (AppContainer only)
     //          isRestricted  — true for restricted-token mode
+    //          stdHandles    — stdin/stdout/stderr for the child; unusable
+    //                          and duplicate entries are left out
     // Returns: AttributeListState with initialized list
     // Verifiable: pAttrList is non-null on success; attributes can be queried
     // -----------------------------------------------------------------------
     inline AttributeListState BuildAttributeList(const SandboxConfig& config,
                                                   SECURITY_CAPABILITIES* pSC,
-                                                  bool isRestricted)
+                                                  bool isRestricted,
+                                                  const std::vector<HANDLE>& stdHandles)
     {
         AttributeListState state;
         DWORD attrCount = 0;
         bool strictIsolation = false;
         bool needChildAttr = !config.allowChildProcesses;
+
+        for (HANDLE h : stdHandles) {
+            HANDLE usable = InheritableHandleOrNull(h);
+            if (usable && std::find(state.inheritedHandles.begin(), state.inheritedHandles.end(), usable)
+                              == state.inheritedHandles.end())
+                state.inheritedHandles.push_back(usable);
+        }
+        bool needHandleList = !state.inheritedHandles.empty();
 
         // These values need to persist until CreateProcess is called
         static DWORD allAppPackagesPolicy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
@@ -166,6 +183,7 @@ namespace Sandbox {
         } else {
             if (needChildAttr) attrCount = 1;
         }
+        if (needHandleList) attrCount++;
 
         if (attrCount == 0) {
             state.valid = true;  // no attributes needed — this is valid
@@ -218,6 +236,19 @@ namespace Sandbox {
                 return state;
             }
             g_logger.Log(L"CHILD_PROCESS: restricted (kernel-enforced)");
+        }
+
+        if (needHandleList) {
+            if (!UpdateProcThreadAttribute(state.pAttrList, 0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                state.inheritedHandles.data(),
+                state.inheritedHandles.size() * sizeof(HANDLE), nullptr, nullptr))
+            {
+                fprintf(stderr, "[Error] UpdateProcThreadAttribute (handle list) failed.\n");
+                DeleteProcThreadAttributeList(state.pAttrList);
+                state.pAttrList = nullptr;
+                return state;
+            }
         }
 
         state.valid = true;

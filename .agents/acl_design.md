@@ -35,47 +35,56 @@ ACL state is durable and must survive normal run exit.
 
 # ACL Propagation — Inheritance-Based Model
 
-## Grants and Cleanup: `SetNamedSecurityInfoW`
+## One write path: `AddAcesToObject`
 
-Directory grants and ACE removal use `SetNamedSecurityInfoW` (not `TreeSet`).
-The ACE has `OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE` flags, so Windows
-auto-inheritance propagates it to existing descendants.
+Every filesystem and registry rule goes through `AddAcesToObject()` in
+`SandboxACL.h`. For one object and one SID it does, in this order:
 
-Key property: auto-inheritance **skips** children with `PROTECTED_DACL` (e.g.
-deny paths from other instances). This makes multi-instance operations fully
-independent — each SID's grants and cleanup never disturb another SID's DACLs.
+1. read the DACL;
+2. write the ledger record (`RecordGrantFn`) — **before** the DACL changes;
+3. build the new DACL: the SID's new ACEs go in at their canonical position,
+   every other ACE keeps its place (`RebuildDacl`);
+4. write the DACL once (`WriteDaclToObject`).
 
-## Deny: `SetNamedSecurityInfoW` (Restricted Token Only)
+If step 2 fails, nothing is written (`ERROR_WRITE_FAULT`): no record, no ACE.
 
-Deny rules use standard `DENY_ACCESS` ACEs via `SetNamedSecurityInfoW` with
-auto-inheritance. This is only supported in **Restricted Token** mode.
+Recursive rules on a directory use `SetNamedSecurityInfoW`; the ACEs carry
+inheritance flags and Windows auto-inheritance propagates them to existing
+descendants. Rules on a single object (`.this`, files) use one
+`SetKernelObjectSecurity` write with no propagation.
 
-> [!CAUTION]
-> The Windows kernel **ignores** DENY ACEs for AppContainer SIDs (`S-1-15-2-*`).
-> Sandy rejects `[deny.*]` for AppContainer mode at config validation time.
+Windows writes the descendants first and the rule's root last. A kill during
+propagation therefore leaves descendants with an inherited ACE that the root
+does not hold. `RemoveSidFromDaclDetailed` handles this: when the root holds no
+ACE of the SID, it rewrites the root's unchanged DACL to force a new
+propagation (`ACL_REPROPAGATE`).
 
 ## DACL Protection Invariant — `WriteDaclToObject`
 
-All filesystem DACL writes go through `WriteDaclToObject()` in `SandboxACL.h`.
-This helper reads the existing `SE_DACL_PROTECTED` flag and **preserves it by
-default** (`PreserveExisting`). Individual callers (`GrantObjectAccess`,
-`DenyObjectAccess`, `RollbackAceBySid`, `RemoveSidFromDaclDetailed`) never
-decide `SECURITY_INFORMATION` flags independently.
+Sandy **never** changes the protection of a DACL. `WriteDaclToObject()` reads
+`SE_DACL_PROTECTED` and `SE_DACL_AUTO_INHERITED` from the existing security
+descriptor and writes both back unchanged. It has **no parameter** to choose
+another value, so no caller can set or clear protection by mistake.
 
-- `PreserveExisting` (default) — keeps whatever protection the DACL already has.
-- `ForceProtected` — sets `PROTECTED_DACL_SECURITY_INFORMATION` (carve-out strip).
-- `ForceUnprotected` — sets `UNPROTECTED_DACL_SECURITY_INFORMATION` (deny cleanup).
+After cleanup a DACL is identical to the one before the run: same ACEs, same
+order, same flags. `test_dacl_fidelity.bat` holds this as a test.
 
 > [!CAUTION]
 > **Never** add a bare `SetNamedSecurityInfoW` or `SetKernelObjectSecurity` call
-> for filesystem objects.  Always use `WriteDaclToObject`.  Bare calls silently
-> strip `PROTECTED_DACL` and break carve-outs.
+> for filesystem objects.  Always use `WriteDaclToObject`.  A bare call drops
+> the protection or auto-inherit flag of a DACL that the user set.
 
 ## Rules
 
 - **Never** use `TreeSetNamedSecurityInfoW` for grants, cleanup, or deny.
 - **Never** use `TREE_SEC_INFO_SET` anywhere — it stamps one DACL onto all
   descendants and destroys per-child DACLs.
+- **Never** use `SetEntriesInAclW` to apply an `[allow.*]` / `[deny.*]` /
+  `[registry]` rule. It keeps at most one ACE per trustee, so a deny and an
+  allow of the same SID cannot both stay. `RebuildDacl` is the DACL builder
+  for rules. (Sandy's own objects — token default DACL, desktop, its registry
+  keys — hold one ACE per SID and still use it.)
+- **Never** strip, move or rewrite an ACE of another identity.
 
 # Access Levels — Read vs Execute
 
@@ -109,54 +118,101 @@ Do not “fix” loader failures by adding execute to the read mask.
 
 ## Restricted Token Mode
 
-Uses real `DENY_ACCESS` ACEs. The kernel evaluates deny-before-allow normally.
-Deny ACEs are applied via `SetNamedSecurityInfoW` with `DACL_SECURITY_INFORMATION`
-and auto-inheritance propagation.
+Uses real `ACCESS_DENIED_ACE` entries for the run SID.
 
 ## AppContainer Mode
 
-Deny is **not supported**. The kernel ignores `DENY_ACCESS` ACEs for AppContainer
+Deny is **not supported**. The kernel ignores deny ACEs for AppContainer
 SIDs (`S-1-15-2-*`). Config validation rejects `[deny.*]` for AC mode.
 
-# Allow/Deny Same-Path Precedence — Carve-Out Rule
+## Deny masks are not allow masks — `DenyMask()`
 
-The depth-sorted pipeline applies deny before allow at each depth, then an
-allow may **strip** a deny so a more-specific allow can take effect. The strip
-decision lives in `ShouldStripDenyForAllow` (`Sandbox.h`) and is governed by
-**relative specificity**, not by path-prefix alone:
+An allow mask carries the rights that every open needs (`SYNCHRONIZE`,
+`READ_CONTROL`, `FILE_READ_ATTRIBUTES`). A deny on those rights blocks every
+open, whatever the level. `DenyMask()` therefore holds only the rights that
+define the level:
 
-| Allow vs deny on the path | Strip? | Rationale |
-|---|---|---|
-| allow is a **strict descendant** of a deny | ✅ strip (subtree if `.deep`, dir-only if `.this`) | normal carve-out |
-| `allow.this` **equals** a `deny.deep` path | ✅ strip **dir-only** | single-object allow is more specific than the recursive deny for that object; descendants keep the deny |
-| `allow.deep` **equals** any deny path | ❌ no strip | equal specificity → deny wins (Windows deny-before-allow) |
-| `allow.*` **equals** a `deny.this` path | ❌ no strip | equal specificity → deny wins |
+| Level | Deny mask |
+|-------|-----------|
+| `read` | `FILE_READ_DATA \| FILE_READ_EA` |
+| `write` | `FILE_WRITE_DATA \| FILE_APPEND_DATA \| FILE_WRITE_EA \| FILE_WRITE_ATTRIBUTES` |
+| `execute`, `run` | `FILE_EXECUTE` |
+| `append` | `FILE_APPEND_DATA` |
+| `delete` | `DELETE \| FILE_DELETE_CHILD` |
+| `all` | `FILE_ALL_ACCESS` |
+| `stat` | `FILE_READ_ATTRIBUTES` (holds only where listing the parent is denied too) |
+| `touch` | `FILE_WRITE_ATTRIBUTES` |
+| `create` | `FILE_ADD_FILE \| FILE_ADD_SUBDIRECTORY` |
+
+Every deny mask also holds `kDenyTamperMask = WRITE_DAC | WRITE_OWNER`: the
+denied process must not be able to edit the rule away.
 
 > [!CAUTION]
-> The strip must use **strict-descendant** matching plus the single
-> `allow.this`-over-`deny.deep` exception above. Using inclusive
-> "at-or-under" matching (the original bug) lets a same-path `allow.deep`
-> silently discard an explicit same-path deny — a security hole (the sandbox
-> grants access the user explicitly denied). `IsPathStrictlyUnder` /
-> `PathEqualsAny` exist for exactly this distinction; do not revert to
-> `IsPathUnder` (inclusive) at the strip site.
+> **Never** build a deny mask from `AccessMask()`. `SYNCHRONIZE`,
+> `READ_CONTROL` or `FILE_READ_ATTRIBUTES` in a deny mask makes every deny
+> level block read and list.
+
+## Owner neutralization — `OwnerAce`
+
+With `strict = false` the user SID is a restricting SID, so the sandboxed
+process is an owner of the user's objects. Windows gives an owner
+`READ_CONTROL | WRITE_DAC` before it reads the DACL; a deny ACE cannot remove
+that. An `OWNER RIGHTS` (S-1-3-4) ACE switches the implicit grant off.
+
+`AddAcesToObject(neutralizeOwner = true)` adds one `OWNER RIGHTS` allow ACE
+(`kOwnerAceMask = READ_CONTROL | WRITE_DAC`) next to a deny, unless the object
+already holds an `OWNER RIGHTS` ACE. The real user keeps the same rights. The
+ledger record says which companion exists (`OWNER:I` inherited form,
+`OWNER:O` object-only form), and cleanup removes exactly that one ACE.
+
+## Delete guard — `kDeleteGuardMask`
+
+Windows lets a process delete or rename an object when it holds
+`FILE_DELETE_CHILD` on the parent, whatever the DACL of the object says. For
+each `deny.delete` / `deny.all` path `BuildPathPlan` adds one object-only deny
+ACE (`FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER`) on the parent directory,
+when the user can delete children there. The guard is recorded and removed
+like any other rule.
+
+## `create` inherits to directories only — `DeepInheritFlags()`
+
+`FILE_ADD_FILE` / `FILE_ADD_SUBDIRECTORY` have the same bit values as
+`FILE_WRITE_DATA` / `FILE_APPEND_DATA`. A `create` ACE that files inherit is an
+overwrite rule. `create` rules use `CONTAINER_INHERIT_ACE` only.
+
+# Allow/Deny Precedence — the ACE Order Decides
+
+Sandy does not strip denies and does not protect DACLs to make a carve-out.
+The canonical ACE order of Windows does the work: explicit deny, explicit
+allow, then inherited ACEs, nearest parent first. An explicit ACE on a nearer
+object is evaluated before a deny inherited from further up.
+
+| Rules | Result |
+|---|---|
+| allow on a **descendant** of a deny | the allow gives back exactly the rights it names, at its scope |
+| deny on a **descendant** of an allow | the deny removes exactly the rights it names |
+| allow and deny, **same path, same scope** | deny wins (deny ACE comes first) |
+| `allow.this` and `deny.deep` on the **same directory** | the `allow.this` wins on the directory itself for the rights it names; descendants keep the full deny |
+
+The last row is the only place where Sandy shapes ACEs: `CompilePathAces`
+makes the recursive deny inherit-only and adds an object deny for
+`denyMask & ~allowThisMask`. Same-object precedence is decided there, once.
 
 > [!CAUTION]
-> `GrantObjectAccess` must preserve a SID's existing explicit deny ACEs across
-> the grant. `SetEntriesInAclW(GRANT_ACCESS)` keeps at most one ACE per trustee
-> and collapses away a same-SID deny; `PrependExplicitDeniesForSid` restores
-> them (exactly once — it also drops any duplicate the merge happened to keep)
-> in canonical deny-before-allow order. Without this, a same-path deny that was
-> *not* stripped still vanishes when the allow is applied.
+> A carve-out is right by right. `allow.deep write` under `deny.deep all`
+> gives write, not read. Do not "help" by widening the allow or by removing
+> the inherited deny: the user asked for exactly these rights.
 
 # Regression Guards
 
-- **Never** write a `DENY_ACCESS` ACE for an AppContainer SID (kernel ignores them).
+- **Never** write a deny ACE for an AppContainer SID (kernel ignores them).
 - **Never** use `REVOKE_ACCESS` as a substitute for deny.
-- **Never** use `PROTECTED_DACL` for deny enforcement (causes SID-agnostic side effects).
-- **Never** strip a deny on the exact allow path unless the allow is `.this` and
-  the deny is `.deep` (see Same-Path Precedence). A same-path `allow.deep` that
-  strips its deny is a security regression.
+- **Never** set or clear `PROTECTED_DACL`, for any purpose. It changes the
+  access of every other identity on the object and cannot be undone exactly.
+- **Never** write a DACL before its ledger record exists (write-ahead).
+- **Never** put `SYNCHRONIZE`, `READ_CONTROL` or `FILE_READ_ATTRIBUTES` into a
+  deny mask (the `all` level is the one exception: it denies everything).
+- **Never** remove an `OWNER RIGHTS` ACE that the ledger does not name.
 
 # Multi-Owner ACL Safety — ACE-Level Removal
 
@@ -193,15 +249,22 @@ Do not let normal run cleanup delete profile-owned ACLs or containers.
 
 # Desktop and Window Station ACLs
 
-Restricted Token mode requires granting the SID access to the current window
-station and desktop.
+Restricted Token mode with `desktop = true` grants the SID access to the
+current window station and desktop.
 
 - **Persistent profiles:** Desktop ACEs are granted at profile creation and
   revoked at profile deletion.  Profile runs do no per-run desktop management.
 - **Transient runs:** Desktop ACEs are granted per-run and revoked on run exit
-  (including emergency cleanup).
+  (including emergency cleanup). The intent is written to the ledger first
+  (`_desktop_sid`, `PersistDesktopGrantIntent`), so stale recovery removes the
+  ACEs of a killed run too.
 
 This cleanup must stay ACE-level and owner-specific.
+
+`desktop = false` cannot be enforced through the token: the window station
+and desktop DACLs grant full access to `RESTRICTED` (S-1-5-12). It is enforced
+through job-object UI limits (`JOB_OBJECT_UILIMIT_HANDLES` and related flags):
+the sandbox cannot list or use windows of other processes.
 
 **Never** revert to snapshot-based desktop DACL restoration.
 

@@ -8,6 +8,7 @@
 #pragma once
 
 #include "SandboxTypes.h"
+#include <atomic>
 
 namespace Sandbox {
 
@@ -21,7 +22,6 @@ namespace Sandbox {
     struct HiddenProcessResult {
         HiddenProcessStatus status = HiddenProcessStatus::LaunchFailed;
         DWORD exitCode = static_cast<DWORD>(-1);
-        std::string output;
     };
 
     inline void CloseHandleIfValid(HANDLE& h)
@@ -30,6 +30,19 @@ namespace Sandbox {
             CloseHandle(h);
             h = nullptr;
         }
+    }
+
+    // A handle that a child process may inherit: valid, and marked
+    // inheritable.  Returns nullptr when the handle is not usable.
+    inline HANDLE InheritableHandleOrNull(HANDLE h)
+    {
+        DWORD flags = 0;
+        if (!h || h == INVALID_HANDLE_VALUE || !GetHandleInformation(h, &flags))
+            return nullptr;
+        if (!(flags & HANDLE_FLAG_INHERIT) &&
+            !SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT))
+            return nullptr;
+        return h;
     }
 
     // Forward declaration — defined below, after WaitForSingleObject helpers
@@ -91,29 +104,7 @@ namespace Sandbox {
     // Returns: process exit code, or (DWORD)-1 on failure
     // Verifiable: exit code reflects the child's actual result
     // -----------------------------------------------------------------------
-    inline void DrainHiddenProcessPipe(HANDLE hPipe, std::string& output)
-    {
-        if (!hPipe) return;
-
-        for (;;) {
-            DWORD available = 0;
-            if (!PeekNamedPipe(hPipe, nullptr, 0, nullptr, &available, nullptr) || available == 0)
-                break;
-
-            char buf[4096];
-            DWORD toRead = (available < sizeof(buf))
-                ? available
-                : static_cast<DWORD>(sizeof(buf));
-            DWORD bytesRead = 0;
-            if (!ReadFile(hPipe, buf, toRead, &bytesRead, nullptr) || bytesRead == 0)
-                break;
-            output.append(buf, bytesRead);
-        }
-    }
-
     struct HiddenProcessHandles {
-        HANDLE hRead = nullptr;
-        HANDLE hWrite = nullptr;
         HANDLE hJob = nullptr;
         PROCESS_INFORMATION pi{};
     };
@@ -129,42 +120,16 @@ namespace Sandbox {
         CloseHandleIfValid(handles.hJob);
         CloseHandleIfValid(handles.pi.hProcess);
         CloseHandleIfValid(handles.pi.hThread);
-        CloseHandleIfValid(handles.hRead);
-        CloseHandleIfValid(handles.hWrite);
-    }
-
-    inline bool SetupHiddenProcessCapture(const wchar_t* logTarget,
-                                          bool captureOutput,
-                                          STARTUPINFOW& si,
-                                          HiddenProcessHandles& handles)
-    {
-        if (!captureOutput)
-            return true;
-
-        SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
-        if (!CreatePipe(&handles.hRead, &handles.hWrite, &sa, 0)) {
-            g_logger.LogFmt(L"HIDDEN_PROCESS: CreatePipe failed for %ls (error %lu)",
-                            logTarget, GetLastError());
-            return false;
-        }
-
-        SetHandleInformation(handles.hRead, HANDLE_FLAG_INHERIT, 0);
-        si.dwFlags |= STARTF_USESTDHANDLES;
-        si.hStdOutput = handles.hWrite;
-        si.hStdError = handles.hWrite;
-        return true;
     }
 
     inline bool LaunchHiddenProcessInstance(const std::wstring& cmdLine,
                                             const std::wstring& appPath,
-                                            bool captureOutput,
                                             STARTUPINFOW& si,
                                             HiddenProcessHandles& handles)
     {
         std::wstring cmd = cmdLine;  // CreateProcessW needs mutable buffer
         const wchar_t* app = appPath.empty() ? nullptr : appPath.c_str();
-        BOOL inheritHandles = captureOutput ? TRUE : FALSE;
-        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, inheritHandles,
+        if (!CreateProcessW(app, &cmd[0], nullptr, nullptr, FALSE,
                             CREATE_NO_WINDOW, nullptr, nullptr, &si, &handles.pi)) {
             g_logger.LogFmt(L"HIDDEN_PROCESS: launch failed for %ls (error %lu)",
                             HiddenProcessLogTarget(cmdLine, appPath), GetLastError());
@@ -172,11 +137,6 @@ namespace Sandbox {
         }
 
         return true;
-    }
-
-    inline void CloseHiddenProcessOutputWriter(HiddenProcessHandles& handles)
-    {
-        CloseHandleIfValid(handles.hWrite);
     }
 
     inline void AttachHiddenProcessJob(const wchar_t* logTarget,
@@ -197,51 +157,22 @@ namespace Sandbox {
         }
     }
 
-    inline void FinalizeHiddenProcessOutput(bool captureOutput,
-                                            HiddenProcessHandles& handles,
-                                            HiddenProcessResult& result)
-    {
-        if (captureOutput)
-            DrainHiddenProcessPipe(handles.hRead, result.output);
-    }
-
     inline HiddenProcessStatus WaitForHiddenProcessCompletion(const wchar_t* logTarget,
                                                               DWORD timeoutMs,
-                                                              bool captureOutput,
                                                               HiddenProcessHandles& handles,
                                                               HiddenProcessResult& result)
     {
-        ULONGLONG start = GetTickCount64();
-        DWORD pollMs = 100;
-        if (!captureOutput && timeoutMs != INFINITE && timeoutMs < pollMs)
-            pollMs = timeoutMs;
-
-        for (;;) {
-            DWORD waitMs = INFINITE;
-            if (timeoutMs != INFINITE) {
-                ULONGLONG elapsed = GetTickCount64() - start;
-                if (elapsed >= timeoutMs)
-                    return HiddenProcessStatus::TimedOut;
-
-                DWORD remaining = static_cast<DWORD>(timeoutMs - elapsed);
-                waitMs = (remaining < pollMs) ? remaining : pollMs;
-            } else {
-                waitMs = pollMs;
-            }
-
-            DWORD waitResult = WaitForSingleObject(handles.pi.hProcess, waitMs);
-            FinalizeHiddenProcessOutput(captureOutput, handles, result);
-
-            if (waitResult == WAIT_OBJECT_0) {
-                GetExitCodeProcess(handles.pi.hProcess, &result.exitCode);
-                return HiddenProcessStatus::Completed;
-            }
-            if (waitResult == WAIT_FAILED) {
-                g_logger.LogFmt(L"HIDDEN_PROCESS: wait failed for %ls (error %lu)",
-                                logTarget, GetLastError());
-                return HiddenProcessStatus::WaitFailed;
-            }
+        DWORD waitResult = WaitForSingleObject(handles.pi.hProcess, timeoutMs);
+        if (waitResult == WAIT_OBJECT_0) {
+            GetExitCodeProcess(handles.pi.hProcess, &result.exitCode);
+            return HiddenProcessStatus::Completed;
         }
+        if (waitResult == WAIT_TIMEOUT)
+            return HiddenProcessStatus::TimedOut;
+
+        g_logger.LogFmt(L"HIDDEN_PROCESS: wait failed for %ls (error %lu)",
+                        logTarget, GetLastError());
+        return HiddenProcessStatus::WaitFailed;
     }
 
     inline void TerminateHiddenProcessForTimeout(const wchar_t* logTarget,
@@ -259,8 +190,7 @@ namespace Sandbox {
 
     inline HiddenProcessResult RunHiddenProcessDetailed(const std::wstring& cmdLine,
                                                         DWORD timeoutMs = 5000,
-                                                        const std::wstring& appPath = L"",
-                                                        bool captureOutput = false)
+                                                        const std::wstring& appPath = L"")
     {
         HiddenProcessResult result{};
         const wchar_t* logTarget = HiddenProcessLogTarget(cmdLine, appPath);
@@ -270,23 +200,17 @@ namespace Sandbox {
         si.wShowWindow = SW_HIDE;
         HiddenProcessHandles handles;
 
-        if (!SetupHiddenProcessCapture(logTarget, captureOutput, si, handles))
-            return result;
-
-        if (!LaunchHiddenProcessInstance(cmdLine, appPath, captureOutput, si, handles)) {
+        if (!LaunchHiddenProcessInstance(cmdLine, appPath, si, handles)) {
             CloseHiddenProcessHandles(handles);
             return result;
         }
 
-        CloseHiddenProcessOutputWriter(handles);
         AttachHiddenProcessJob(logTarget, handles);
 
-        result.status = WaitForHiddenProcessCompletion(logTarget, timeoutMs, captureOutput,
-                                                       handles, result);
+        result.status = WaitForHiddenProcessCompletion(logTarget, timeoutMs, handles, result);
         if (result.status == HiddenProcessStatus::TimedOut)
             TerminateHiddenProcessForTimeout(logTarget, timeoutMs, handles);
 
-        FinalizeHiddenProcessOutput(captureOutput, handles, result);
         CloseHiddenProcessHandles(handles);
         return result;
     }
@@ -294,50 +218,36 @@ namespace Sandbox {
     inline DWORD RunHiddenProcess(const std::wstring& cmdLine, DWORD timeoutMs = 5000,
                                   const std::wstring& appPath = L"")
     {
-        HiddenProcessResult result = RunHiddenProcessDetailed(cmdLine, timeoutMs, appPath, false);
+        HiddenProcessResult result = RunHiddenProcessDetailed(cmdLine, timeoutMs, appPath);
         return (result.status == HiddenProcessStatus::Completed)
             ? result.exitCode
             : static_cast<DWORD>(-1);
     }
 
     // -----------------------------------------------------------------------
-    // RunSchtasks — execute a schtasks command silently.
-    //
-    // Inputs:  args — schtasks arguments (without "schtasks" prefix)
-    // Returns: schtasks exit code (0 = success)
-    // Verifiable: return value indicates success/failure
-    // -----------------------------------------------------------------------
-    inline DWORD RunSchtasks(const std::wstring& args)
-    {
-        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
-        return RunHiddenProcess(L"\"" + schtasksExe + L"\" " + args, 15000, schtasksExe);
-    }
-
-    inline HiddenProcessResult RunSchtasksCapture(const std::wstring& args)
-    {
-        std::wstring schtasksExe = GetSystemDirectoryPath() + L"schtasks.exe";
-        return RunHiddenProcessDetailed(L"\"" + schtasksExe + L"\" " + args,
-                                        15000, schtasksExe, true);
-    }
-
-    // -----------------------------------------------------------------------
-    // Timeout watchdog — terminates a child process after N seconds.
+    // Timeout watchdog — ends the sandbox run after N seconds.
     // Used as a thread function with CreateThread.
+    //
+    // The limit covers the whole run: the root process and, when the run
+    // waits for the process tree, every descendant.  The watchdog waits on
+    // hRunEnded, which the main thread sets when its own wait is over.  A
+    // sandboxed program cannot outlive the limit by starting a child and
+    // exiting.
     // -----------------------------------------------------------------------
     struct TimeoutContext {
-        HANDLE hProcess;
-        HANDLE hJob;
-        DWORD  seconds;
-        bool   timedOut;
+        HANDLE hProcess = nullptr;
+        HANDLE hJob = nullptr;
+        HANDLE hRunEnded = nullptr;
+        DWORD  seconds = 0;
+        std::atomic<bool> timedOut{ false };
     };
 
     static DWORD WINAPI TimeoutThread(LPVOID param)
     {
         auto* ctx = static_cast<TimeoutContext*>(param);
-        ctx->timedOut = false;
         ULONGLONG ms64 = static_cast<ULONGLONG>(ctx->seconds) * 1000;
         DWORD waitMs = (ms64 > INFINITE - 1) ? (INFINITE - 1) : static_cast<DWORD>(ms64);
-        if (WaitForSingleObject(ctx->hProcess, waitMs) == WAIT_TIMEOUT) {
+        if (WaitForSingleObject(ctx->hRunEnded, waitMs) == WAIT_TIMEOUT) {
             ctx->timedOut = true;
             if (ctx->hJob)
                 TerminateJobObject(ctx->hJob, 1);
@@ -387,22 +297,31 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // LaunchChildProcess — create the child process in the sandbox.
     //
-    // Console passthrough: stdout/stderr are inherited from the parent so
-    // the child sees a real console (TTY).  Only stdin is explicitly set
-    // when configured (NUL or file redirect).
+    // Console passthrough: the child gets Sandy's stdout/stderr handles, so
+    // it sees a real console (TTY) when Sandy has one.  stdin is the handle
+    // that SetupStdinHandle chose (console, NUL or file).
+    //
+    // The child inherits these standard handles and no other handle: the
+    // attribute list carries a handle list (BuildAttributeList), so a handle
+    // that is inheritable in Sandy for any other reason never reaches the
+    // sandbox.
     //
     // Inputs:  isRestricted    — true for restricted-token, false for AppContainer
     //          hToken          — restricted token handle (only if isRestricted)
-    //          pAttrList       — attribute list (capabilities/child-policy)
+    //          pAttrList       — attribute list (capabilities/child-policy/handle list)
+    //          stdHandles      — the handles named in the handle list; empty =
+    //                            Sandy has no usable standard handle, the child
+    //                            inherits nothing
     //          envBlock        — environment block (empty = inherit)
     //          workDir         — working directory
     //          exePath/exeArgs — target executable and arguments
-    //          hStdin          — stdin handle for the child (nullptr = inherit)
+    //          hStdin          — stdin handle for the child
     // Returns: true on success, pi filled in
     // Verifiable: pi.hProcess is valid and pi.dwProcessId > 0 on success
     // -----------------------------------------------------------------------
     inline bool LaunchChildProcess(bool isRestricted, HANDLE hToken,
                                    LPPROC_THREAD_ATTRIBUTE_LIST pAttrList,
+                                   const std::vector<HANDLE>& stdHandles,
                                    std::vector<wchar_t>& envBlock,
                                    const std::wstring& workDir,
                                    const std::wstring& exePath,
@@ -413,15 +332,17 @@ namespace Sandbox {
         STARTUPINFOEXW siex{};
         siex.StartupInfo.cb = sizeof(siex);
 
-        // Only set STARTF_USESTDHANDLES when stdin is explicitly redirected
-        // (NUL or file). When stdin is inherited (hStdin = parent's stdin),
-        // we skip the flag entirely so stdout/stderr stay on the console.
-        HANDLE hParentStdin = GetStdHandle(STD_INPUT_HANDLE);
-        if (hStdin && hStdin != hParentStdin) {
+        // A standard handle goes to the child only when the handle list
+        // names it.
+        auto listed = [&stdHandles](HANDLE h) -> HANDLE {
+            return std::find(stdHandles.begin(), stdHandles.end(), h) != stdHandles.end() ? h : nullptr;
+        };
+        const BOOL inheritHandles = stdHandles.empty() ? FALSE : TRUE;
+        if (inheritHandles) {
             siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-            siex.StartupInfo.hStdInput  = hStdin;
-            siex.StartupInfo.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-            siex.StartupInfo.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+            siex.StartupInfo.hStdInput  = listed(hStdin);
+            siex.StartupInfo.hStdOutput = listed(GetStdHandle(STD_OUTPUT_HANDLE));
+            siex.StartupInfo.hStdError  = listed(GetStdHandle(STD_ERROR_HANDLE));
         }
         if (pAttrList) siex.lpAttributeList = pAttrList;
 
@@ -435,7 +356,7 @@ namespace Sandbox {
         BOOL created;
         if (isRestricted) {
             created = CreateProcessAsUser(
-                hToken, nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
+                hToken, nullptr, &cmdLine[0], nullptr, nullptr, inheritHandles,
                 createFlags,
                 envBlock.empty() ? nullptr : envBlock.data(),
                 workDir.c_str(),
@@ -443,7 +364,7 @@ namespace Sandbox {
                 &pi);
         } else {
             created = CreateProcessW(
-                nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
+                nullptr, &cmdLine[0], nullptr, nullptr, inheritHandles,
                 createFlags,
                 envBlock.empty() ? nullptr : envBlock.data(),
                 workDir.c_str(), reinterpret_cast<LPSTARTUPINFOW>(&siex), &pi);
@@ -456,6 +377,7 @@ namespace Sandbox {
                             cmdLine.size(), envBlock.size(),
                             envBlock.empty() ? L"inherited" : L"custom");
             g_logger.LogFmt(L"LAUNCH_DIAG: workdir=%s", workDir.c_str());
+            SetLastError(err);
             return false;
         }
 
@@ -470,7 +392,8 @@ namespace Sandbox {
                config.memoryLimitMB > 0 ||
                config.maxProcesses > 0 ||
                !config.allowClipboardRead ||
-               !config.allowClipboardWrite;
+               !config.allowClipboardWrite ||
+               !config.allowDesktop;
     }
 
     // -----------------------------------------------------------------------
@@ -538,10 +461,20 @@ namespace Sandbox {
             }
         }
 
-        // UI restrictions (clipboard blocking)
+        // UI restrictions (clipboard blocking, desktop isolation)
         DWORD uiFlags = 0;
         if (!config.allowClipboardRead)  uiFlags |= JOB_OBJECT_UILIMIT_READCLIPBOARD;
         if (!config.allowClipboardWrite) uiFlags |= JOB_OBJECT_UILIMIT_WRITECLIPBOARD;
+        // desktop = false.  The window station and the desktop give full
+        // access to RESTRICTED, a SID the sandbox token needs, so no DACL
+        // can keep the sandbox off the desktop.  The job can: the sandbox
+        // cannot use windows, hooks or atoms of processes outside the job,
+        // switch or create desktops, change display or system parameters,
+        // or end the session.
+        if (!config.allowDesktop)
+            uiFlags |= JOB_OBJECT_UILIMIT_HANDLES | JOB_OBJECT_UILIMIT_GLOBALATOMS |
+                       JOB_OBJECT_UILIMIT_DESKTOP | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS |
+                       JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS | JOB_OBJECT_UILIMIT_EXITWINDOWS;
         if (uiFlags) {
             JOBOBJECT_BASIC_UI_RESTRICTIONS uiRestrict{};
             uiRestrict.UIRestrictionsClass = uiFlags;
@@ -550,7 +483,8 @@ namespace Sandbox {
                 CloseHandle(hJob);
                 return nullptr;
             }
-            g_logger.Log(L"CLIPBOARD: restricted via job UI limits");
+            if (!config.allowClipboardRead || !config.allowClipboardWrite)
+                g_logger.Log(L"CLIPBOARD: restricted via job UI limits");
         }
 
         if (!AssignProcessToJobObject(hJob, hProcess)) {
@@ -566,7 +500,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // WaitForChildExit — wait for the child to exit, handle timeout.
+    // WaitForChildExit — wait for the run to end, handle timeout.
     //
     // Console passthrough: Sandy does not interpose on stdout/stderr.
     // The child writes directly to the console (or shell redirect).
@@ -575,7 +509,7 @@ namespace Sandbox {
     //          hTimeoutThread — timeout watchdog thread (may be null)
     //          timeoutCtx     — timeout context (for checking timedOut flag)
     //          timeoutSec     — configured timeout value (for reporting)
-    // Returns: child exit code
+    // Returns: exit code of the root process
     // Verifiable: exit code matches child's GetExitCodeProcess
     // -----------------------------------------------------------------------
     inline DWORD WaitForChildExit(HANDLE hProcess,
@@ -587,13 +521,6 @@ namespace Sandbox {
         WaitForSingleObject(hProcess, INFINITE);
         DWORD exitCode = 0;
         GetExitCodeProcess(hProcess, &exitCode);
-
-        if (hTimeoutThread) {
-            WaitForSingleObject(hTimeoutThread, 5000);
-            CloseHandle(hTimeoutThread);
-            if (timeoutCtx.timedOut)
-                g_logger.LogFmt(L"TIMEOUT: killed after %lus", timeoutSec);
-        }
 
         if (hJob && waitForProcessTree) {
             JOBOBJECT_BASIC_ACCOUNTING_INFORMATION info{};
@@ -609,13 +536,25 @@ namespace Sandbox {
                 g_logger.Log(L"JOB_WAIT: full process tree exited");
         }
 
+        // The run has ended: release the watchdog.  It stays armed until
+        // here, so the limit also covers descendants of an exited root.
+        if (hTimeoutThread) {
+            SetEvent(timeoutCtx.hRunEnded);
+            WaitForSingleObject(hTimeoutThread, INFINITE);
+            CloseHandle(hTimeoutThread);
+            CloseHandle(timeoutCtx.hRunEnded);
+            timeoutCtx.hRunEnded = nullptr;
+            if (timeoutCtx.timedOut)
+                g_logger.LogFmt(L"TIMEOUT: killed after %lus", timeoutSec);
+        }
+
         return exitCode;
     }
 
     // -----------------------------------------------------------------------
-    // StartTimeoutWatchdog — arm a watchdog thread to kill the process.
+    // StartTimeoutWatchdog — arm a watchdog thread to end the run.
     //
-    // Inputs:  ctx — timeout context (hProcess and seconds must be set)
+    // Inputs:  ctx — timeout context (hProcess, hJob and seconds must be set)
     // Returns: watchdog thread handle, or nullptr if no timeout configured
     // Verifiable: thread handle is valid when seconds > 0
     // -----------------------------------------------------------------------
@@ -623,13 +562,18 @@ namespace Sandbox {
     {
         if (ctx.seconds == 0) return nullptr;
 
-        HANDLE hThread = CreateThread(nullptr, 0, TimeoutThread, &ctx, 0, nullptr);
+        ctx.hRunEnded = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        HANDLE hThread = ctx.hRunEnded
+            ? CreateThread(nullptr, 0, TimeoutThread, &ctx, 0, nullptr)
+            : nullptr;
         // F4/R8: Log failure — caller must check for nullptr to fail closed
-        if (!hThread)
-            g_logger.LogFmt(L"TIMEOUT: CreateThread FAILED (error %lu) — watchdog NOT armed",
+        if (!hThread) {
+            g_logger.LogFmt(L"TIMEOUT: watchdog start FAILED (error %lu) — watchdog NOT armed",
                             GetLastError());
-        else
+            CloseHandleIfValid(ctx.hRunEnded);
+        } else {
             g_logger.LogFmt(L"TIMEOUT: armed %lus", ctx.seconds);
+        }
         return hThread;
     }
 

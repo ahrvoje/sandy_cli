@@ -28,7 +28,6 @@ read = ['HKCU\Software\Sandy\Test']
 write = ['HKCU\Software\Sandy\Test']
 
 [privileges]
-named_pipes = false
 desktop = true
 stdin = false
 clipboard_read = true

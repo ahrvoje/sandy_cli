@@ -21,8 +21,7 @@ for %%F in (
     test_deep_acl_rt.bat
     test_carveout.bat
     test_deny_precedence_rt.bat
-
-
+    test_dacl_fidelity.bat
     test_new_levels.bat
     test_scope.bat
     test_concurrent.bat
@@ -43,6 +42,9 @@ for %%F in (
     test_profile.bat
     test_status_saved_profile_integrity.bat
     test_removed_features.bat
+    test_runtime_fixes.bat
+    test_interrupt.bat
+    test_bugs.bat
     test_grant_matrix.bat
     test_clean.bat
     test_dryrun.bat
@@ -70,7 +72,8 @@ for %%F in (
 )
 
 echo ================================================================
-echo  RESULTS: !PASS! passed, !FAIL! failed out of 40
+set /a TOTAL=!PASS!+!FAIL!
+echo  RESULTS: !PASS! passed, !FAIL! failed out of !TOTAL!
 echo ================================================================
 if !FAIL! gtr 0 (
     echo  Failed tests:!FAILED_TESTS!

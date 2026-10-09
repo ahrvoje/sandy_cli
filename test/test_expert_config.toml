@@ -15,9 +15,9 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_expert\scripts', 'C:\Users\H\test_expert\arena\readonly_zone']
-all = ['C:\Users\H\test_expert\arena\playground', 'C:\Users\H\test_expert\arena\deep\a\b\c']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_expert\scripts', '%USERPROFILE%\test_expert\arena\readonly_zone']
+all = ['%USERPROFILE%\test_expert\arena\playground', '%USERPROFILE%\test_expert\arena\deep\a\b\c']
 
 [privileges]
 child_processes = false

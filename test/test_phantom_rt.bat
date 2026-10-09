@@ -26,6 +26,7 @@ if exist "%ROOT%" (
 REM --- Build tree ---
 mkdir "%ARENA%\forbidden" 2>nul
 mkdir "%ARENA%\readonly" 2>nul
+mkdir "%ARENA%\workspace" 2>nul
 mkdir "%ROOT%\scripts" 2>nul
 
 REM --- Seed files ---
@@ -51,11 +52,16 @@ for %%P in (%SDDL_PATHS%) do (
     set /a IDX+=1
 )
 set "SDDL_COUNT=!IDX!"
+REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
+for %%V in (PRE_SDDL_0 PRE_SDDL_1 PRE_SDDL_2) do if not defined %%V (
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    exit /b 1
+)
 echo   Captured %SDDL_COUNT% pre-Sandy SDDLs
 
 REM --- Run Sandy ---
 echo.
-"%SANDY%" -c "%CONFIG%" -x "C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe" "%ROOT%\scripts\test_phantom.py" 2>&1
+"%SANDY%" -c "%CONFIG%" -x "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%ROOT%\scripts\test_phantom.py" 2>&1
 set SANDY_EXIT=%ERRORLEVEL%
 echo.
 
@@ -131,6 +137,7 @@ set IDX=0
 if !IDX! GEQ !SDDL_COUNT! goto sddl_done
 set "SP=!SDDL_PATH_%IDX%!"
 set "EXPECTED=!PRE_SDDL_%IDX%!"
+set "ACTUAL="
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\!SP!').Sddl" 2^>nul') do set "ACTUAL=%%S"
 if "!ACTUAL!"=="!EXPECTED!" (
     echo   [PASS] !SP! DACL restored exactly
@@ -162,4 +169,5 @@ if exist "%ROOT%" (
     rmdir /S /Q "%ROOT%" 2>nul
 )
 
+if !CLEANUP_FAIL! GTR 0 exit /b 1
 exit /b %SANDY_EXIT%

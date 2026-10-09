@@ -3,13 +3,16 @@ r"""RT version of diabolical test — expectations adjusted for Restricted Token
 Key RT differences:
   - Registry: medium integrity CAN access HKCU (expected, not a failure)
   - WRITE_DAC on USERPROFILE: succeeds (owner privilege, expected)
-  - deny.write readonly_zone: read blocked (PROTECTED_DACL)
-  - DACL escalation: WRITE_DAC/WRITE_OWNER succeed on user-owned (expected)
+  - deny.write readonly_zone: read stays allowed (deny is surgical)
+  - deny.all: the denied folder cannot be deleted, renamed, or have its
+    DACL rewritten; the folder that holds it carries the delete guard
+  - DACL escalation: WRITE_DAC/WRITE_OWNER succeed on user-owned paths
+    that carry no deny and no delete guard (expected)
   - User profile paths: accessible (no AC capability isolation)
 """
 import os, sys, ctypes, ctypes.wintypes, winreg
 
-ROOT = os.path.join(os.environ.get('USERPROFILE', r'C:\Users\H'), 'test_diabolical')
+ROOT = os.path.join(os.environ['USERPROFILE'], 'test_diabolical')
 ARENA = os.path.join(ROOT, 'arena')
 results = []
 
@@ -131,7 +134,8 @@ try:
 
     renamed = p('fortress_escaped')
     os.rename(fortress, renamed)
-    print("  [INFO] fortress renamed to fortress_escaped")
+    print("  [FAIL] fortress renamed to fortress_escaped (deny.all must block rename)")
+    results.append(('FAIL', 'oid-strip: fortress renamed'))
     with open(p('_oid_attack_done'), 'w') as f:
         f.write(renamed)
 except PermissionError:
@@ -279,13 +283,12 @@ else:
 
 # ===========================================================================
 # ATTACK 7: Deny Granularity (deny.write)
-#   RT: PROTECTED_DACL strips inherited user ACEs → read also blocked
+#   Only write is denied: read and list stay allowed.
 # ===========================================================================
 print("\n=== ATTACK 7: Deny granularity (deny.write) ===")
-# RT: read blocked because PROTECTED_DACL removes inherited user read ACE
-test("readonly_zone: read report.txt (RT: blocked by PROTECTED_DACL)", False,
+test("readonly_zone: read report.txt (deny.write keeps read)", True,
      lambda: open(p('readonly_zone', 'report.txt'), 'r').read())
-test("readonly_zone: list dir (RT: blocked by PROTECTED_DACL)", False,
+test("readonly_zone: list dir (deny.write keeps list)", True,
      lambda: os.listdir(p('readonly_zone')))
 test("readonly_zone: write file", False,
      lambda: open(p('readonly_zone', 'hack.tmp'), 'w').write('x'))

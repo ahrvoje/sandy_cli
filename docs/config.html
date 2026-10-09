@@ -154,7 +154,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
 
     <div class="callout warning">
       <div class="callout-title">⛔ Wrong-mode keys are rejected</div>
-      <p>Using an AC-only key (e.g. <code>network</code>) in an RT config, or an RT-only key (<code>named_pipes</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
+      <p>Using an AC-only key (e.g. <code>network</code>) in an RT config, or an RT-only key (<code>desktop</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
     </div>
   </div>
 </section>
@@ -191,6 +191,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
       <h3><code>[allow.deep]</code> / <code>[allow.this]</code> — File and folder grants</h3><span class="tag both">both modes</span>
     </div>
     <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">All keys optional (default <code>[]</code>). Two scopes: <strong><code>[allow.deep]</code></strong> applies recursively (OI|CI inheritance); <strong><code>[allow.this]</code></strong> applies to the named object only (instant, no child walk). Same access keys in both scopes.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">A path can hold environment variables in <code>%NAME%</code> form, for example <code>'%USERPROFILE%\project'</code> or <code>'%LOCALAPPDATA%\Programs\Python\Python314'</code>. Sandy replaces them with the values from its own environment when it loads the config, so a config does not have to hold a user name. This applies to every filesystem path: <code>[allow.*]</code>, <code>[deny.*]</code>, <code>workdir</code> and a <code>stdin</code> file. A variable that is not set is a configuration error (exit 128).</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Permission granted</th></tr></thead>
@@ -198,40 +199,40 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>read</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read files, list dirs. Does NOT grant execute.</td></tr>
           <tr><td>write</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create/modify files. Does NOT grant read.</td></tr>
           <tr><td>execute</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read + execute files, list dirs</td></tr>
-          <tr><td>append</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Append-only. Cannot overwrite or read.</td></tr>
+          <tr><td>append</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Append-only. Cannot overwrite or read. On a folder it also allows creation of sub-folders.</td></tr>
           <tr><td>delete</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Delete only. No read or write.</td></tr>
           <tr><td>all</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Full access: read+write+execute+delete. Strips WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD.</td></tr>
           <tr><td>run</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Execute only, no read (can't copy binary)</td></tr>
           <tr><td>stat</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read attributes only</td></tr>
           <tr><td>touch</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Modify attributes only</td></tr>
-          <tr><td>create</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create new files/subdirs, no overwrite</td></tr>
+          <tr><td>create</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create new files/subdirs, no overwrite. A recursive rule inherits to sub-folders only, not to files.</td></tr>
         </tbody>
       </table>
     </div>
     <div class="callout info">
-      <div class="callout-title">💡 Allow-inside-deny pipeline (restricted token only)</div>
-      <p>In Restricted Token mode, you can carve exempt subtrees inside denied areas. All allow/deny entries are merged and sorted by depth — deny applied before allow at each level. An allow inside a deny automatically strips the deny ACEs first. Example: <code>[deny.deep] all = ['C:\repos']</code> + <code>[allow.deep] all = ['C:\repos\snipps']</code>.</p>
+      <div class="callout-title">💡 Allow inside deny (restricted token only)</div>
+      <p>In Restricted Token mode, you can carve exempt subtrees inside denied areas. The standard Windows ACE order decides; Sandy adds nothing on top. The rule on the nearest folder wins, right by right. An allow under a deny gives back exactly the rights that the allow names, at its own scope. A deny under an allow removes exactly the rights that the deny names. On the same path and scope, the deny wins. Sandy does not strip a deny ACE to make a carve-out and never changes DACL protection ("disable inheritance"). Example: <code>[deny.deep] all = ['C:\repos']</code> + <code>[allow.deep] all = ['C:\repos\snipps']</code> gives full access in <code>C:\repos\snipps</code>.</p>
     </div>
 
     <!-- [deny.deep] / [deny.this] -->
     <div class="section-header">
       <h3><code>[deny.deep]</code> / <code>[deny.this]</code> — Block specific permissions</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer / LPAC mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). Same access keys and scope semantics as allow. <code>[deny.deep]</code> is recursive; <code>[deny.this]</code> applies to the single object only. Deny is surgical — only the specified permission type is blocked. <code>deny.write</code> does NOT block delete.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;"><strong>Not available in AppContainer / LPAC mode</strong> (kernel ignores DENY ACEs for AC SIDs). All keys optional (default <code>[]</code>). Same access keys and scope semantics as allow. <code>[deny.deep]</code> is recursive; <code>[deny.this]</code> applies to the single object only. Each rule is a real <code>DENY_ACCESS</code> ACE. A deny rule denies only the rights that define its level; the other levels stay usable. <code>deny.write</code> does NOT block read, list, execute or delete. Every deny rule also denies "change permissions" (<code>WRITE_DAC</code>) and "take ownership" (<code>WRITE_OWNER</code>), so the sandboxed process cannot edit the rule away.</p>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th>Default</th><th>Mechanism (Restricted Token only)</th></tr></thead>
+        <thead><tr><th>Key</th><th>Default</th><th>Rights denied (Restricted Token only)</th></tr></thead>
         <tbody>
-          <tr><td>read</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>write</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE. Does NOT block delete.</td></tr>
-          <tr><td>execute</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>append</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>delete</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>all</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE (all bits)</td></tr>
-          <tr><td>run</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>stat</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>touch</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
-          <tr><td>create</td><td><code>[]</code></td><td>Real <code>DENY_ACCESS</code> ACE</td></tr>
+          <tr><td>read</td><td><code>[]</code></td><td>Read data / list folder, read extended attributes</td></tr>
+          <tr><td>write</td><td><code>[]</code></td><td>Write data, append data, write extended attributes, write attributes. Does NOT block delete.</td></tr>
+          <tr><td>execute</td><td><code>[]</code></td><td>Execute / traverse</td></tr>
+          <tr><td>append</td><td><code>[]</code></td><td>Append data</td></tr>
+          <tr><td>delete</td><td><code>[]</code></td><td>Delete, delete child. Sandy also puts one deny ACE on the parent folder (delete guard), so the denied object cannot be deleted or renamed. Other children of that parent are not affected.</td></tr>
+          <tr><td>all</td><td><code>[]</code></td><td>All file rights. Same delete guard on the parent folder as <code>delete</code>.</td></tr>
+          <tr><td>run</td><td><code>[]</code></td><td>Execute / traverse (same rights as <code>execute</code>)</td></tr>
+          <tr><td>stat</td><td><code>[]</code></td><td>Read attributes. Holds only where listing the parent folder is denied too.</td></tr>
+          <tr><td>touch</td><td><code>[]</code></td><td>Write attributes</td></tr>
+          <tr><td>create</td><td><code>[]</code></td><td>Add file, add sub-folder (folders only). A recursive rule inherits to sub-folders only.</td></tr>
         </tbody>
       </table>
     </div>
@@ -250,8 +251,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
         <tbody>
           <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
           <tr><td>lan</td><td>bool / string</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN + loopback. <code>false</code> · <code>'with localhost'</code> · <code>'without localhost'</code>.</td></tr>
-          <tr><td>named_pipes</td><td>bool</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Allow CreateNamedPipeW. Required for Flutter, Chromium, Bun/Node IPC.</td></tr>
-          <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. Set <code>false</code> only for headless services.</td></tr>
+          <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. <code>false</code> isolates through job-object UI limits: the sandbox cannot list or use windows of other processes. It does not hide the desktop object itself. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / absolute path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; absolute path=redirect from file</td></tr>
           <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow reading from the system clipboard</td></tr>
           <tr><td>clipboard_write</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow writing to the system clipboard</td></tr>
@@ -303,7 +303,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
       <table>
         <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Kill root process after N seconds. <code>0</code>=no limit. After the root exits (or is killed on timeout), Sandy waits for all descendant processes in the job to finish before cleanup. Sandy exits 130 on timeout.</td></tr>
+          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>End the whole process tree after N seconds. <code>0</code>=no limit. The limit covers the root process and every descendant in the job. Sandy waits for the root and then for every descendant; the watchdog stays active until the tree is gone. Sandy exits 130 on timeout.</td></tr>
           <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap. <code>0</code>=no limit. Enforced via job objects.</td></tr>
           <tr><td>processes</td><td>count</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Max active process count. <code>0</code>=no limit.</td></tr>
         </tbody>
@@ -340,7 +340,6 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
-          <tr><td>&ensp;named_pipes</td><td><code>false</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;desktop</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;stdin</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;clipboard_read</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
@@ -363,7 +362,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
   <div class="container fade-in">
     <div class="divider"></div>
     <h2>Permission <span class="accent">Bit Reference</span></h2>
-    <p class="section-lead">Exact Windows access masks per <code>[allow.*]</code> level. <code>write</code> ≠ <code>read</code>, and <code>read</code> ≠ <code>execute</code>.</p>
+    <p class="section-lead">Exact Windows access masks per <code>[allow.*]</code> level. <code>write</code> ≠ <code>read</code>, and <code>read</code> ≠ <code>execute</code>. A <code>[deny.*]</code> rule does not use these masks; see the deny table above.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Level</th><th>Key</th><th>Key Windows bits</th><th>Notes</th></tr></thead>
@@ -371,13 +370,13 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>Read</td><td><code>read</code></td><td><code>FILE_READ_DATA, FILE_READ_EA, FILE_READ_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE</code></td><td>Cannot load DLLs — no FILE_EXECUTE</td></tr>
           <tr><td>Write</td><td><code>write</code></td><td><code>FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, READ_CONTROL, SYNCHRONIZE, FILE_READ_ATTRIBUTES</code></td><td>Cannot list/read contents</td></tr>
           <tr><td>Execute</td><td><code>execute</code></td><td>All Read bits + <code>FILE_EXECUTE</code></td><td>Standard (RX) — minimum to run programs</td></tr>
-          <tr><td>Append</td><td><code>append</code></td><td><code>FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Cannot overwrite existing data</td></tr>
+          <tr><td>Append</td><td><code>append</code></td><td><code>FILE_APPEND_DATA, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Cannot overwrite existing data. On a folder the same bit allows creation of sub-folders.</td></tr>
           <tr><td>Delete</td><td><code>delete</code></td><td><code>DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>No read or write</td></tr>
           <tr><td>All</td><td><code>all</code></td><td><code>FILE_ALL_ACCESS &amp; ~(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER)</code></td><td>Full data control. WRITE_DAC, WRITE_OWNER, FILE_DELETE_CHILD intentionally stripped.</td></tr>
           <tr><td>Run</td><td><code>run</code></td><td><code>FILE_EXECUTE, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Execute only, no read (can’t copy binary)</td></tr>
           <tr><td>Stat</td><td><code>stat</code></td><td><code>FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Attributes only</td></tr>
           <tr><td>Touch</td><td><code>touch</code></td><td><code>FILE_WRITE_ATTRIBUTES, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Modify attributes only</td></tr>
-          <tr><td>Create</td><td><code>create</code></td><td><code>FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Create new files/subdirs, no overwrite</td></tr>
+          <tr><td>Create</td><td><code>create</code></td><td><code>FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_READ_ATTRIBUTES, SYNCHRONIZE</code></td><td>Create new files/subdirs, no overwrite. Inherits to sub-folders only.</td></tr>
         </tbody>
       </table>
     </div>

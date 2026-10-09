@@ -14,18 +14,18 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-read    = ['C:\Users\H\test_sandy_profile\scope']
-write   = ['C:\Users\H\test_sandy_profile\scope\deep_dir']
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
+read    = ['%USERPROFILE%\test_sandy_profile\scope']
+write   = ['%USERPROFILE%\test_sandy_profile\scope\deep_dir']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 
 [allow.this]
-write   = ['C:\Users\H\test_sandy_profile\scope\this_dir']
+write   = ['%USERPROFILE%\test_sandy_profile\scope\this_dir']
 
 [deny.deep]
-write   = ['C:\Users\H\test_sandy_profile\scope\deny_deep']
+write   = ['%USERPROFILE%\test_sandy_profile\scope\deny_deep']
 
 [deny.this]
-write   = ['C:\Users\H\test_sandy_profile\scope\deny_this']
+write   = ['%USERPROFILE%\test_sandy_profile\scope\deny_this']
 
 [environment]
 inherit = true

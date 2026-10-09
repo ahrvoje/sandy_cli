@@ -37,7 +37,7 @@ echo  Sandy Cleanup-Containment Test
 echo =====================================================================
 
 REM === Detect Python ===
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 if not exist "!PYTHON!" (
     for /f "tokens=*" %%P in ('where python 2^>nul') do if not defined PYTHON set PYTHON=%%P
 )

@@ -3,7 +3,7 @@ for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Proces
 setlocal EnableDelayedExpansion
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 

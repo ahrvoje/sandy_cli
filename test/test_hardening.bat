@@ -10,7 +10,7 @@ REM ===================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
 set RT_CONFIG=%~dp0test_resilience_rt.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 
@@ -20,75 +20,36 @@ echo =====================================================================
 
 REM ===================================================================
 REM S1 — Grant Record Parser: malformed records are rejected by --cleanup
+REM
+REM The records go into the real ledger root (HKCU\Software\Sandy\Grants):
+REM Sandy reads no other place.  Each test ledger has an id that starts
+REM with "dead-test-hard-", a PID that is not running and a non-zero _ctime,
+REM so recovery treats it as the ledger of a dead instance.
 REM ===================================================================
 echo.
 echo --- S1: Grant Record Parser Validation ---
 
-REM Each record below targets a different ParseGrantRecord rejection path.
-REM All should be tolerated by --cleanup and cleaned up.
+set G=HKCU\Software\Sandy\Grants\dead-test-hard
+set HLOG=%TEMP%\sandy_hardening_cleanup.log
+del "%HLOG%*" 2>nul
 
-REM S1.1: TYPE is not FILE or REG
-reg add "HKCU\Software\Sandy\Test\Grants\A0001" /v _pid /t REG_DWORD /d 99990 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0001" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0001" /v 0 /t REG_SZ /d "BOGUS|C:\foo|S-1-5-21-0-0-0-1" /f >nul 2>nul
-
-REM S1.2: Missing PATH|SID separator
-reg add "HKCU\Software\Sandy\Test\Grants\A0002" /v _pid /t REG_DWORD /d 99991 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0002" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0002" /v 0 /t REG_SZ /d "FILE|no-second-pipe" /f >nul 2>nul
-
-REM S1.3: Empty PATH
-reg add "HKCU\Software\Sandy\Test\Grants\A0003" /v _pid /t REG_DWORD /d 99992 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0003" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0003" /v 0 /t REG_SZ /d "FILE||S-1-5-21-0-0-0-1" /f >nul 2>nul
-
-REM S1.4: PATH is relative
-reg add "HKCU\Software\Sandy\Test\Grants\A0004" /v _pid /t REG_DWORD /d 99993 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0004" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0004" /v 0 /t REG_SZ /d "FILE|relative\path|S-1-5-21-0-0-0-1" /f >nul 2>nul
-
-REM S1.5: SID doesn't match S-rev-auth format
-reg add "HKCU\Software\Sandy\Test\Grants\A0005" /v _pid /t REG_DWORD /d 99994 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0005" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0005" /v 0 /t REG_SZ /d "FILE|C:\foo|D:FA-WD" /f >nul 2>nul
-
-REM S1.6: Unknown flag suffix
-reg add "HKCU\Software\Sandy\Test\Grants\A0006" /v _pid /t REG_DWORD /d 99995 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0006" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0006" /v 0 /t REG_SZ /d "FILE|C:\foo|S-1-5-21-0-0-0-1|UNKNOWN:1" /f >nul 2>nul
-
-REM S1.7: Invalid trapped SID
-reg add "HKCU\Software\Sandy\Test\Grants\A0007" /v _pid /t REG_DWORD /d 99996 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0007" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0007" /v 0 /t REG_SZ /d "FILE|C:\foo|S-1-5-21-0-0-0-1|TRAPPED:NOTSID" /f >nul 2>nul
-
-REM S1.8: No pipe at all
-reg add "HKCU\Software\Sandy\Test\Grants\A0008" /v _pid /t REG_DWORD /d 99997 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0008" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0008" /v 0 /t REG_SZ /d "GARBAGE_NO_PIPES" /f >nul 2>nul
-
-REM S1.9: Valid record with DENY:1 flag
-reg add "HKCU\Software\Sandy\Test\Grants\A0009" /v _pid /t REG_DWORD /d 99998 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0009" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0009" /v 0 /t REG_SZ /d "FILE|C:\foo|S-1-5-21-0-0-0-9|DENY:1" /f >nul 2>nul
-
-REM S1.10: Valid record with TRAPPED + valid SIDs
-reg add "HKCU\Software\Sandy\Test\Grants\A0010" /v _pid /t REG_DWORD /d 99999 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0010" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0010" /v 0 /t REG_SZ /d "FILE|C:\foo|S-1-5-21-0-0-0-10|DENY:1|TRAPPED:S-1-5-21-1-2-3-4;S-1-5-21-5-6-7-8" /f >nul 2>nul
-
-REM S1.11: REG type with HKEY path
-reg add "HKCU\Software\Sandy\Test\Grants\A0011" /v _pid /t REG_DWORD /d 99900 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0011" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0011" /v 0 /t REG_SZ /d "REG|HKEY_CURRENT_USER\Software\Test|S-1-5-21-0-0-0-11" /f >nul 2>nul
-
-REM S1.12: UNC path
-reg add "HKCU\Software\Sandy\Test\Grants\A0012" /v _pid /t REG_DWORD /d 99901 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0012" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\A0012" /v 0 /t REG_SZ /d "FILE|\\server\share|S-1-5-21-0-0-0-12" /f >nul 2>nul
+REM Malformed records: each one takes a different ParseGrantRecord rejection path
+call :inject A0001 99990 "BOGUS|C:\sandy_no_such_dir|S-1-5-21-0-0-0-1"
+call :inject A0002 99991 "FILE|no-second-pipe"
+call :inject A0003 99992 "FILE||S-1-5-21-0-0-0-1"
+call :inject A0004 99993 "FILE|relative\path|S-1-5-21-0-0-0-1"
+call :inject A0005 99994 "FILE|C:\sandy_no_such_dir|D:FA-WD"
+call :inject A0006 99995 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-1|UNKNOWN:1"
+call :inject A0007 99996 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-1|TRAPPED:NOTSID"
+call :inject A0008 99997 "GARBAGE_NO_PIPES"
+REM Valid records: every flag form, the registry type
+call :inject A0009 99998 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-9|DENY:1"
+call :inject A0010 99999 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-10|DENY:1|TRAPPED:S-1-5-21-1-2-3-4;S-1-5-21-5-6-7-8"
+call :inject A0011 99900 "REG|CURRENT_USER\Software\SandyNoSuchKey_Test|S-1-5-21-0-0-0-11"
+call :inject A0012 99901 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-12|DENY:1|THIS:1|OWNER:O"
 
 REM Run --cleanup and verify it exits cleanly
-"!SANDY!" --cleanup >nul 2>nul
+"!SANDY!" -l "%HLOG%" --cleanup >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] S1a: --cleanup tolerates all malformed records
     set /a PASS+=1
@@ -97,41 +58,52 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-REM Verify all stale keys were cleaned
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] S1b: All 12 stale keys cleaned
+REM Verify all 12 test ledgers were cleaned
+set LEFT=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"dead-test-hard-" ^| find /c /v ""') do set LEFT=%%N
+if !LEFT! EQU 0 (
+    echo   [PASS] S1b: All 12 stale ledgers cleaned
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S1b: Some stale keys remain after cleanup
+    echo   [FAIL] S1b: !LEFT! stale ledgers remain after cleanup
     set /a FAIL+=1
 )
 
+REM The parser must have seen each of the 8 malformed records and refused it
+set REJECTED=0
+for /f %%N in ('findstr /c:"GRANT_PARSE: malformed record" "%HLOG%" 2^>nul ^| find /c /v ""') do set REJECTED=%%N
+if !REJECTED! EQU 8 (
+    echo   [PASS] S1c: Parser rejected the 8 malformed records and accepted the 4 valid ones
+    set /a PASS+=1
+) else (
+    echo   [FAIL] S1c: Parser rejected !REJECTED! records, expected 8
+    set /a FAIL+=1
+)
+del "%HLOG%*" 2>nul
+
 REM ===================================================================
-REM S2 — Parent Key Cleanup: cascade-delete when empty
+REM S2 — Parent keys are permanent: only the instance subkey goes
 REM ===================================================================
 echo.
-echo --- S2: Parent Key Cascade Cleanup ---
-reg add "HKCU\Software\Sandy\Test\Grants\CASCADE1" /v _pid /t REG_DWORD /d 88888 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\CASCADE1" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\CASCADE1" /v 0 /t REG_SZ /d "FILE|C:\foo|S-1-5-21-0-0-0-1" /f >nul 2>nul
+echo --- S2: Parent Keys Are Permanent ---
+call :inject CASCADE1 88888 "FILE|C:\sandy_no_such_dir|S-1-5-21-0-0-0-1"
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
+reg query "%G%-CASCADE1" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] S2a: Grants key removed when empty
+    echo   [PASS] S2a: Stale ledger subkey removed
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S2a: Grants key still exists when empty
+    echo   [FAIL] S2a: Stale ledger subkey still exists
     set /a FAIL+=1
 )
 
-reg query "HKCU\Software\Sandy\Test" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] S2b: Software\Sandy\Test removed by cascade
+reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] S2b: Parent key Software\Sandy\Grants kept
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S2b: Software\Sandy\Test still exists
+    echo   [FAIL] S2b: Parent key Software\Sandy\Grants was deleted
     set /a FAIL+=1
 )
 
@@ -140,21 +112,18 @@ REM S3 — Multiple Dead PIDs Cleaned Together
 REM ===================================================================
 echo.
 echo --- S3: Multiple Dead PIDs Cleaned ---
-reg add "HKCU\Software\Sandy\Test\Grants\SURV1" /v _pid /t REG_DWORD /d 77771 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\SURV1" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\SURV1" /v 0 /t REG_SZ /d "FILE|C:\a|S-1-5-21-0-0-0-1" /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\SURV2" /v _pid /t REG_DWORD /d 77772 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\SURV2" /v _ctime /t REG_QWORD /d 0 /f >nul 2>nul
-reg add "HKCU\Software\Sandy\Test\Grants\SURV2" /v 0 /t REG_SZ /d "FILE|C:\b|S-1-5-21-0-0-0-2" /f >nul 2>nul
+call :inject SURV1 77771 "FILE|C:\sandy_no_such_dir_a|S-1-5-21-0-0-0-1"
+call :inject SURV2 77772 "FILE|C:\sandy_no_such_dir_b|S-1-5-21-0-0-0-2"
 
 "!SANDY!" --cleanup >nul 2>nul
 
-reg query "HKCU\Software\Sandy\Test\Grants" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] S3: Both dead PIDs cleaned, key removed
+set LEFT=0
+for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"dead-test-hard-SURV" ^| find /c /v ""') do set LEFT=%%N
+if !LEFT! EQU 0 (
+    echo   [PASS] S3: Both dead PIDs cleaned
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S3: Keys still remain
+    echo   [FAIL] S3: !LEFT! ledgers still remain
     set /a FAIL+=1
 )
 
@@ -347,11 +316,12 @@ set C2=!ERRORLEVEL!
 "!SANDY!" --cleanup >nul 2>nul
 set C3=!ERRORLEVEL!
 
-if !C1! EQU 0 if !C2! EQU 0 if !C3! EQU 0 (
+set /a CSUM=!C1!+!C2!+!C3!
+if !CSUM! EQU 0 (
     echo   [PASS] S8: Three consecutive --cleanup calls return 0
     set /a PASS+=1
 ) else (
-    echo   [FAIL] S8: --cleanup not idempotent
+    echo   [FAIL] S8: --cleanup not idempotent ^(exit codes !C1! !C2! !C3!^)
     set /a FAIL+=1
 )
 
@@ -368,4 +338,13 @@ if !FAIL! GTR 0 (
     echo Some tests FAILED!
     exit /b 1
 )
+exit /b 0
+
+REM -------------------------------------------------------------------
+REM :inject <id> <pid> <record> — one stale test ledger with one record
+REM -------------------------------------------------------------------
+:inject
+reg add "%G%-%~1" /v _ctime /t REG_QWORD /d 1 /f >nul 2>nul
+reg add "%G%-%~1" /v _pid /t REG_DWORD /d %~2 /f >nul 2>nul
+reg add "%G%-%~1" /v 0 /t REG_SZ /d "%~3" /f >nul 2>nul
 exit /b 0

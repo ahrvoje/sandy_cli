@@ -3,7 +3,7 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314']
-read = ['C:\Users\H\test_concurrent\scripts', 'C:\Users\H\test_concurrent\data']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+read = ['%USERPROFILE%\test_concurrent\scripts', '%USERPROFILE%\test_concurrent\data']
 [environment]
 inherit = true

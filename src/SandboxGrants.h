@@ -9,26 +9,47 @@
 
 #include "SandboxTypes.h"
 #include "SandboxACL.h"
+#include "SandboxToken.h"
 #include "SandboxRecoveryLedger.h"
 #include "SandboxRegistry.h"
 #include "SandboxProfileRegistry.h"
 #include <set>
 #include <atomic>
+#include <cstdarg>
 
 namespace Sandbox {
 
     // -----------------------------------------------------------------------
-    // Grant record — one per modified object
+    // Grant record — one per DACL write
     // -----------------------------------------------------------------------
     struct ACLGrant {
         std::wstring       path;
         SE_OBJECT_TYPE     objType;
         std::wstring       sidString;
         // SID of the principal granted/denied
-        std::wstring       trappedSids;    // semicolon-separated trapped AC SIDs (deny entries only)
-        bool               wasDenied = false;
-        bool               wasThis = false;     // this scope (non-recursive) — skip tree-set on cleanup
+        bool               wasThis = false;     // no inheritable ACE — skip tree-set on cleanup
+        OwnerAce           ownerAce = OwnerAce::None;
     };
+
+    // -----------------------------------------------------------------------
+    // Recovery progress lines ("[ACL] restored ...", "[GRANTS] ... cleaned").
+    //
+    // `--cleanup`, `--create-profile` and `--delete-profile` show them on
+    // stdout.  A sandbox run must not: its stdout belongs to the child, and a
+    // caller that parses the child's output must not find Sandy text in it.
+    // BeginRunSession() turns the console copy off; the session log keeps the
+    // matching entries.
+    // -----------------------------------------------------------------------
+    inline bool g_recoveryConsoleOutput = true;
+
+    inline void RecoveryPrintf(const char* fmt, ...)
+    {
+        if (!g_recoveryConsoleOutput) return;
+        va_list args;
+        va_start(args, fmt);
+        vprintf(fmt, args);
+        va_end(args);
+    }
 
     // -----------------------------------------------------------------------
     // Global state — guarded by SRW lock
@@ -143,7 +164,27 @@ namespace Sandbox {
         std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
         bool         wasDenied = false;
         bool         wasThis = false;
+        OwnerAce     ownerAce = OwnerAce::None;
     };
+
+    // -----------------------------------------------------------------------
+    // FormatGrantRecord — the one writer of the persisted record format.
+    // ParseGrantRecord below is its inverse.
+    // -----------------------------------------------------------------------
+    inline std::wstring FormatGrantRecord(const GrantRecordSpec& spec, const std::wstring& path)
+    {
+        std::wstring data = (spec.objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
+        data += L"|" + path + L"|" + spec.sidString;
+        if (spec.hasDeny)
+            data += L"|DENY:1";
+        if (spec.objectOnly)
+            data += L"|THIS:1";
+        if (spec.ownerAce == OwnerAce::Inherit)
+            data += L"|OWNER:I";
+        else if (spec.ownerAce == OwnerAce::ObjectOnly)
+            data += L"|OWNER:O";
+        return data;
+    }
 
     // -----------------------------------------------------------------------
     // ValidateSidPrefix — lightweight SID structure check.
@@ -169,11 +210,12 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // ParseGrantRecord — strict parser for persisted grant records.
     //
-    // Expected format: TYPE|PATH|SID[|DENY:1][|TRAPPED:sid1;sid2]
+    // Expected format: TYPE|PATH|SID[|DENY:1][|THIS:1][|OWNER:I|OWNER:O]
     //   TYPE:  "FILE" or "REG"
     //   PATH:  non-empty, must be absolute (drive letter, UNC, or HKEY)
     //   SID:   must match S-<revision>-<authority>-... structure
-    //   Flags: only DENY:1, PEEK:1, and TRAPPED:<sids> are recognized;
+    //   Flags: DENY:1, THIS:1, OWNER:I, OWNER:O, and the legacy PEEK:1,
+    //          DEFERRED:1 and TRAPPED:<sids> are recognized;
     //          any unknown |KEY:... suffix rejects the record.
     //
     // On failure, sets `reason` with a diagnostic string for logging.
@@ -226,6 +268,7 @@ namespace Sandbox {
         // Parse optional |KEY:VALUE suffixes
         out.wasDenied = false;
         out.wasThis = false;
+        out.ownerAce = OwnerAce::None;
         out.trappedSids.clear();
         if (pipePos != std::wstring::npos) {
             remaining = remaining.substr(pipePos);
@@ -234,6 +277,12 @@ namespace Sandbox {
                 if (remaining.compare(0, 6, L"DENY:1") == 0) {
                     out.wasDenied = true;
                     remaining = remaining.substr(6);
+                } else if (remaining.compare(0, 7, L"OWNER:I") == 0) {
+                    out.ownerAce = OwnerAce::Inherit;
+                    remaining = remaining.substr(7);
+                } else if (remaining.compare(0, 7, L"OWNER:O") == 0) {
+                    out.ownerAce = OwnerAce::ObjectOnly;
+                    remaining = remaining.substr(7);
                 } else if (remaining.compare(0, 6, L"PEEK:1") == 0) {
                     out.wasThis = true;  // backward compat: PEEK:1 → wasThis
                     remaining = remaining.substr(6);
@@ -561,24 +610,27 @@ namespace Sandbox {
         }
     }
 
-    inline void RecordGrant(const std::wstring& path, SE_OBJECT_TYPE objType,
-                            const std::wstring& sidString,
-                            const std::wstring& trappedSids = L"",
-                            bool isDeny = false,
-                            bool isThis = false)
+    // Returns false when the record could not be persisted where the current
+    // operation keeps its cleanup inventory.  The caller (AddAcesToObject)
+    // then leaves the DACL untouched: ACEs without a record can never be
+    // found again.
+    inline bool RecordGrant(const GrantRecordSpec& spec)
     {
-        std::wstring normalizedPath = (objType == SE_FILE_OBJECT)
-            ? NormalizeFsPath(path)
-            : path;
+        std::wstring normalizedPath = (spec.objType == SE_FILE_OBJECT)
+            ? NormalizeFsPath(spec.path)
+            : spec.path;
 
         // P1: Registry paths containing '|' would produce malformed grant records
         // (TYPE|PATH|SID splits fail). Fail closed: skip the record so stale
         // cleanup doesn't silently leave an ACE behind.
-        if (objType == SE_REGISTRY_KEY && normalizedPath.find(L'|') != std::wstring::npos) {
+        if (spec.objType == SE_REGISTRY_KEY && normalizedPath.find(L'|') != std::wstring::npos) {
             g_logger.LogFmt(L"GRANT_RECORD: REJECTED registry path containing pipe: %ls", normalizedPath.c_str());
             MarkGrantTrackingFailure(L"registry path contains pipe", normalizedPath);
-            return;
+            return false;
         }
+
+        const std::wstring data = FormatGrantRecord(spec, normalizedPath);
+        bool persisted = true;
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
@@ -595,62 +647,66 @@ namespace Sandbox {
                 RegQueryValueExW(hKey, L"_nextIdx", nullptr, nullptr,
                                  reinterpret_cast<BYTE*>(&nextIdx), &idxSize);
 
-                // Format: TYPE|PATH|SID  or  TYPE|PATH|SID|DENY:1|TRAPPED:sid1;sid2
-                std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-                std::wstring data = typeStr + L"|" + normalizedPath + L"|" + sidString;
-                // Persist deny flag explicitly
-                if (isDeny) {
-                    data += L"|DENY:1";
-                }
-                if (!trappedSids.empty()) {
-                    data += L"|TRAPPED:" + trappedSids;
-                }
-                if (isThis) {
-                    data += L"|THIS:1";
-                }
-
                 wchar_t valueName[32];
                 swprintf(valueName, 32, L"%lu", nextIdx);
                 if (RegSetValueExW(hKey, valueName, 0, REG_SZ,
                                    reinterpret_cast<const BYTE*>(data.c_str()),
-                                   static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
+                                   static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS) {
                     MarkGrantTrackingFailure(L"persist grant record", regKey);
+                    persisted = false;
+                }
 
                 // Increment counter
                 nextIdx++;
                 if (RegSetValueExW(hKey, L"_nextIdx", 0, REG_DWORD,
-                                   reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx)) != ERROR_SUCCESS)
+                                   reinterpret_cast<const BYTE*>(&nextIdx), sizeof(nextIdx)) != ERROR_SUCCESS) {
                     MarkGrantTrackingFailure(L"persist _nextIdx", regKey);
+                    persisted = false;
+                }
 
                 g_logger.Log((L"REG_PERSIST: [" + std::to_wstring(nextIdx - 1) + L"] " + data).c_str());
                 RegCloseKey(hKey);
             } else {
                 MarkGrantTrackingFailure(L"open grants key", regKey);
+                persisted = false;
             }
         }
 
         // --- Save to in-memory list ---
-        ACLGrant grant = { normalizedPath, objType, sidString, trappedSids, isDeny, isThis };
+        ACLGrant grant = { normalizedPath, spec.objType, spec.sidString, spec.objectOnly, spec.ownerAce };
         g_aclGrants.push_back(std::move(grant));
 
         // --- Incremental staging profile write (crash-safe profile creation) ---
         if (g_stagingProfileKey) {
-            std::wstring typeStr = (objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
-            std::wstring data = typeStr + L"|" + normalizedPath + L"|" + sidString;
-            if (isDeny) data += L"|DENY:1";
-            if (!trappedSids.empty()) data += L"|TRAPPED:" + trappedSids;
-            if (isThis) data += L"|THIS:1";
-
             wchar_t valName[32];
             swprintf(valName, 32, L"%lu", g_stagingGrantIdx);
             if (RegSetValueExW(g_stagingProfileKey, valName, 0, REG_SZ,
                                reinterpret_cast<const BYTE*>(data.c_str()),
-                               static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS)
+                               static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS) {
                 MarkGrantTrackingFailure(L"persist staging grant");
+                persisted = false;
+            }
             g_stagingGrantIdx++;
         }
 
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
+        return persisted;
+    }
+
+    // -----------------------------------------------------------------------
+    // PersistDesktopGrantIntent — record, before the ACEs are written, that
+    // this run puts ACEs for `sidString` on the window station and desktop.
+    // Stale recovery reads `_desktop_sid` and removes them after a kill.
+    // -----------------------------------------------------------------------
+    inline bool PersistDesktopGrantIntent(const std::wstring& sidString)
+    {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, GetGrantsRegKey().c_str(), 0,
+                          KEY_SET_VALUE, &hKey) != ERROR_SUCCESS)
+            return false;
+        bool ok = TryWriteRegSz(hKey, L"_desktop_sid", sidString);
+        RegCloseKey(hKey);
+        return ok;
     }
 
     // -----------------------------------------------------------------------
@@ -942,6 +998,38 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // GrantCleanupTarget — the recorded DACL writes of one owner, merged to
+    // one entry per object.  The child walk is skipped only when no record
+    // of the object placed an inheritable ACE.
+    // -----------------------------------------------------------------------
+    struct GrantCleanupTarget {
+        std::wstring   path;
+        SE_OBJECT_TYPE objType = SE_FILE_OBJECT;
+        std::wstring   sidString;
+        bool           skipTreeSet = true;
+        OwnerAce       ownerAce = OwnerAce::None;
+    };
+
+    inline void AddGrantCleanupTarget(std::vector<GrantCleanupTarget>& plan,
+                                      const std::wstring& path,
+                                      SE_OBJECT_TYPE objType,
+                                      const std::wstring& sidString,
+                                      bool objectOnly,
+                                      OwnerAce ownerAce)
+    {
+        for (auto& target : plan) {
+            if (target.objType != objType || target.sidString != sidString ||
+                _wcsicmp(target.path.c_str(), path.c_str()) != 0)
+                continue;
+            target.skipTreeSet = target.skipTreeSet && objectOnly;
+            if (ownerAce != OwnerAce::None && target.ownerAce != OwnerAce::Inherit)
+                target.ownerAce = ownerAce;
+            return;
+        }
+        plan.push_back({ path, objType, sidString, objectOnly, ownerAce });
+    }
+
+    // -----------------------------------------------------------------------
     // RevokeAllGrants — remove all ACEs we added, using SID-based removal.
     // Multi-instance safe: both AC and RT SIDs are unique per instance,
     // so removing ACEs by SID cannot interfere with other instances.
@@ -961,46 +1049,14 @@ namespace Sandbox {
 
         AcquireSRWLockExclusive(&g_aclGrantsLock);
 
-        // Pre-scan: detect paths that have at least one deep (non-this) entry.
-        // When a path has both allow.deep and allow.this entries, cleanup must
-        // use SetNamedSecurityInfoW (skipTreeSet=false) so inherited copies of
-        // the deep ACE are removed from children via auto-inheritance.
-        std::set<std::wstring> pathsNeedingTreeSet;
-        // Deep deny paths — a this-scope allow under one of these is a
-        // carve-out.  Its children carry ACE copies stamped through the carve
-        // dir before the strip made it PROTECTED, and the deny root's own
-        // tree-set prunes at that protection boundary.  Cleanup of the carve
-        // must therefore tree-set so auto-inheritance recomputes the children
-        // and prunes the orphaned inherited copies.
-        std::vector<std::wstring> deepDenyPaths;
-        for (const auto& g : g_aclGrants) {
-            if (!g.wasThis) {
-                std::wstring key = g.path + L"|" + (g.wasDenied ? L"D" : L"A");
-                pathsNeedingTreeSet.insert(key);
-                if (g.wasDenied)
-                    deepDenyPaths.push_back(g.path);
-            }
-        }
+        std::vector<GrantCleanupTarget> plan;
+        for (const auto& g : g_aclGrants)
+            AddGrantCleanupTarget(plan, g.path, g.objType, g.sidString, g.wasThis, g.ownerAce);
 
-        // Deduplicate: same path may appear for allow + deny
-        std::set<std::wstring> processed;
         int removed = 0;
-        for (auto it = g_aclGrants.rbegin(); it != g_aclGrants.rend(); ++it) {
-            std::wstring dedupKey = it->path + L"|" + (it->wasDenied ? L"D" : L"A");
-            if (processed.count(dedupKey)) continue;
-            processed.insert(dedupKey);
-
-            // skipTreeSet=true only when ALL entries for this key are this-scope
-            // AND the path is not a carve-out under a deep deny.
-            // If any entry is deep, must use SetNamedSecurityInfoW to cascade.
-            bool isCarveOut = !it->wasDenied && IsPathStrictlyUnderAny(it->path, deepDenyPaths);
-            bool skipTree = it->wasThis && !pathsNeedingTreeSet.count(dedupKey) && !isCarveOut;
-            int n = RemoveSidFromDacl(it->path, it->sidString, it->objType,
-                                   it->wasDenied ? DaclProtectionIntent::ForceUnprotected
-                                                 : DaclProtectionIntent::PreserveExisting,
-                                   skipTree);
-            removed += n;
-        }
+        for (auto it = plan.rbegin(); it != plan.rend(); ++it)
+            removed += RemoveSidFromDacl(it->path, it->sidString, it->objType,
+                                         it->skipTreeSet, it->ownerAce);
         g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed", removed);
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);
@@ -1031,26 +1087,7 @@ namespace Sandbox {
         RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
                          &valueCount, nullptr, nullptr, nullptr, nullptr);
 
-        // Pre-scan: detect paths that have deep (non-this) entries.
-        // Same fix as RevokeAllGrants: dual-scope paths must use tree-set.
-        // Deep deny paths are collected so this-scope carve-outs under a deny
-        // also tree-set (children carry stamped copies pruned only via
-        // auto-inheritance recompute — see RevokeAllGrants).
-        std::set<std::wstring> deepPaths;
-        std::vector<std::wstring> deepDenyPaths;
-        for (DWORD pre = 0; pre < valueCount; pre++) {
-            std::wstring pvname, pdata;
-            if (!ReadRegSzEnum(hKey, pre, pvname, pdata)) continue;
-            GrantRecord pr;
-            if (!ParseGrantRecord(pdata, pr, nullptr)) continue;
-            if (!pr.wasThis) {
-                deepPaths.insert(pr.path + L"|" + (pr.wasDenied ? L"D" : L"A"));
-                if (pr.wasDenied)
-                    deepDenyPaths.push_back(pr.path);
-            }
-        }
-
-        std::set<std::wstring> processed;
+        std::vector<GrantCleanupTarget> plan;
         for (DWORD vi = 0; vi < valueCount; vi++) {
             std::wstring vname, data;
             if (!ReadRegSzEnum(hKey, vi, vname, data)) continue;
@@ -1063,30 +1100,26 @@ namespace Sandbox {
                 continue;
             }
 
-            // Composite dedup key: path + deny/allow type
-            std::wstring dedupKey = rec.path + L"|" + (rec.wasDenied ? L"D" : L"A");
-            if (processed.count(dedupKey)) continue;
-            processed.insert(dedupKey);
-
             SE_OBJECT_TYPE objType = (rec.type == L"REG") ? SE_REGISTRY_KEY : SE_FILE_OBJECT;
+            AddGrantCleanupTarget(plan, rec.path, objType, rec.sidString, rec.wasThis, rec.ownerAce);
+        }
 
-            bool isCarveOut = !rec.wasDenied && IsPathStrictlyUnderAny(rec.path, deepDenyPaths);
-            bool skipTree = rec.wasThis && !deepPaths.count(dedupKey) && !isCarveOut;
-            AceRemovalResult removal = RemoveSidFromDaclDetailed(rec.path, rec.sidString, objType,
-                                                                 rec.wasDenied ? DaclProtectionIntent::ForceUnprotected
-                                                                               : DaclProtectionIntent::PreserveExisting,
-                                                                 skipTree);
+        for (const auto& target : plan) {
+            const wchar_t* type = (target.objType == SE_REGISTRY_KEY) ? L"REG" : L"FILE";
+            AceRemovalResult removal = RemoveSidFromDaclDetailed(target.path, target.sidString,
+                                                                 target.objType,
+                                                                 target.skipTreeSet, target.ownerAce);
             if (removal.removed > 0) {
-                printf("  [ACL]  restored %ls %ls\n", rec.type.c_str(), rec.path.c_str());
+                RecoveryPrintf("  [ACL]  restored %ls %ls\n", type, target.path.c_str());
                 continue;
             }
             if (!removal.Succeeded()) {
                 allOk = false;
                 g_logger.LogFmt(L"ACL_RESTORE: %s %s -> FAILED (0x%08X)",
-                                rec.type.c_str(), rec.path.c_str(), removal.error);
+                                type, target.path.c_str(), removal.error);
             } else if (removal.targetMissing) {
                 g_logger.LogFmt(L"ACL_RESTORE: %s %s -> target already absent",
-                                rec.type.c_str(), rec.path.c_str());
+                                type, target.path.c_str());
             }
         }
         return allOk;
@@ -1136,8 +1169,8 @@ namespace Sandbox {
                     if (e.profileMode || isSavedContainer) {
                         g_logger.LogFmt(L"PROFILE_SKIP: %ls (saved profile container, not deleting)",
                                         e.container.c_str());
-                        printf("  [PROFILE] %ls -> skipped (saved profile)\n",
-                               e.container.c_str());
+                        RecoveryPrintf("  [PROFILE] %ls -> skipped (saved profile)\n",
+                                       e.container.c_str());
                     } else {
                         bool containerDeleted = DeleteTransientContainerNow(e.container, L"STALE_RECOVERY");
                         if (!containerDeleted) {
@@ -1146,10 +1179,17 @@ namespace Sandbox {
                                 g_logger.LogFmt(L"STALE_PRESERVE: %ls container retry persistence failed, keeping grant metadata",
                                                 e.instanceId.c_str());
                         }
-                        printf("  [PROFILE] %ls -> %s\n", e.container.c_str(),
-                               containerDeleted ? "deleted" : (containerRetryReady ? "deferred for retry" : "FAILED"));
+                        RecoveryPrintf("  [PROFILE] %ls -> %s\n", e.container.c_str(),
+                                       containerDeleted ? "deleted" : (containerRetryReady ? "deferred for retry" : "FAILED"));
                     }
                 }
+                // Desktop/WinSta ACEs of a killed restricted run.  Best
+                // effort: they live on the window objects of the session
+                // that run used, and they end with that session.
+                std::wstring desktopSid = ReadRegSz(hKey, L"_desktop_sid");
+                if (!desktopSid.empty() && !RevokeDesktopAccessForSid(desktopSid))
+                    g_logger.LogFmt(L"STALE_RECOVERY: desktop ACE removal incomplete for %ls",
+                                    desktopSid.c_str());
                 bool grantsRestored = RestoreGrantsFromKey(hKey);
                 RegCloseKey(hKey);
 
@@ -1160,8 +1200,8 @@ namespace Sandbox {
                     if (!containerRetryReady)
                         g_logger.LogFmt(L"STALE_PRESERVE: %ls transient container retry metadata incomplete, keeping grant metadata",
                                         e.instanceId.c_str());
-                    printf("  [GRANTS] instance %ls (PID %lu) -> metadata preserved for retry\n",
-                           e.instanceId.c_str(), (unsigned long)e.pid);
+                    RecoveryPrintf("  [GRANTS] instance %ls (PID %lu) -> metadata preserved for retry\n",
+                                   e.instanceId.c_str(), (unsigned long)e.pid);
                     continue;
                 }
             }
@@ -1171,8 +1211,8 @@ namespace Sandbox {
                 delResult != ERROR_PATH_NOT_FOUND)
                 g_logger.LogFmt(L"REG_DELETE_FAIL: %ls -> error %lu", fullKey.c_str(), delResult);
             g_logger.Log((L"REG_DELETE: " + fullKey).c_str());
-            printf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
-                   e.instanceId.c_str(), (unsigned long)e.pid);
+            RecoveryPrintf("  [GRANTS] instance %ls (PID %lu) -> cleaned\n",
+                           e.instanceId.c_str(), (unsigned long)e.pid);
         }
     }
 

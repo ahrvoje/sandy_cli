@@ -4,17 +4,20 @@ setlocal EnableDelayedExpansion
 REM ===================================================================
 REM Collusion4 — 4-Actor Multi-Instance Stress Test
 REM
-REM Four AppContainer instances share ALL on hub/ with unique denies:
-REM   Alpha: deny vault/      (exits 1st)
-REM   Beta:  deny logs/       (exits 2nd)
-REM   Gamma: deny drop/       (exits 3rd)
-REM   Delta: deny quarantine/ (exits 4th)
+REM Four AppContainer instances hold ALL on hub/ at the same time.
+REM Each has one home folder, and they exit one after the other:
+REM   Alpha: home vault/      (exits 1st)
+REM   Beta:  home logs/       (exits 2nd)
+REM   Gamma: home drop/       (exits 3rd)
+REM   Delta: home quarantine/ (exits 4th)
 REM
-REM Verifies each actor's deny survives all predecessors' cleanup.
+REM Verifies that each actor keeps its access to every folder of hub/
+REM through the cleanup of each earlier exit, and that every DACL is
+REM back to its original state when all four have exited.
 REM ===================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_collude4
 set HUB=%ROOT%\hub
 set PASS=0
@@ -22,8 +25,8 @@ set FAIL=0
 
 echo =====================================================================
 echo  Collusion4 Test Suite -- 4-Actor Multi-Instance Stress Test
-echo  Alpha (deny vault) + Beta (deny logs) +
-echo  Gamma (deny drop)  + Delta (deny quarantine)
+echo  Alpha, Beta, Gamma, Delta: ALL on hub/, staggered exits
+echo  Each grant must survive the cleanup of the earlier exits
 echo =====================================================================
 
 REM === Pre-clean ===
@@ -64,6 +67,11 @@ for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\vault'
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\logs').Sddl" 2^>nul') do set "PRE_LOGS=%%S"
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\drop').Sddl" 2^>nul') do set "PRE_DROP=%%S"
 for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\quarantine').Sddl" 2^>nul') do set "PRE_QUAR=%%S"
+REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
+for %%V in (PRE_HUB PRE_VAULT PRE_LOGS PRE_DROP PRE_QUAR) do if not defined %%V (
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    exit /b 1
+)
 echo   hub/:        %PRE_HUB:~0,50%...
 echo   vault/:      %PRE_VAULT:~0,50%...
 echo   logs/:       %PRE_LOGS:~0,50%...
@@ -82,7 +90,7 @@ ping -n 4 127.0.0.1 >nul
 start /b "" "!SANDY!" -c "%~dp0test_collude4_delta.toml" -x "!PYTHON!" "!ROOT!\scripts\probe.py" delta > "%TEMP%\collude4_delta.txt" 2>&1
 
 echo === Waiting for all 4 actors to finish (max 180s) ===
-echo   (Exit order: Alpha -^> Beta -^> Gamma -^> Delta with 5s cleanup gaps)
+echo   (Exit order: Alpha -^> Beta -^> Gamma -^> Delta; each waits for the cleanup of the one before)
 
 set ALL_DONE=0
 for /l %%W in (1,1,180) do (
@@ -102,7 +110,16 @@ if !ALL_DONE! EQU 0 (
 ) else (
     echo   [OK] All 4 actors finished. Waiting for Sandy cleanup...
 )
-ping -n 10 127.0.0.1 >nul
+REM The probes are done, but each Sandy instance still has to revoke its grants.
+REM Wait for the instances of THIS test (found by their command line), not for
+REM a fixed time: a revoke on a large tree has no fixed duration.
+set "LIVE=1"
+for /l %%W in (1,1,60) do if "!LIVE!"=="1" (
+    set "LIVE=0"
+    for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*test_collude4*' }).Count"') do if %%N GTR 0 set "LIVE=1"
+    if "!LIVE!"=="1" ping -n 2 127.0.0.1 >nul
+)
+if "!LIVE!"=="1" echo   [WARN] A Sandy instance of this test is still running after the wait
 
 REM === Print outputs ===
 for %%A in (alpha beta gamma delta) do (
@@ -138,7 +155,7 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM Check no grant registry entries remain
-reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\" >nul 2>nul
+reg query "HKCU\Software\Sandy\Grants" /s 2>nul | findstr /C:"HKEY_CURRENT_USER\Software\Sandy\Grants\\" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No grant registry entries remain
     set /a PASS+=1
@@ -208,6 +225,7 @@ echo  Cleanup: !PASS! passed, !FAIL! failed
 echo =====================================================================
 
 del "%TEMP%\collude4_*.txt" 2>nul
+if exist "!ROOT!" rmdir /s /q "!ROOT!"
 
 if !FAIL! NEQ 0 exit /b 1
 exit /b 0

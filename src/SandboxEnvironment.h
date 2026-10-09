@@ -260,8 +260,8 @@ namespace Sandbox {
     {
         if (IsRestrictedTokenMode(config.tokenMode) && config.strict)
             fprintf(stderr, "Strict:     YES (user SID excluded from restricting list)\n");
-        if (IsRestrictedTokenMode(config.tokenMode))
-            fprintf(stderr, "Named Pipes: %s\n", config.allowNamedPipes ? "ALLOWED" : "BLOCKED");
+        if (IsRestrictedTokenMode(config.tokenMode) && !config.allowDesktop)
+            fprintf(stderr, "Desktop:    ISOLATED (job UI limits)\n");
 
         fprintf(stderr, "Network:    %s\n", NetworkSummaryLabel(config));
 

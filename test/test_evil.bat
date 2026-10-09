@@ -21,7 +21,7 @@ REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_evil_config.toml
-set PYTHON=C:\Users\H\AppData\Local\Programs\Python\Python314\python.exe
+set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set ROOT=%USERPROFILE%\test_evil
 set PASS=0
 set FAIL=0
@@ -79,7 +79,7 @@ echo.
 
 REM Check no AppContainer SIDs on arena/
 set SC=0
-for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^|findstr /c:"Grants\\" ^| find /c /v ""') do set SC=%%N
+for /f %%N in ('icacls "%ROOT%\arena" /t 2^>nul ^| findstr /c:"S-1-15-2-" ^| find /c /v ""') do set SC=%%N
 if !SC! EQU 0 (
     echo   [PASS] No AppContainer SIDs on arena/ tree
     set /a PASS+=1

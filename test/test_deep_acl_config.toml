@@ -25,9 +25,9 @@
 token = 'appcontainer'
 
 [allow.deep]
-execute = ['C:\Users\H\AppData\Local\Programs\Python\Python314', 'C:\Users\H\test_deep\scripts\common']
-read = ['C:\Users\H\test_deep\scripts\test_deep_acl.py', 'C:\Users\H\test_deep\scripts\common', 'C:\Users\H\test_deep\app\src\core', 'C:\Users\H\test_deep\library\stable']
-all = ['C:\Users\H\test_deep\app\docs\public']
+execute = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_deep\scripts\common']
+read = ['%USERPROFILE%\test_deep\scripts\test_deep_acl.py', '%USERPROFILE%\test_deep\scripts\common', '%USERPROFILE%\test_deep\app\src\core', '%USERPROFILE%\test_deep\library\stable']
+all = ['%USERPROFILE%\test_deep\app\docs\public']
 
 [environment]
 inherit = true
