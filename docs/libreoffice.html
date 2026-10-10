@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Provide LibreOffice to AI agents with an unrestricted Python launcher, a Sandy LPAC sandbox, and a dedicated scratch folder.">
+  <title>Sandy — LibreOffice for AI agents</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root { --bg:#fdf6e3; --text:#334155; --muted:#475569; --line:#e5e0c8; --blue:#0284c7; --purple:#7c3aed; }
+    html { scroll-padding-top:80px; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.75 Inter,system-ui,sans-serif; }
+    a { color:var(--blue); text-underline-offset:3px; }
+    .container { max-width:1040px; margin:auto; padding:0 24px; }
+    nav { position:sticky; top:0; z-index:2; background:#fdf6e3f5; border-bottom:1px solid var(--line); }
+    nav .container { display:flex; align-items:center; gap:28px; min-height:56px; }
+    nav strong { font-size:1.1rem; } nav a { text-decoration:none; color:var(--muted); white-space:nowrap; }
+    .nav-links { display:flex; gap:22px; overflow-x:auto; font-size:.88rem; }
+    header { padding:56px 0 28px; } h1 { font-size:clamp(2.2rem,5vw,3.6rem); line-height:1.15; letter-spacing:-.04em; margin:18px 0; }
+    h1 span { color:var(--blue); } h2 { font-size:1.75rem; letter-spacing:-.025em; margin:0 0 16px; }
+    p { margin:12px 0; } .lead { font-size:1.15rem; max-width:760px; color:var(--muted); }
+    .badge { display:inline-block; color:#047857; background:#05966914; border:1px solid #05966940; border-radius:99px; padding:3px 12px; font-size:.8rem; font-weight:650; }
+    .toc { display:flex; gap:10px; flex-wrap:wrap; margin:26px 0; } .toc a { border:1px solid var(--line); padding:5px 12px; border-radius:8px; text-decoration:none; font-size:.9rem; }
+    section { padding:42px 0; border-top:1px solid var(--line); }
+    code,pre { font-family:'Cascadia Code',Consolas,monospace; font-size:.88em; } code { overflow-wrap:anywhere; color:#0369a1; }
+    pre { background:#eee8d5; border:1px solid var(--line); border-radius:12px; padding:20px; overflow:auto; line-height:1.7; } pre code { color:var(--text); overflow-wrap:normal; }
+    #config-example { white-space:pre-wrap; overflow-wrap:anywhere; }
+    .table-wrap { overflow-x:auto; } table { width:100%; border-collapse:collapse; font-size:.92rem; } th,td { text-align:left; vertical-align:top; padding:12px; border-bottom:1px solid var(--line); } th { background:#0284c709; }
+    .flow { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:18px; } .flow div { padding:20px; background:white; border:1px solid var(--line); border-radius:12px; }
+    footer { border-top:1px solid var(--line); padding:32px 0; color:var(--muted); font-size:.88rem; }
+    li { margin:8px 0; }
+    @media(max-width:650px) { .container { padding:0 18px; } nav .container { gap:18px; } .nav-links { gap:16px; } .flow { grid-template-columns:1fr; } .flow b { text-align:center; transform:rotate(90deg); } th,td { padding:9px; } }
+  </style>
+</head>
+<body>
+<nav aria-label="Main navigation"><div class="container">
+  <a href="index.html"><strong>Sandy</strong></a>
+  <div class="nav-links"><a href="examples.html">Examples</a><a href="config.html">Configuration</a><a href="usage.html">Usage</a></div>
+</div></nav>
+<main class="container">
+<header>
+  <span class="badge">Windows x64 · Python 3.11+ · No elevation</span>
+  <h1>LibreOffice for<br><span>AI agents.</span></h1>
+  <p class="lead">Give an agent a LibreOffice tool with a dedicated working folder. An unrestricted Python launcher prepares the environment; Sandy runs the document job in a Least Privileged AppContainer (LPAC).</p>
+  <div class="flow">
+    <div><strong>Unrestricted launcher</strong><br>Prepares scratch, initializes LibreOffice once, and writes the configuration.</div>
+    <b aria-label="then">→</b>
+    <div><strong>Restricted LibreOffice</strong><br>Processes the agent's documents with access to the selected runtime and data folders.</div>
+  </div>
+  <p>The restriction applies to the LibreOffice process. The launcher runs with your normal user permissions; any restrictions on the calling agent are managed separately.</p>
+  <div class="toc"><a href="#prepare">Prepare and launch</a><a href="#jobs">Agent jobs</a><a href="#scratch">Scratch folder</a><a href="#access">Access and cleanup</a><a href="#appendix">Appendix: full TOML</a></div>
+</header>
+
+<section id="prepare">
+  <h2>Prepare and launch</h2>
+  <p>Start with an existing <code>sandy.exe</code> that supports <code>[pipes]</code>, Python 3.11 or later, and an unpacked 64-bit LibreOffice folder. That folder must contain <code>program\soffice.bin</code>, <code>program\soffice.com</code>, and the rest of the application files.</p>
+  <p>Save the <a href="libreoffice-demo.py" download>Python launcher</a> and its <a href="libreoffice.toml" download>TOML template</a> together. The launcher uses only Python's standard library. In PowerShell, open their folder and set these paths to your own locations:</p>
+  <pre><code>$sandyExe = 'C:\AgentTools\sandy.exe'
+$libreOfficeRoot = 'C:\AgentTools\LibreOffice'
+$scratchRoot = 'C:\AgentWork\office-job'
+
+py -3 .\libreoffice-demo.py `
+    --sandy "$sandyExe" `
+    --libreoffice "$libreOfficeRoot" `
+    --scratch "$scratchRoot"</code></pre>
+  <p>Choose runtime and scratch folders whose access permissions you can manage as a normal user. Keep the runtime, launcher, template, and Sandy executable outside scratch's writable <code>profile</code>, <code>work</code>, and <code>temp</code> folders. Use a new scratch folder for the first launch; the launcher creates it.</p>
+  <ol>
+    <li>The launcher creates the data folders and sets the LibreOffice environment.</li>
+    <li>On the first launch, it initializes the profile outside LPAC using LibreOffice's normal launcher and a generated sample document. Agent documents and supplied arguments are used only in the sandboxed phase.</li>
+    <li>It writes a complete TOML file, including the named-pipe mapping, and uses Sandy to start <code>soffice.bin</code> inside LPAC.</li>
+  </ol>
+  <p>Writer opens <code>work\LPAC-demo.fodt</code>. Keep the terminal open and close Writer when finished. This completes the run and its cleanup. Replace <code>py -3</code> with your Python executable if needed.</p>
+</section>
+
+<section id="jobs">
+  <h2>Run an agent job</h2>
+  <p>Put approved input documents in <code>&lt;scratch&gt;\work</code>. Pass LibreOffice arguments after <code>--</code>. For example, after closing Writer, convert the sample document to PDF:</p>
+  <pre><code>py -3 .\libreoffice-demo.py `
+    --sandy "$sandyExe" `
+    --libreoffice "$libreOfficeRoot" `
+    --scratch "$scratchRoot" `
+    -- --headless --convert-to pdf LPAC-demo.fodt</code></pre>
+  <p>LibreOffice runs with <code>work</code> as its current directory, so both <code>LPAC-demo.fodt</code> and the resulting <code>LPAC-demo.pdf</code> are there. Replace the input name with the agent's document. Collect the output after the launcher exits.</p>
+  <p>Reuse scratch for sequential jobs that share a profile. Use a separate scratch folder for each independent or simultaneous job; the launcher prevents concurrent use of one profile. If you change the LibreOffice build or move the profile, use a new scratch folder.</p>
+  <p>The launcher supplies the profile location and environment. It passes the executable and application arguments through Sandy's <code>-x</code> switch, so they do not belong in TOML.</p>
+</section>
+
+<section id="scratch">
+  <h2>One place for application data</h2>
+  <pre><code>&lt;scratch&gt;\
+  profile\
+    user\                 LibreOffice settings and extension state
+    home\                 HOME and USERPROFILE
+    appdata\local\        LOCALAPPDATA
+    appdata\roaming\      APPDATA
+  work\                   approved input and output documents
+  temp\&lt;run ID&gt;\          TEMP and TMP; removed when the run ends
+  runs\&lt;run ID&gt;\
+    libreoffice.toml      complete configuration for this run
+    *.log                 launcher, LibreOffice, and Sandy logs
+    result.json           completed run details
+  initialized.json        records successful first initialization
+  last-run.json           current or most recent run details
+  .launcher.lock          prevents concurrent use of this scratch folder</code></pre>
+  <p>The launcher directs profile, home, AppData, and temporary paths into scratch. It sets variables for its child processes without changing the calling terminal or Windows environment settings. Windows resources and Sandy's own sandbox and recovery storage remain outside scratch.</p>
+</section>
+
+<section id="access">
+  <h2>Access and cleanup</h2>
+  <div class="table-wrap"><table><thead><tr><th>Resource</th><th>LibreOffice access</th></tr></thead><tbody>
+    <tr><td>Selected LibreOffice runtime</td><td>Read and execute; no write grant.</td></tr>
+    <tr><td>Profile, work, and this run's temporary folder</td><td>Read, write, and delete; no file execution grant.</td></tr>
+    <tr><td>Selected ancestor directories</td><td>Directory listing only, for path lookups. The launcher selects directories it can grant without elevation.</td></tr>
+    <tr><td>Run configurations, logs, and launcher control files</td><td>No file-content grant.</td></tr>
+    <tr><td>Windows registry and COM</td><td>Registry-read and COM capabilities, needed for startup. No registry-write grant.</td></tr>
+    <tr><td>Network, LAN, clipboard, and child processes</td><td>Disabled.</td></tr>
+  </tbody></table></div>
+  <p><strong>Named pipes:</strong> LibreOffice requests a pipe outside <code>LOCAL</code>. The launcher calculates its exact name from the Windows user and LibreOffice profile, then writes an explicit <code>[pipes]</code> rule. Sandy intercepts that name and substitutes a <code>\\.\pipe\LOCAL\…</code> name in the sandbox's private pipe namespace. The application files stay unchanged.</p>
+  <p>LPAC also permits Windows resources and resources already allowed by its baseline permissions or selected capabilities. The folder grants above describe the additional application access; they are not a claim that every object outside scratch is inaccessible.</p>
+  <p>When LibreOffice exits, Sandy removes its temporary sandbox identity, access grants, and pipe hook. The Python launcher then removes that run's temporary folder. Profile settings, working documents, configurations, and logs remain. Check <code>last-run.json</code> for the exit code and <code>temp_removed</code>; the Sandy log records sandbox cleanup.</p>
+  <p>After forced termination or power loss, temporary files can remain. Delete retained scratch data only when no process uses it and you no longer need its documents or settings.</p>
+  <p>This workflow was tested with LibreOffice 26.8.1.1 x64 for Writer and headless PDF export.</p>
+</section>
+
+<section id="appendix">
+  <h2>Appendix: a complete Sandy configuration</h2>
+  <p>The launcher writes a ready-to-use <code>runs\&lt;run ID&gt;\libreoffice.toml</code> for each run. Below is one fully filled example for the paths used above. Its Windows user SID and run ID are illustrative; the launcher supplies your actual values and selects the available ancestor directories.</p>
+  <p>The pipe name here matches the profile URL <code>file:///C:/AgentWork/office-job/profile</code>. Use the configuration generated for your run. Keep the accompanying launcher environment and <code>-env:UserInstallation</code> argument: TOML supplies the access rules and pipe mapping, not profile initialization or environment setup.</p>
+  <pre><code id="config-example">[sandbox]
+token = 'lpac'
+workdir = 'C:\AgentWork\office-job\work'
+
+[allow.deep]
+execute = ['C:\AgentTools\LibreOffice']
+read = [
+    'C:\AgentWork\office-job\profile',
+    'C:\AgentWork\office-job\work',
+    'C:\AgentWork\office-job\temp\0123456789abcdef0123456789abcdef',
+]
+write = [
+    'C:\AgentWork\office-job\profile',
+    'C:\AgentWork\office-job\work',
+    'C:\AgentWork\office-job\temp\0123456789abcdef0123456789abcdef',
+]
+delete = [
+    'C:\AgentWork\office-job\profile',
+    'C:\AgentWork\office-job\work',
+    'C:\AgentWork\office-job\temp\0123456789abcdef0123456789abcdef',
+]
+
+[allow.this]
+# List these directories only; do not grant access to their other contents.
+read = [
+    'C:\AgentTools',
+    'C:\AgentWork',
+    'C:\AgentWork\office-job',
+    'C:\AgentWork\office-job\temp',
+]
+# Traverse the working directory; do not grant execution to its files.
+execute = ['C:\AgentWork\office-job\work']
+
+[privileges]
+registry_read = true
+com = true
+child_processes = false
+network = false
+lan = false
+clipboard_read = false
+clipboard_write = false
+
+[environment]
+inherit = false
+pass = ['HOME', 'SAL_DISABLESKIA', 'SAL_DISABLE_OPENCL']
+
+[pipes]
+'\\.\pipe\OSL_PIPE_S-1-5-21-1111111111-2222222222-3333333333-1001_SingleOfficeIPC_cd509f78ff012726973a377ccc8c28a' = '\\.\pipe\LOCAL\OSL_PIPE_S-1-5-21-1111111111-2222222222-3333333333-1001_SingleOfficeIPC_cd509f78ff012726973a377ccc8c28a'
+</code></pre>
+</section>
+</main>
+<footer><div class="container"><a href="index.html">Sandy</a> · <a href="libreoffice-demo.py" download>Python launcher</a> · <a href="libreoffice.toml" download>Launcher template</a> · <a href="config.html#pipes">Named pipe configuration</a></div></footer>
+</body>
+</html>

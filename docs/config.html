@@ -241,6 +241,27 @@ token = <span class="code-string">'appcontainer'</span></pre>
       <p>The Windows kernel ignores <code>DENY_ACCESS</code> ACEs for AppContainer SIDs. Sandy rejects <code>[deny.*]</code> for AppContainer / LPAC mode at config validation time (exit 128). Use Restricted Token mode for deny rules.</p>
     </div>
 
+    <div class="section-header" id="pipes">
+      <h3><code>[pipes]</code> — Container-local pipe names</h3><span class="tag ac">AC / LPAC only</span>
+    </div>
+    <pre><code>[pipes]
+'\\.\pipe\my-app' = '\\.\pipe\LOCAL\my-app'</code></pre>
+    <p>Optional, empty by default. Map exact names, ignoring case, from <code>\\.\pipe\</code> or
+      <code>\\?\pipe\</code> paths to a non-empty <code>LOCAL\</code> name. No wildcards, environment
+      expansion or control characters. Limit: 256 characters per name, 256 pairs, and 32,766 characters
+      in the serialized map.</p>
+    <p>Sandy embeds a hook DLL and loads a separate copy for each run before the root app entry point.
+      It rewrites normal imports of <code>CreateNamedPipeW</code>, <code>CreateFileW</code>,
+      <code>WaitNamedPipeW</code> and <code>CallNamedPipeW</code> in modules loaded at that time.
+      The app and Sandy must have the same architecture. ANSI APIs, <code>GetProcAddress</code>,
+      delay imports, later DLL loads, initial DLL initialization calls, direct NT calls and spawned
+      child processes are not covered. This does not grant access to host pipes, create host aliases,
+      or add capabilities to LPAC.</p>
+    <p>Saved profiles retain the map. Each run owns its DLL; exit cleanup and stale recovery remove
+      it without removing profile grants. Loading or installation failure aborts launch with exit 129.
+      Run <code>test\test_pipe_hook.bat</code> after building to verify native echo IPC, token isolation,
+      the kernel pipe name and cleanup.</p>
+
     <!-- [privileges] -->
     <div class="section-header">
       <h3><code>[privileges]</code> — Sandbox capabilities</h3><span class="tag both">both (mode-gated keys)</span>
@@ -250,6 +271,8 @@ token = <span class="code-string">'appcontainer'</span></pre>
         <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
           <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
+          <tr><td>registry_read</td><td>bool</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td><td>Add Windows <code>registryRead</code>: read keys whose ACLs allow this capability. Broader than one key; no registry writes or host ACL changes.</td></tr>
+          <tr><td>com</td><td>bool</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td><td>Add Windows <code>lpacCom</code> for COM/OLE. Both LPAC options persist in saved profiles and are rejected in other modes even when false. See the <a href="libreoffice.html">LibreOffice guide</a>.</td></tr>
           <tr><td>lan</td><td>bool / string</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN + loopback. <code>false</code> · <code>'with localhost'</code> · <code>'without localhost'</code>.</td></tr>
           <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. <code>false</code> isolates through job-object UI limits: the sandbox cannot list or use windows of other processes. It does not hide the desktop object itself. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / absolute path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; absolute path=redirect from file</td></tr>
@@ -264,7 +287,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
     <div class="section-header">
       <h3><code>[registry]</code> — Registry key grants</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Not available in AppContainer / LPAC mode — AC uses a fixed private registry hive automatically. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Per-key grants are not available in AppContainer / LPAC mode. LPAC can opt into Windows' broader <code>registryRead</code> capability with <code>[privileges] registry_read = true</code>. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
@@ -337,8 +360,10 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>&ensp;workdir</td><td><code>'inherit'</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow.deep] / [allow.this]</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
+          <tr><td><a href="#pipes">[pipes]</a></td><td>empty</td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
           <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;registry_read / com</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;desktop</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;stdin</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>

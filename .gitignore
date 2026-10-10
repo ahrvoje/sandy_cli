@@ -2,3 +2,8 @@
 reviews/
 sandy/
 x64/
+test/pipe_hook_proof.json
+test/pipe_hook_external_proof.json
+test/libreoffice_lpac_proof.json
+test/libreoffice-work/
+test/__pycache__/

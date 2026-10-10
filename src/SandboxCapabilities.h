@@ -18,19 +18,21 @@ namespace Sandbox {
     // Caller must call FreeCapabilities() when done.
     // -----------------------------------------------------------------------
     struct CapabilityState {
-        SID_AND_ATTRIBUTES caps[2] = {};
+        SID_AND_ATTRIBUTES caps[4] = {};
         DWORD  capCount = 0;
         PSID   pNetSid = nullptr;
         PSID   pLanSid = nullptr;
+        PSID   pRegistrySid = nullptr;  // ConvertStringSidToSid: LocalFree
+        PSID   pComSid = nullptr;       // ConvertStringSidToSid: LocalFree
         bool   failed = false;  // P3: true if any requested capability allocation failed
     };
 
     // -----------------------------------------------------------------------
-    // BuildCapabilities — allocate network capability SIDs based on config.
+    // BuildCapabilities — allocate explicitly requested capability SIDs.
     //
-    // Inputs:  config — sandbox config with allowNetwork/lanMode flags
+    // Inputs:  config — network flags and opt-in LPAC capabilities
     // Returns: CapabilityState with allocated SIDs
-    // Verifiable: capCount matches expected network permissions;
+    // Verifiable: capCount matches requested capabilities;
     //             SIDs can be verified via ConvertSidToStringSidW
     //
     // NOTE: LanMode::WithLocalhost and LanMode::WithoutLocalhost both
@@ -95,6 +97,27 @@ namespace Sandbox {
             }
         }
 
+        // Windows named capabilities, as returned by DeriveCapabilitySidsFromName.
+        // Each opt-in adds one SID to this token; it does not edit host ACLs.
+        struct NamedCapability { bool enabled; const wchar_t* name; const wchar_t* sid; PSID* storage; };
+        const NamedCapability named[] = {
+            { config.allowRegistryRead, L"registryRead",
+              L"S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681", &state.pRegistrySid },
+            { config.allowCom, L"lpacCom",
+              L"S-1-15-3-1024-2405443489-874036122-4286035555-1823921565-1746547431-2453885448-3625952902-991631256", &state.pComSid },
+        };
+        for (const auto& cap : named) {
+            if (!cap.enabled) continue;
+            if (config.tokenMode == TokenMode::LPAC &&
+                ConvertStringSidToSidW(cap.sid, cap.storage)) {
+                state.caps[state.capCount++] = { *cap.storage, SE_GROUP_ENABLED };
+                g_logger.LogFmt(L"CAPABILITY: %s SID=%s", cap.name, cap.sid);
+            } else {
+                g_logger.LogFmt(L"CAPABILITY: %s allocation failed or mode is not LPAC", cap.name);
+                state.failed = true;
+            }
+        }
+
         return state;
     }
 
@@ -102,13 +125,15 @@ namespace Sandbox {
     // FreeCapabilities — release allocated capability SIDs.
     //
     // Inputs:  state — CapabilityState returned from BuildCapabilities
-    // Effect:  FreeSid on all allocated SIDs
+    // Effect:  FreeSid for built-in SIDs, LocalFree for string-derived SIDs
     // Verifiable: SID pointers become invalid after this call
     // -----------------------------------------------------------------------
     inline void FreeCapabilities(CapabilityState& state)
     {
         if (state.pNetSid) { FreeSid(state.pNetSid); state.pNetSid = nullptr; }
         if (state.pLanSid) { FreeSid(state.pLanSid); state.pLanSid = nullptr; }
+        if (state.pRegistrySid) { LocalFree(state.pRegistrySid); state.pRegistrySid = nullptr; }
+        if (state.pComSid) { LocalFree(state.pComSid); state.pComSid = nullptr; }
         state.capCount = 0;
     }
 

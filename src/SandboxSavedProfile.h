@@ -273,6 +273,10 @@ namespace Sandbox {
     //   _reg_write_0 ..      REG_SZ   registry path
     //   _env_pass_count      REG_DWORD  count
     //   _env_pass_0 ..       REG_SZ   variable name
+    //   _pipe_orig_count     REG_DWORD  count (appcontainer/lpac [pipes])
+    //   _pipe_orig_0 ..      REG_SZ   original pipe name
+    //   _pipe_local_count    REG_DWORD  count (matches _pipe_orig_count)
+    //   _pipe_local_0 ..     REG_SZ   container-local pipe name
     // -----------------------------------------------------------------------
     inline bool WriteConfigToRegistry(HKEY hKey, const SandboxConfig& cfg)
     {
@@ -289,6 +293,8 @@ namespace Sandbox {
 
         // --- Booleans (REG_DWORD 0/1) ---
         ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
+        ok &= TryWriteRegDword(hKey, L"_allow_registry_read", cfg.allowRegistryRead ? 1 : 0);
+        ok &= TryWriteRegDword(hKey, L"_allow_com", cfg.allowCom ? 1 : 0);
         ok &= TryWriteRegSz(hKey, L"_lan_mode", LanModeRegistryName(cfg.lanMode));
 
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
@@ -308,6 +314,20 @@ namespace Sandbox {
         ok &= WriteIndexedStringValues(hKey, L"_reg_read_count", L"_reg_read_", cfg.registryRead);
         ok &= WriteIndexedStringValues(hKey, L"_reg_write_count", L"_reg_write_", cfg.registryWrite);
         ok &= WriteIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", cfg.envPass);
+
+        // Pipe map: two parallel arrays — a named-pipe name may contain '|',
+        // so no single-string "a|b" encoding is safe.
+        {
+            std::vector<std::wstring> originals, locals;
+            originals.reserve(cfg.pipeMap.size());
+            locals.reserve(cfg.pipeMap.size());
+            for (const auto& entry : cfg.pipeMap) {
+                originals.push_back(entry.original);
+                locals.push_back(entry.local);
+            }
+            ok &= WriteIndexedStringValues(hKey, L"_pipe_orig_count", L"_pipe_orig_", originals);
+            ok &= WriteIndexedStringValues(hKey, L"_pipe_local_count", L"_pipe_local_", locals);
+        }
 
         return ok;
     }
@@ -391,6 +411,13 @@ namespace Sandbox {
         // Missing values previously defaulted to 1 (enabled), silently granting
         // permissions the user never configured.  Now fail closed.
         cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
+        // Missing in older profiles means no additional capability.
+        cfg.allowRegistryRead = ReadRegDword(hKey, L"_allow_registry_read") != 0;
+        cfg.allowCom = ReadRegDword(hKey, L"_allow_com") != 0;
+        if ((cfg.allowRegistryRead || cfg.allowCom) && cfg.tokenMode != TokenMode::LPAC) {
+            g_logger.Log(L"PROFILE_LOAD: registry_read/com require LPAC — rejecting profile");
+            cfg.parseError = true;
+        }
         std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
         if (!TryParseLanModeRegistryValue(lanModeStr, cfg.lanMode))
             cfg.lanMode = LanMode::Off;
@@ -441,6 +468,23 @@ namespace Sandbox {
             cfg.parseError = true;
         if (!ReadIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", L"environment pass", cfg.envPass))
             cfg.parseError = true;
+
+        {
+            std::vector<std::wstring> originals, locals;
+            if (!ReadIndexedStringValues(hKey, L"_pipe_orig_count", L"_pipe_orig_", L"pipe original", originals) ||
+                !ReadIndexedStringValues(hKey, L"_pipe_local_count", L"_pipe_local_", L"pipe local", locals)) {
+                cfg.parseError = true;
+            } else if (originals.size() != locals.size()) {
+                g_logger.Log(L"PROFILE_LOAD: pipe map original/local counts differ — rejecting profile");
+                cfg.parseError = true;
+            } else {
+                for (size_t i = 0; i < originals.size(); i++)
+                    cfg.pipeMap.push_back({ originals[i], locals[i] });
+            }
+            ValidatePipeMap(cfg.pipeMap, cfg.parseError);
+            if (IsRestrictedTokenMode(cfg.tokenMode) && !cfg.pipeMap.empty())
+                cfg.parseError = true;
+        }
 
         return cfg;
     }

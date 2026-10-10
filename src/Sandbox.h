@@ -16,6 +16,7 @@
 #include "SandboxCapabilities.h"
 #include "SandboxEnvironment.h"
 #include "SandboxProcess.h"
+#include "SandboxPipeHook.h"
 #include <atomic>
 
 
@@ -534,6 +535,8 @@ namespace Sandbox {
         std::vector<wchar_t>  envBlock;
         HANDLE                hStdin = nullptr;
         HANDLE                hStdinFile = nullptr;
+        bool                  pipeHookActive = false;  // inject the pipe-hook DLL before resume
+        std::wstring          hookDllPath;              // extracted DLL to inject
         const wchar_t*        failedStep = nullptr;  // set when PrepareLaunchState returns false
     };
 
@@ -542,6 +545,7 @@ namespace Sandbox {
         LaunchFailed,
         JobAssignmentFailed,
         WatchdogFailed,
+        InjectionFailed,
         Interrupted
     };
 
@@ -723,6 +727,42 @@ namespace Sandbox {
         return ok;
     }
 
+    // Extract and arm the pipe-hook DLL for an AppContainer/LPAC run that
+    // configured [pipes].  The DLL is written into the container's own profile
+    // folder, which the container can traverse and load from (under plain
+    // AppContainer and under LPAC alike) by virtue of the ACLs
+    // CreateAppContainerProfile set — so no extra grant is needed.  On success
+    // the child's environment carries the pipe map and `state` knows the DLL
+    // to inject before resume.
+    inline bool PreparePipeHook(const SandboxConfig& config,
+                                PSID pSid,
+                                LaunchPreparationState& state,
+                                std::wstring& extraEnv)
+    {
+        std::wstring sidStr = SidToStringOrEmpty(pSid);
+        state.hookDllPath = sidStr.empty() ? std::wstring() : PipeHookPath(sidStr, g_instanceId);
+        if (state.hookDllPath.empty()) {
+            g_logger.Log(L"PIPEHOOK: cannot resolve the container profile folder — aborting");
+            state.failedStep = L"pipe hook folder failure";
+            return false;
+        }
+
+        if (!PersistPipeHookPath(state.hookDllPath)) {
+            state.failedStep = L"pipe hook cleanup record failure";
+            return false;
+        }
+        if (!ExtractEmbeddedHookDll(state.hookDllPath)) {
+            state.failedStep = L"pipe hook extraction failure";
+            return false;
+        }
+        state.pipeHookActive = true;
+        extraEnv = std::wstring(SANDY_PIPEHOOK_ENV) + L"=" + SerializePipeMap(config.pipeMap);
+        g_logger.LogFmt(L"PIPEHOOK: armed for %zu pipe mapping(s)", config.pipeMap.size());
+        for (const auto& entry : config.pipeMap)
+            g_logger.LogFmt(L"PIPEHOOK: map %s -> %s", entry.original.c_str(), entry.local.c_str());
+        return true;
+    }
+
     inline bool PrepareLaunchState(const SandboxConfig& config,
                                    const std::wstring& exePath,
                                    const std::wstring& exeArgs,
@@ -763,7 +803,13 @@ namespace Sandbox {
         }
         guard.Add([&state]() { FreeAttributeList(state.attrs); });
 
-        state.envBlock = BuildEnvironmentBlock(config);
+        std::wstring extraEnv;
+        if (isAppContainer && !config.pipeMap.empty()) {
+            if (!PreparePipeHook(config, pSid, state, extraEnv))
+                return false;
+        }
+
+        state.envBlock = BuildEnvironmentBlock(config, extraEnv);
         LogEnvironmentState(config);
         if (!g_logger.IsActive())
             PrintConfigSummary(config, exePath, exeArgs);
@@ -888,6 +934,14 @@ namespace Sandbox {
         PublishChildHandles(child.pi.hProcess, child.hJob);
         if (ShutdownRequested()) {
             child.status = ChildStartStatus::Interrupted;
+            return;
+        }
+
+        // Keep the primary thread suspended until the pipe hooks are installed.
+        // Initial DLL/TLS initialization can run during remote loader startup.
+        if (prep.pipeHookActive &&
+            !InjectHookDll(child.pi.hProcess, child.pi.dwProcessId, prep.hookDllPath)) {
+            child.status = ChildStartStatus::InjectionFailed;
             return;
         }
 
@@ -1106,6 +1160,13 @@ namespace Sandbox {
                                          child.pi, child.hJob, SandyExit::SetupError,
                                          L"CLEANUP: complete (job assignment failure)",
                                          L"JOB_ASSIGN_FAILURE");
+        }
+        if (child.status == ChildStartStatus::InjectionFailed) {
+            g_logger.Log(L"ERROR: pipe-hook injection failed — aborting before app entry");
+            return AbortAfterChildLaunch(isAppContainer, identity, resolved.containerName, guard,
+                                         child.pi, child.hJob, SandyExit::SetupError,
+                                         L"CLEANUP: complete (pipe-hook injection failure)",
+                                         L"INJECTION_FAILURE");
         }
 
         // F4/R8: Fail closed — if timeout is configured but watchdog couldn't

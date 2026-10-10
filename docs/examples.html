@@ -141,6 +141,7 @@
       <a href="#ex-file-mangle">2. Python file-mangling</a>
       <a href="#ex-rt-minimal">3. Restricted Token minimal</a>
       <a href="#ex-claude">4. Claude Code (RT medium)</a>
+      <a href="libreoffice.html">LibreOffice Writer in LPAC</a>
     </div>
   </div>
 </section>
@@ -308,7 +309,7 @@ ROOT = pathlib.Path(<span class="code-string">"."</span>)          <span class="
     <div class="callout info" style="margin-top:20px;">
       <div class="callout-title">💡 Why Restricted Token medium?</div>
       <p>
-        Claude Code is an interactive CLI that spawns Node.js, Bun, and git — all of which use named pipes for IPC. AppContainer blocks named pipes entirely. A restricted token always has named pipes. Restricted Low would block writes to most of <code>%USERPROFILE%</code> due to Mandatory Integrity Control. Restricted Medium with explicit <code>[deny.deep]</code> on sensitive dirs gives Claude the process compat it needs while still hard-blocking credentials, other projects, and secrets at the kernel level.
+        Claude Code is an interactive CLI that spawns Node.js, Bun, and git, which use named pipes for IPC. AppContainer supports LOCAL pipes and an optional <a href="config.html#pipes">[pipes] mapping</a> for fixed names in the root app; spawned children are not intercepted. A restricted token supports general named-pipe use. Restricted Low would block writes to most of <code>%USERPROFILE%</code> due to Mandatory Integrity Control. Restricted Medium with explicit <code>[deny.deep]</code> on sensitive dirs gives Claude the process compat it needs while still hard-blocking credentials, other projects, and secrets at the kernel level.
       </p>
     </div>
 

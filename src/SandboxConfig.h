@@ -9,6 +9,8 @@
 
 #include "SandboxTypes.h"
 #include "TomlAdapter.h"
+#include "../pipehook/pipehook_protocol.h"
+#include <algorithm>
 #include <set>
 
 namespace Sandbox {
@@ -174,6 +176,39 @@ namespace Sandbox {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // ParsePipesSection — collect [pipes] interception pairs.
+    //
+    // Each key is the program's hard-coded pipe name (the "original"), each
+    // value is the container-local substitute.  Backslashes force quoted TOML
+    // keys, e.g.  '\\.\pipe\OSL_PIPE_x' = '\\.\pipe\LOCAL\sandy-lo'.
+    // Mode and format validity are checked by the callers listed above; this
+    // function only shapes the raw section into entries.
+    // -----------------------------------------------------------------------
+    inline void ParsePipesSection(const Toml::TomlDocument& doc,
+                                  std::vector<PipeMapEntry>& destination,
+                                  bool& parseError)
+    {
+        auto sit = doc.find(L"pipes");
+        if (sit == doc.end())
+            return;
+
+        for (const auto& [key, val] : sit->second) {
+            if (val.isArray) {
+                fprintf(stderr, "Error: '%ls' in [pipes] must be a single local pipe name, got array.\n",
+                        key.c_str());
+                parseError = true;
+                continue;
+            }
+            if (key.empty() || val.str.empty()) {
+                fprintf(stderr, "Error: [pipes] entries must be 'original' = 'local' with non-empty names.\n");
+                parseError = true;
+                continue;
+            }
+            destination.push_back({ key, val.str });
+        }
+    }
+
     inline bool RequireScalarValue(const Toml::TomlValue& val,
                                    const wchar_t* sectionName,
                                    const std::wstring& key,
@@ -289,6 +324,8 @@ namespace Sandbox {
     {
         static const std::map<std::wstring, bool SandboxConfig::*> kPrivilegeBoolKeys = {
             {L"network", &SandboxConfig::allowNetwork},
+            {L"registry_read", &SandboxConfig::allowRegistryRead},
+            {L"com", &SandboxConfig::allowCom},
             {L"desktop", &SandboxConfig::allowDesktop},
             {L"clipboard_read", &SandboxConfig::allowClipboardRead},
             {L"clipboard_write", &SandboxConfig::allowClipboardWrite},
@@ -369,6 +406,19 @@ namespace Sandbox {
     {
         return (path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
                (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\');
+    }
+
+    // A Win32 named-pipe path: '\\.\pipe\<name>' or '\\?\pipe\<name>', with a
+    // non-empty name after the prefix.  Comparison is case-insensitive because
+    // the named-pipe namespace is.
+    inline bool IsNamedPipePath(const std::wstring& name)
+    {
+        constexpr size_t kPrefixLen = 9;  // "\\.\pipe\"
+        if (name.size() <= kPrefixLen || name.size() > 256 ||
+            std::any_of(name.begin(), name.end(), [](wchar_t ch) { return ch < 32; }))
+            return false;
+        return _wcsnicmp(name.c_str(), L"\\\\.\\pipe\\", kPrefixLen) == 0 ||
+               _wcsnicmp(name.c_str(), L"\\\\?\\pipe\\", kPrefixLen) == 0;
     }
 
     inline ConfigPathValidationError GetConfiguredPathValidationError(const std::wstring& path,
@@ -460,6 +510,12 @@ namespace Sandbox {
         bool isAC = IsAppContainerFamilyTokenMode(config.tokenMode);
         bool isRT = IsRestrictedTokenMode(config.tokenMode);
 
+        if (config.tokenMode != TokenMode::LPAC &&
+            (privSeen.count(L"registry_read") || privSeen.count(L"com"))) {
+            fprintf(stderr, "Error: 'registry_read' and 'com' are available only in lpac mode.\n");
+            parseError = true;
+        }
+
         if (isRT) {
             if (privSeen.count(L"network")) {
                 fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");
@@ -471,6 +527,10 @@ namespace Sandbox {
             }
             if (!integritySeen) {
                 fprintf(stderr, "Error: 'integrity' is required in [sandbox] for restricted mode ('low' or 'medium').\n");
+                parseError = true;
+            }
+            if (!config.pipeMap.empty()) {
+                fprintf(stderr, "Error: [pipes] is not available in restricted mode (name interception is an appcontainer/lpac feature).\n");
                 parseError = true;
             }
         }
@@ -570,6 +630,42 @@ namespace Sandbox {
         }
     }
 
+    inline void ValidatePipeMap(const std::vector<PipeMapEntry>& pipes,
+                                bool& parseError)
+    {
+        if (pipes.size() > kMaxRulesPerSection) {
+            fprintf(stderr, "Error: [pipes] has %zu entries (max %zu). Reduce configuration complexity.\n",
+                    pipes.size(), kMaxRulesPerSection);
+            parseError = true;
+        }
+
+        std::set<std::wstring> seenOriginals;
+        size_t serializedSize = 0;
+        for (const auto& entry : pipes) {
+            serializedSize += entry.original.size() + entry.local.size() + 2;
+            if (!IsNamedPipePath(entry.original)) {
+                fprintf(stderr, "Error: [pipes] original '%ls' is not a named pipe. Use '\\\\.\\pipe\\<name>'.\n",
+                        entry.original.c_str());
+                parseError = true;
+            }
+            if (!IsNamedPipePath(entry.local) || entry.local.size() <= 15 ||
+                _wcsnicmp(entry.local.c_str() + 9, L"LOCAL\\", 6) != 0) {
+                fprintf(stderr, "Error: [pipes] local '%ls' must use '\\\\.\\pipe\\LOCAL\\<name>'.\n",
+                        entry.local.c_str());
+                parseError = true;
+            }
+            std::wstring key = NormalizeLookupKey(entry.original);
+            if (!seenOriginals.insert(key).second) {
+                fprintf(stderr, "Error: [pipes] maps the same original twice: %ls\n", entry.original.c_str());
+                parseError = true;
+            }
+        }
+        if (serializedSize > SANDY_PIPEHOOK_MAX_VALUE) {
+            fprintf(stderr, "Error: [pipes] map exceeds the Windows environment value limit.\n");
+            parseError = true;
+        }
+    }
+
     inline void ValidateConfigSanityLimits(const SandboxConfig& config,
                                            bool& parseError)
     {
@@ -623,7 +719,7 @@ namespace Sandbox {
                 name != L"sandbox" &&
                 name != L"allow.deep" && name != L"allow.this" &&
                 name != L"deny.deep" && name != L"deny.this" &&
-                name != L"privileges" &&
+                name != L"privileges" && name != L"pipes" &&
                 name != L"registry" && name != L"environment" && name != L"limit")
             {
                 fprintf(stderr, "Error: Unknown config section: [%ls]\n", name.c_str());
@@ -693,6 +789,8 @@ namespace Sandbox {
             fprintf(stderr, "Error: [deny] is no longer supported. Use [deny.deep] or [deny.this].\n");
             config.parseError = true;
         }
+
+        ParsePipesSection(doc, config.pipeMap, config.parseError);
 
         // --- [registry] ---
         {
@@ -845,6 +943,7 @@ namespace Sandbox {
             ValidateFolderEntryPaths(config.denyFolders, L"deny.*", config.parseError);
             ValidateRegistryPathPrefixes(config.registryRead, config.parseError);
             ValidateRegistryPathPrefixes(config.registryWrite, config.parseError);
+            ValidatePipeMap(config.pipeMap, config.parseError);
             ValidateConfigSanityLimits(config, config.parseError);
         }
 

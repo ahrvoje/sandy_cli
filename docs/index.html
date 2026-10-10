@@ -800,7 +800,8 @@ timeout = 30
           <li>Isolated object namespace — invisible to other processes</li>
           <li>Configurable network isolation (internet, LAN, localhost)</li>
           <li>LPAC mode opts out of App. Packages for stricter default access</li>
-          <li>Private registry hive — no host registry access</li>
+          <li>Container-local pipes; optional <a href="config.html#pipes">[pipes] mapping</a> for fixed names</li>
+          <li>Registry access follows Windows ACLs; LPAC offers opt-in <code>registry_read</code> and <code>com</code> capabilities</li>
           <li>Deny rules not supported (kernel ignores DENY ACEs for AC SIDs)</li>
         </ul>
       </div>
@@ -827,8 +828,8 @@ timeout = 30
     <div class="callout info" style="margin-top: 32px;">
       <div class="callout-title">💡 Choosing a mode</div>
       <p>
-        <strong>Use AppContainer / LPAC</strong> when you need network isolation and don't require named pipes or COM.<br>
-        <strong>Use Restricted Token</strong> when the sandboxed app needs named pipes, COM/RPC, or medium integrity
+        <strong>Use AppContainer / LPAC</strong> when you need network isolation. Fixed pipe names can use <a href="config.html#pipes">[pipes]</a> within its documented limits. LPAC supports opt-in COM/OLE through <code>com</code>; see the verified <a href="libreoffice.html">LibreOffice Writer guide</a>.<br>
+        <strong>Use Restricted Token</strong> when the sandboxed app needs general named-pipe support, COM/RPC, or medium integrity
         for broader compatibility.
       </p>
     </div>

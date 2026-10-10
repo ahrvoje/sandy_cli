@@ -75,7 +75,21 @@ inline void PrintResolvedConfig(const SandboxConfig& config)
     PrintFolderToml(L"deny.deep", config.denyFolders, GrantScope::Deep);
     PrintFolderToml(L"deny.this", config.denyFolders, GrantScope::This);
 
+    if (!config.pipeMap.empty()) {
+        printf("\n[pipes]\n");
+        for (const auto& entry : config.pipeMap) {
+            TomlQuotedValue(entry.original);
+            printf(" = ");
+            TomlQuotedValue(entry.local);
+            printf("\n");
+        }
+    }
+
     printf("\n[privileges]\n");
+    if (config.tokenMode == TokenMode::LPAC) {
+        printf("registry_read   = %ls\n", config.allowRegistryRead ? L"true" : L"false");
+        printf("com             = %ls\n", config.allowCom ? L"true" : L"false");
+    }
     if (!isRT) {
         printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
         printf("lan             = %ls\n", LanModeTomlDisplayValue(config.lanMode));

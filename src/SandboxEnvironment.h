@@ -136,21 +136,40 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // BuildEnvironmentBlock — create a filtered environment for the child.
     //
-    // Inputs:  config — sandbox config with envInherit flag and envPass list
+    // Inputs:  config   — sandbox config with envInherit flag and envPass list
+    //          extraVar — optional "NAME=VALUE" to add to the child's env; it
+    //                     is always delivered, even under inherit, so a caller
+    //                     can hand the child a value (e.g. the pipe map) it
+    //                     cannot rely on Sandy's own environment to carry.
     // Returns: serialized wchar_t environment block (empty = inherit all)
-    // Verifiable: block contains exactly essential + passed vars, sorted;
-    //             empty block when envInherit=true
+    // Verifiable: block contains exactly essential + passed vars + extraVar,
+    //             sorted; empty block only when envInherit and no extraVar
     // -----------------------------------------------------------------------
-    inline std::vector<wchar_t> BuildEnvironmentBlock(const SandboxConfig& config)
+    inline std::vector<wchar_t> BuildEnvironmentBlock(const SandboxConfig& config,
+                                                      const std::wstring& extraVar = L"")
     {
-        if (config.envInherit)
+        if (config.envInherit && extraVar.empty())
             return {};  // empty = pass nullptr to CreateProcessW (inherit all)
 
         EnvironmentSnapshot snapshot = CollectCurrentEnvironmentSnapshot();
-        std::vector<EnvironmentVariable> filteredVars =
-            FilterEnvironmentVars(snapshot.vars, config);
-        SortEnvironmentVarsForWindows(filteredVars);
-        return SerializeEnvironmentBlock(snapshot.hiddenVars, filteredVars);
+        std::vector<EnvironmentVariable> vars = config.envInherit
+            ? snapshot.vars
+            : FilterEnvironmentVars(snapshot.vars, config);
+
+        if (!extraVar.empty()) {
+            size_t eq = extraVar.find(L'=');
+            if (eq != std::wstring::npos && eq > 0) {
+                std::wstring name = extraVar.substr(0, eq);
+                vars.erase(std::remove_if(vars.begin(), vars.end(),
+                    [&](const EnvironmentVariable& var) {
+                        return _wcsicmp(var.first.c_str(), name.c_str()) == 0;
+                    }), vars.end());
+                vars.push_back({ name, extraVar.substr(eq + 1) });
+            }
+        }
+
+        SortEnvironmentVarsForWindows(vars);
+        return SerializeEnvironmentBlock(snapshot.hiddenVars, vars);
     }
 
     // -----------------------------------------------------------------------
@@ -264,6 +283,10 @@ namespace Sandbox {
             fprintf(stderr, "Desktop:    ISOLATED (job UI limits)\n");
 
         fprintf(stderr, "Network:    %s\n", NetworkSummaryLabel(config));
+        if (config.allowRegistryRead)
+            fprintf(stderr, "Registry:   Windows registryRead capability (read only)\n");
+        if (config.allowCom)
+            fprintf(stderr, "COM:        Windows lpacCom capability\n");
 
         if (const char* stdinLabel = StdinSummaryLabel(config.stdinMode))
             fprintf(stderr, "Stdin:      %s\n", stdinLabel);

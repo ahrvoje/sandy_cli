@@ -1,0 +1,5 @@
+# Check an already-running instance of the documented LibreOffice demo.
+[expected]
+capabilities = 2
+document = 'LPAC-demo.fodt'
+window_title = 'LibreOffice Writer'

@@ -78,6 +78,20 @@ namespace Sandbox {
         GrantScope   scope = GrantScope::Deep;
     };
 
+    // -----------------------------------------------------------------------
+    // Named-pipe interception pair ([pipes], AppContainer/LPAC only).
+    //
+    // A program may hard-code a named pipe whose global name an AppContainer
+    // or LPAC process cannot own.  `original` is the name the program asks
+    // for; `local` is the name Sandy's in-child hook substitutes — a name the
+    // container is allowed to create and open.  Both endpoints of the program
+    // (server and client) rewrite the same way, so they still rendezvous.
+    // -----------------------------------------------------------------------
+    struct PipeMapEntry {
+        std::wstring original;
+        std::wstring local;
+    };
+
     // Normalize filesystem paths to Sandy's canonical separator style.
     // This keeps config/profile input, grant persistence, overlap checks,
     // and stale cleanup operating on one consistent path representation.
@@ -358,8 +372,13 @@ namespace Sandbox {
         std::vector<FolderEntry> folders;
         std::vector<FolderEntry> denyFolders;  // [deny.*] — DENY ACEs
 
+        // [pipes] — named-pipe name interception (AppContainer/LPAC only)
+        std::vector<PipeMapEntry> pipeMap;
+
         // [privileges] — sandbox capabilities (optional, defaults shown)
         bool allowNetwork    = false;
+        bool allowRegistryRead = false;  // LPAC: Windows registryRead capability
+        bool allowCom = false;           // LPAC: Windows lpacCom capability
         LanMode lanMode      = LanMode::Off;
 
         // restricted mode: true = grant WinSta0 + Desktop access (default);
@@ -576,6 +595,12 @@ namespace Sandbox {
                          config.allowNetwork ? L"yes" : L"no");
                 fwprintf(logFile, L"[%s]     lan             = %ls\n", ts.c_str(),
                          LanModePhrase(config.lanMode));
+            }
+            if (config.tokenMode == TokenMode::LPAC) {
+                fwprintf(logFile, L"[%s]     registry_read   = %s\n", ts.c_str(),
+                         config.allowRegistryRead ? L"yes" : L"no");
+                fwprintf(logFile, L"[%s]     com             = %s\n", ts.c_str(),
+                         config.allowCom ? L"yes" : L"no");
             }
         }
 

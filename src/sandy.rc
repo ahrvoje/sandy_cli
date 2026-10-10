@@ -1,0 +1,7 @@
+#include "Resource.h"
+
+// The pipe-hook DLL is built first (project reference) and staged into the
+// resource-compiler include path as sandy_pipe_hook_payload.dll, then embedded
+// here so sandy.exe ships as a single file.  Sandy extracts and injects it at
+// run time for AppContainer/LPAC [pipes] interception.
+IDR_SANDY_PIPEHOOK RCDATA "sandy_pipe_hook_payload.dll"

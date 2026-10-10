@@ -1,0 +1,8 @@
+[sandbox]
+token = 'lpac'
+
+[allow.this]
+execute = ['%SANDY_PIPE_TEST_DIR%', '%SANDY_PIPE_TEST_DIR%\pipe_hook_app.exe']
+
+[limit]
+timeout = 15

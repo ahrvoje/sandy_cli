@@ -27,7 +27,7 @@ sandy.exe --explain 131                              # decode exit code
 
 ## What is Sandy?
 
-Sandy launches executables inside a kernel-enforced Windows sandbox — no elevation required. Three isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (App. Packages — the same technology used by UWP apps and Edge), **LPAC** (Restricted App. Packages — stricter AppContainer with explicit-grant-only access), and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
+Sandy launches executables inside a kernel-enforced Windows sandbox. Normal launches need no elevation; changing ACLs on protected host paths requires permission to those paths. Three isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (App. Packages — the same technology used by UWP apps and Edge), **LPAC** (Restricted App. Packages — stricter AppContainer that opts out of ALL APPLICATION PACKAGES), and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
 
 No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is lean, unprivileged sandboxing for agentic AI workflows, automation scripts, and tool-use pipelines: you define exactly which folders, files, and network access the process gets.
 
@@ -262,6 +262,53 @@ PIPELINE: sorted 3 entries by path depth:
 > [!TIP]
 > **Common pattern:** Deny `all` on a broad directory, then allow specific subdirectories. The rule on the nearest folder wins.
 
+### `[pipes]` — Container-local pipe names *(AppContainer / LPAC only)*
+
+Map an app's fixed Win32 pipe name to a `LOCAL` name without changing its executable:
+
+```toml
+[sandbox]
+token = 'lpac'
+
+[pipes]
+'\\.\pipe\my-app' = '\\.\pipe\LOCAL\my-app'
+```
+
+The mapping is optional and empty by default. Both names must be pipe paths
+(`\\.\pipe\` or `\\?\pipe\`); the destination must contain `LOCAL\` and a
+non-empty name. Matching ignores case but otherwise requires the exact name.
+Names have a 256-character limit and cannot contain control characters. At most
+256 pairs are allowed, within a 32,766-character serialized environment value.
+Wildcards and environment expansion in pipe names are not supported.
+
+Sandy embeds the hook DLL in `sandy.exe`, extracts a separate copy for each run,
+and loads it before the root app's entry point. It rewrites normal imports of
+`CreateNamedPipeW`, `CreateFileW`, `WaitNamedPipeW`, and `CallNamedPipeW` in modules
+loaded at that time. The app and Sandy must have the same architecture.
+ANSI APIs, `GetProcAddress`, delay imports, later DLL loads, calls from initial
+DLL initialization, direct NT calls, and spawned child processes are not covered.
+This is a compatibility feature; the Windows token and pipe access checks still apply.
+It does not grant access to an existing host pipe or create a host-side alias.
+
+Saved profiles retain the map. Each run owns its extracted DLL, and cleanup
+removes it without changing the profile's grants. Startup recovery retries file
+removal after a killed run. Loading or hook installation failure aborts launch
+with exit code 129. No extra capabilities are added to LPAC.
+
+After the documented solution build, run the native echo proof with 64-bit Python
+on `PATH` (or set `PYTHON` to its executable path):
+
+```bat
+test\test_pipe_hook.bat
+```
+
+The app requests a non-`LOCAL` name. The test checks normal success, LPAC rejection
+without a map (error 5), LPAC echo success with a map, all four intercepted APIs,
+the actual token and kernel pipe name, saved profiles, concurrent runs, crash
+recovery, and unchanged executable bytes and test-object DACLs. Evidence is saved
+to `test\pipe_hook_proof.json`. `--app C:\repos\ideas\lpac_named_pipe\build\pipe_app.exe`
+runs the external demo executable through the same host-client checks.
+
 ### `[privileges]` — Permissions
 
 All keys are optional with safe defaults (shown below). Wrong-mode keys are rejected.
@@ -289,11 +336,33 @@ child_processes = true    # default: true
 |-----|-------------|---------|-------------|
 | `network` | appcontainer / lpac | `false` | Outbound internet access |
 | `lan` | appcontainer / lpac | `false` | `false` • `'without localhost'` • `'with localhost'` — LAN and loopback control (see below) |
+| `registry_read` | lpac only | `false` | Add Windows `registryRead`: read keys whose ACLs permit this capability; no registry writes |
+| `com` | lpac only | `false` | Add Windows `lpacCom` for COM/OLE initialization |
 | `desktop` | restricted | `true` | `true` = grant WinSta0 + Desktop access for interactive use. `false` = job-object UI limits: the sandbox cannot list or use the windows of other processes |
 | `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or an absolute file path |
 | `clipboard_read` | all | `false` | Allow reading from the clipboard |
 | `clipboard_write` | all | `false` | Allow writing to the clipboard |
 | `child_processes` | all | `true` | Allow spawning child processes (kernel-enforced) |
+
+`registry_read` and `com` are explicit opt-ins, not part of the default LPAC
+token. Windows resource ACLs determine their access. `registry_read` is broader
+than granting one registry key. Neither flag changes host ACLs; both persist in
+saved profiles and are rejected outside LPAC, even when set to `false`.
+
+The [LibreOffice LPAC guide](docs/libreoffice.html) shows how to provide
+LibreOffice jobs to AI agents using an existing Sandy executable, an unpacked
+LibreOffice runtime, and a dedicated scratch folder. The unrestricted Python
+launcher initializes the profile once, generates an explicit `[pipes]` mapping,
+and runs the document job inside LPAC. Profile, home, AppData, documents,
+temporary data, configuration, and logs are directed into scratch. Sandy cleans
+up the sandbox; the launcher removes per-run temporary files and retains the
+profile, documents, and logs. The guide includes a complete generated TOML example.
+
+Save the linked launcher and template together, then run from their folder:
+
+```powershell
+py -3 .\libreoffice-demo.py --sandy "C:\AgentTools\sandy.exe" --libreoffice "C:\AgentTools\LibreOffice" --scratch "C:\AgentWork\office-job"
+```
 
 **`lan` key values:**
 
@@ -385,6 +454,8 @@ processes = 10      # max total active processes (default: 0)
 | **`[privileges]`** | 🔵 optional | 🔵 optional | 🔵 optional |
 | &ensp; `network` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
 | &ensp; `lan` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
+| &ensp; `registry_read` | 🔴 n/a | 🔵 default: `false` | 🔴 n/a |
+| &ensp; `com` | 🔴 n/a | 🔵 default: `false` | 🔴 n/a |
 | &ensp; `desktop` | 🔴 n/a | 🔴 n/a | 🔵 default: `true` |
 | &ensp; `stdin` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
 | &ensp; `clipboard_read` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
@@ -412,7 +483,7 @@ Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integr
 | **Elevation** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **Privilege stripping** | 🔒 All stripped | 🔒 All stripped | 🔒 All except SeChangeNotify | 🔒 All except SeChangeNotify |
 | **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
-| **Named pipes** | ❌ Blocked | ❌ Blocked | ✅ Allowed | ✅ Allowed |
+| **Named pipes** | `LOCAL`; optional `[pipes]` mapping | `LOCAL`; optional `[pipes]` mapping | ✅ Allowed | ✅ Allowed |
 | **Desktop access** | ✅ Inherited | ✅ Inherited | ⚙️ `desktop` | ⚙️ `desktop` |
 | **Network** | ⚙️ `network` `lan` | ⚙️ `network` `lan` | ✅ Allowed | ✅ Allowed |
 | **App. Packages access** | ✅ Included | ❌ Excluded ¹ | n/a | n/a |
@@ -420,11 +491,11 @@ Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integr
 | **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **User profile reads** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ✅ Allowed | ✅ Allowed |
 | **User profile writes** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` ² | ✅ Allowed |
-| **Registry reads** | ✅ Private hive | ✅ Private hive | ✅ Allowed | ✅ Allowed |
+| **Registry reads** | ACL-limited | ACL-limited; opt-in `registry_read` | ✅ Allowed | ✅ Allowed |
 | **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
 | **DLL/API set resolution** | ✅ Allowed | ⚠️ May break apps ³ | ⚠️ May break apps | ✅ Allowed |
-| **COM/RPC servers** | ❌ Blocked | ❌ Blocked | ✅ Allowed | ✅ Allowed |
+| **COM/RPC servers** | Restricted | Opt-in `com` (`lpacCom`); server policy still applies | ✅ Allowed | ✅ Allowed |
 | **Scheduled tasks** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Window messages (UIPI)** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
 | **Clipboard** | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` |
@@ -440,11 +511,11 @@ Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integr
 ² Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[allow.*]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
 ³ LPAC DLLs from system directories resolve normally (ARAP ACEs present). DLLs loaded from user-installed application paths may fail because those paths lack ARAP ACEs — the app needs explicit `[allow.*]` execute grants for those directories.
 
-**Use AppContainer** when you need network isolation with broad system-directory access and don't require named pipes or COM.
+**Use AppContainer** when you need network isolation with broad system-directory access and do not require COM. Fixed pipe names can use `[pipes]` within the limits above.
 
 **Use LPAC** when you want AppContainer isolation with minimum default access — only explicitly granted resources are reachable.
 
-**Use Restricted Token** when the sandboxed app needs named pipes (Flutter, Chromium, Mojo) or COM/RPC.
+**Use Restricted Token** when the app needs general named-pipe compatibility (Flutter, Chromium, Mojo) or COM/RPC.
 
 ### Examples
 

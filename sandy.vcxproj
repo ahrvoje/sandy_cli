@@ -167,7 +167,31 @@
   <ItemGroup>
     <ClCompile Include="src\sandy.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\sandy.rc" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(IntDir);$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
 
+  <!-- Build-order dependency only: embed the DLL as a resource, do not link it. -->
+  <ItemGroup>
+    <ProjectReference Include="pipehook\sandy_pipe_hook.vcxproj">
+      <Project>{7f3c9a2e-5b41-4d88-9c1a-2e6b8f0d4a11}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Stage the built hook DLL where the resource compiler can embed it.
+       Runs after the project reference has produced the DLL in $(OutDir). -->
+  <Target Name="StagePipeHookPayload" BeforeTargets="ResourceCompile">
+    <Copy SourceFiles="$(OutDir)sandy_pipe_hook.dll"
+          DestinationFiles="$(IntDir)sandy_pipe_hook_payload.dll"
+          SkipUnchangedFiles="true" />
+  </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

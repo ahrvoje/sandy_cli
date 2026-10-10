@@ -710,6 +710,38 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
+    // The hook payload is run-owned, including on saved-profile runs. Persist
+    // its name before creation so a crash cannot strand an untracked DLL.
+    inline bool PersistPipeHookPath(const std::wstring& path)
+    {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, GetGrantsRegKey().c_str(), 0,
+                          KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+            return false;
+        bool ok = TryWriteRegSz(key, L"_pipe_hook", path) && RegFlushKey(key) == ERROR_SUCCESS;
+        RegCloseKey(key);
+        g_logger.LogFmt(L"PIPEHOOK: cleanup intent %s -> %s", path.c_str(), ok ? L"OK" : L"FAILED");
+        return ok;
+    }
+
+    inline bool RemoveRecordedPipeHook(HKEY key, const std::wstring& instanceId)
+    {
+        std::wstring path = ReadRegSz(key, L"_pipe_hook");
+        if (path.empty()) return true;
+        std::wstring suffix = L"\\sandy_pipe_hook_" + instanceId + L".dll";
+        if (path.size() <= suffix.size() ||
+            path.compare(path.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            g_logger.Log(L"PIPEHOOK: invalid cleanup path; keeping recovery record");
+            return false;
+        }
+        BOOL removed = DeleteFileW(path.c_str());
+        DWORD error = removed ? ERROR_SUCCESS : GetLastError();
+        bool ok = removed || error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+        g_logger.LogFmt(L"PIPEHOOK: remove %s -> %s (error %lu)",
+                        path.c_str(), ok ? L"removed-or-absent" : L"FAILED", error);
+        return ok;
+    }
+
     // Clear this instance's persisted grants from registry.
     // Only deletes the instance subkey — parent keys (Sandy, Grants) are
     // permanent and never deleted.
@@ -724,6 +756,16 @@ namespace Sandbox {
             return;
         }
         std::wstring regKey = GetGrantsRegKey();
+        HKEY key = nullptr;
+        LSTATUS opened = RegOpenKeyExW(HKEY_CURRENT_USER, regKey.c_str(), 0, KEY_QUERY_VALUE, &key);
+        if (opened == ERROR_SUCCESS) {
+            bool removed = RemoveRecordedPipeHook(key, g_instanceId);
+            RegCloseKey(key);
+            if (!removed) return;
+        } else if (opened != ERROR_FILE_NOT_FOUND && opened != ERROR_PATH_NOT_FOUND) {
+            g_logger.LogFmt(L"PIPEHOOK: cleanup ledger unreadable (error %lu); keeping metadata", opened);
+            return;
+        }
         LSTATUS r = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
         g_logger.Log((L"REG_CLEAR: " + regKey + (r == ERROR_SUCCESS ? L" -> OK" : L" -> NOT_FOUND")).c_str());
     }
@@ -1191,6 +1233,7 @@ namespace Sandbox {
                     g_logger.LogFmt(L"STALE_RECOVERY: desktop ACE removal incomplete for %ls",
                                     desktopSid.c_str());
                 bool grantsRestored = RestoreGrantsFromKey(hKey);
+                grantsRestored &= RemoveRecordedPipeHook(hKey, e.instanceId);
                 RegCloseKey(hKey);
 
                 if (!grantsRestored || !containerRetryReady) {

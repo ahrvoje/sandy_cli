@@ -4,6 +4,10 @@
 
 #define IDS_APP_TITLE			103
 
+// Embedded payload: the named-pipe interception DLL that Sandy injects into
+// AppContainer/LPAC children (see SandboxPipeHook.h).
+#define IDR_SANDY_PIPEHOOK		200
+
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
 #endif
