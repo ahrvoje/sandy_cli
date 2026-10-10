@@ -166,7 +166,17 @@
 
     <div class="callout info">
       <div class="callout-title">💡 What this does</div>
-      <p>Runs <code>cmd.exe</code> in an AppContainer with <em>no file grants</em> — it can read from system directories via App. Packages membership but cannot touch any user files, network, or registry. Good starting point to add <code>[allow.*]</code> rules incrementally.</p>
+      <p>Runs <code>cmd.exe</code> in an AppContainer with <em>no file grants</em> — it can read from system directories via App. Packages membership and other resources already permitted by Windows. No network capabilities are added. Good starting point to add <code>[allow.*]</code> rules incrementally.</p>
+      <p>To request capabilities, add their Windows names. For example, this allows outbound internet
+        and private-network access with a loopback exemption:</p>
+      <pre><code>[capabilities]
+names = ['internetClient', 'privateNetworkClientServer']
+
+[privileges]
+loopback = true</code></pre>
+      <p>The default list is empty. For private-network access without the exemption, omit
+        <code>loopback</code>. Capability SIDs do not replace resource permissions.
+        See the <a href="config.html#capabilities">capability reference</a>.</p>
     </div>
   </div>
 </section>

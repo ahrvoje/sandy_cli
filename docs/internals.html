@@ -141,6 +141,12 @@
       </div>
     </div>
 
+    <p>AppContainer and LPAC also accept <a href="config.html#capabilities">capability names</a>.
+      Sandy calls <code>DeriveCapabilitySidsFromName</code> and supplies the resulting SIDs in
+      <code>SECURITY_CAPABILITIES</code> when it creates the child. These SIDs do not change host
+      ACLs and need no ACL rollback. Resource ACLs and other Windows policy determine access.
+      Loopback exemptions remain separate host state with run or saved-profile ownership.</p>
+
     <!-- Access Check Interaction Diagram -->
     <div class="interaction-diagram" style="margin-top: 48px; text-align: center;">
       <h3 style="margin-bottom: 24px; font-size: 1.2rem;">Access Check Interaction</h3>
@@ -152,6 +158,7 @@
           <ul style="list-style: none; font-size: 0.9rem; color: var(--text-secondary); line-height: 1.8;">
             <li>👤 <strong>User SID</strong></li>
             <li>👥 Group SIDs</li>
+            <li>🔑 Capability SIDs (AC / LPAC)</li>
             <li>🔑 Privileges</li>
           </ul>
         </div>

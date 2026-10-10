@@ -7,6 +7,7 @@ integrity = 'low'
 
 [allow.deep]
 read    = ['%USERPROFILE%\test_sandy_profile\data']
+
 [environment]
 inherit = true
 

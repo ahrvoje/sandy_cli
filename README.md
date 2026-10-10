@@ -35,7 +35,7 @@ No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is le
 
 - 🔒 **Three sandbox modes** — AppContainer, LPAC, or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
-- 🌐 **Network control** — internet and LAN/localhost configurable via unified `lan` key (AppContainer)
+- 🌐 **Network control** — Windows capability names for internet/LAN; a separate loopback switch (AppContainer / LPAC)
 - 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
 - 💾 **Profile-first design** — persistent sandbox identities with reusable grants and config
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
@@ -295,59 +295,58 @@ removes it without changing the profile's grants. Startup recovery retries file
 removal after a killed run. Loading or hook installation failure aborts launch
 with exit code 129. No extra capabilities are added to LPAC.
 
-After the documented solution build, run the native echo proof with 64-bit Python
-on `PATH` (or set `PYTHON` to its executable path):
+### `[capabilities]` — Windows capability names
 
-```bat
-test\test_pipe_hook.bat
-```
-
-The app requests a non-`LOCAL` name. The test checks normal success, LPAC rejection
-without a map (error 5), LPAC echo success with a map, all four intercepted APIs,
-the actual token and kernel pipe name, saved profiles, concurrent runs, crash
-recovery, and unchanged executable bytes and test-object DACLs. Evidence is saved
-to `test\pipe_hook_proof.json`. `--app C:\repos\ideas\lpac_named_pipe\build\pipe_app.exe`
-runs the external demo executable through the same host-client checks.
-
-### `[privileges]` — Permissions
-
-All keys are optional with safe defaults (shown below). Wrong-mode keys are rejected.
+AppContainer and LPAC use the same list. The default is empty; Sandy adds only the
+requested capability SIDs to the child token. Restricted Token mode rejects this section.
 
 ```toml
-# AppContainer / LPAC mode — defaults shown:
-[privileges]
-network         = false              # default: false
-lan             = false              # false | 'with localhost' | 'without localhost'
-stdin           = false              # default: false (NUL)
-clipboard_read  = false              # default: false
-clipboard_write = false              # default: false
-child_processes = true               # default: true
-
-# Restricted mode — defaults shown:
-[privileges]
-desktop         = true    # default: true (WinSta0 + Desktop access)
-stdin           = false   # default: false (NUL)
-clipboard_read  = false   # default: false
-clipboard_write = false   # default: false
-child_processes = true    # default: true
+[capabilities]
+names = ['registryRead', 'lpacCom']
 ```
+
+Sandy uses Windows `DeriveCapabilitySidsFromName`. The list is not limited to a
+built-in catalog: Windows and custom capability names use the same interface.
+A name can derive a SID even if no resource accepts it. Listing a capability does
+not guarantee that an API, service, or application will work under LPAC.
+
+| Name | Purpose, subject to Windows policy and resource permissions |
+|------|------------------------------------------------------------|
+| `internetClient` | Outbound internet |
+| `internetClientServer` | Internet client and server access |
+| `privateNetworkClientServer` | Private network access; also required for Sandy's loopback option |
+| `registryRead` | Registry access where existing ACLs grant rights to this capability |
+| `lpacCom` | LPAC COM/OLE access where the server permits it |
+| `lpacCryptoServices` | Access to participating cryptographic services |
+| `lpacIdentityServices` | Access to participating identity services |
+
+Names must be nonempty strings, at most 256 characters each, without spaces or
+control characters. The input list accepts at most 256 entries. Duplicate names
+are removed without regard to case; the first spelling and order are retained.
+Names persist in saved profiles and appear in logs, dry runs, and config output.
+
+Capabilities add token identities; they do not edit host ACLs. Access rights,
+including read versus write, come from the resource ACL and other Windows checks.
+`registryRead` is neither a grant to every registry key nor a global read-only
+restriction. A write can succeed if the complete access check permits it.
+Sandy's per-key `[registry]` grants remain Restricted Token only.
+
+### `[privileges]` — Other process controls
+
+These controls use mechanisms other than capability SIDs. All keys are optional.
+Wrong-mode keys are rejected.
 
 | Key | Available in | Default | Description |
 |-----|-------------|---------|-------------|
-| `network` | appcontainer / lpac | `false` | Outbound internet access |
-| `lan` | appcontainer / lpac | `false` | `false` • `'without localhost'` • `'with localhost'` — LAN and loopback control (see below) |
-| `registry_read` | lpac only | `false` | Add Windows `registryRead`: read keys whose ACLs permit this capability; no registry writes |
-| `com` | lpac only | `false` | Add Windows `lpacCom` for COM/OLE initialization |
-| `desktop` | restricted | `true` | `true` = grant WinSta0 + Desktop access for interactive use. `false` = job-object UI limits: the sandbox cannot list or use the windows of other processes |
-| `stdin` | all | `false` | `true` = inherit, `false` = disabled (NUL), or an absolute file path |
-| `clipboard_read` | all | `false` | Allow reading from the clipboard |
-| `clipboard_write` | all | `false` | Allow writing to the clipboard |
-| `child_processes` | all | `true` | Allow spawning child processes (kernel-enforced) |
+| `loopback` | appcontainer / lpac | `false` | Add a sandbox loopback exemption; requires `privateNetworkClientServer` in `names` |
+| `desktop` | restricted | `true` | Grant WinSta0 + Desktop access; `false` applies job UI limits to other processes' windows |
+| `stdin` | all | `false` | `true` = inherit, `false` = NUL, or an absolute input file path |
+| `clipboard_read` | all | `false` | Remove Sandy's clipboard-read job restriction |
+| `clipboard_write` | all | `false` | Remove Sandy's clipboard-write job restriction |
+| `child_processes` | all | `true` | Allow child processes (kernel-enforced) |
 
-`registry_read` and `com` are explicit opt-ins, not part of the default LPAC
-token. Windows resource ACLs determine their access. `registry_read` is broader
-than granting one registry key. Neither flag changes host ACLs; both persist in
-saved profiles and are rejected outside LPAC, even when set to `false`.
+Clipboard switches control job restrictions independently of capabilities such as
+`lpacClipboard`. Other Windows access checks still apply.
 
 The [LibreOffice LPAC guide](docs/libreoffice.html) shows how to provide
 LibreOffice jobs to AI agents using an existing Sandy executable, an unpacked
@@ -364,16 +363,21 @@ Save the linked launcher and template together, then run from their folder:
 py -3 .\libreoffice-demo.py --sandy "C:\AgentTools\sandy.exe" --libreoffice "C:\AgentTools\LibreOffice" --scratch "C:\AgentWork\office-job"
 ```
 
-**`lan` key values:**
+Private network access with loopback:
 
-| Value | LAN | Localhost | Notes |
-|-------|:---:|:---------:|-------|
-| `false` | ❌ | ❌ | Default — no private network |
-| `'without localhost'` | ✅ | ❌ | LAN access, loopback blocked |
-| `'with localhost'` | ✅ | ✅ | LAN + loopback |
+```toml
+[capabilities]
+names = ['privateNetworkClientServer']
 
-> [!NOTE]
-> Loopback always implies LAN. Windows does not offer a localhost-only capability — the `privateNetworkClientServer` capability required for loopback also grants LAN. Sandy makes this explicit by combining both into one key.
+[privileges]
+loopback = true
+```
+
+Omit `loopback` (or set it to `false`) for private network access without
+Sandy's loopback exemption. Sandy does not add an implied capability. Its loopback
+option requires private-network access; it is not a localhost-only configuration.
+Sandy removes run-owned exemptions at exit. Saved-profile exemptions last until
+the profile is deleted.
 
 #### AppContainer vs LPAC — App. Packages access
 
@@ -440,82 +444,98 @@ processes = 10      # max total active processes (default: 0)
 
 ### Config availability summary
 
-| Section / Key | AppContainer | LPAC | Restricted |
-|---------------|:-------------|:-----|:-----------|
-| **`[sandbox]`** | 🟢 required | 🟢 required | 🟢 required |
-| &ensp; `token` | 🟢 required | 🟢 required | 🟢 required |
-| &ensp; `integrity` | 🔴 n/a | 🔴 n/a | 🟢 required (`'low'` or `'medium'`) |
-| &ensp; `strict` | 🔴 n/a | 🔴 n/a | 🔵 default: `false` |
-| &ensp; `workdir` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` | 🔵 default: `'inherit'` |
-| **`[allow.deep]`** | 🔵 default: `[]` | 🔵 default: `[]` | 🔵 default: `[]` |
-| **`[allow.this]`** | 🔵 default: `[]` | 🔵 default: `[]` | 🔵 default: `[]` |
-| **`[deny.deep]`** | 🔴 n/a | 🔴 n/a | 🔵 default: `[]` |
-| **`[deny.this]`** | 🔴 n/a | 🔴 n/a | 🔵 default: `[]` |
-| **`[privileges]`** | 🔵 optional | 🔵 optional | 🔵 optional |
-| &ensp; `network` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `lan` | 🔵 default: `false` | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `registry_read` | 🔴 n/a | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `com` | 🔴 n/a | 🔵 default: `false` | 🔴 n/a |
-| &ensp; `desktop` | 🔴 n/a | 🔴 n/a | 🔵 default: `true` |
-| &ensp; `stdin` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
-| &ensp; `clipboard_read` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
-| &ensp; `clipboard_write` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
-| &ensp; `child_processes` | 🔵 default: `true` | 🔵 default: `true` | 🔵 default: `true` |
-| **`[registry]`** | 🔴 n/a | 🔴 n/a | 🔵 default: `[]` |
-| **`[environment]`** | 🔵 optional | 🔵 optional | 🔵 optional |
-| &ensp; `inherit` | 🔵 default: `false` | 🔵 default: `false` | 🔵 default: `false` |
-| &ensp; `pass` | 🔵 default: `[]` | 🔵 default: `[]` | 🔵 default: `[]` |
-| **`[limit]`** | 🔵 default: `0` | 🔵 default: `0` | 🔵 default: `0` |
+AppContainer and LPAC share the configuration availability and defaults below. Restricted Low and Restricted Medium also share them; `integrity` selects Low or Medium. These groups describe configuration rules, not identical access rights; see [Sandbox Modes](#sandbox-modes).
 
-🟢 required · 🔵 optional (safe default) · 🔴 not available (parse error if used)
+🟢 Required (choose a listed value) · 🔵 Optional (safe default shown) · 🔴 Unavailable (omit; unsupported values or rules cause a parse error).
+
+| Section / Key | AppContainer / LPAC | Restricted Low / Medium |
+|---------------|:--------------------|:------------------------|
+| **`[sandbox]`** — setup | 🟢 Required | 🟢 Required |
+| &ensp; `token` | 🟢 `'appcontainer'`/`'lpac'` | 🟢 `'restricted'` |
+| &ensp; `integrity` | 🔴 Fixed: Low | 🟢 `'low'`/`'medium'` |
+| &ensp; `strict` | 🔴 Unavailable | 🔵 Default: `false` |
+| &ensp; `workdir` — directory | 🔵 Default: `'inherit'` | 🔵 Default: `'inherit'` |
+| **`[allow.deep]`** — recursive | 🔵 Default: `[]` | 🔵 Default: `[]` |
+| **`[allow.this]`** — object only | 🔵 Default: `[]` | 🔵 Default: `[]` |
+| **`[deny.deep]`** — recursive | 🔴 Unavailable | 🔵 Default: `[]` |
+| **`[deny.this]`** — object only | 🔴 Unavailable | 🔵 Default: `[]` |
+| **`[pipes]`** — name mapping | 🔵 Default: empty map | 🔴 Unavailable |
+| **`[capabilities]`** — SIDs | 🔵 Optional | 🔴 Unavailable |
+| &ensp; `names` | 🔵 Default: `[]` | 🔴 Unavailable |
+| **`[privileges]`** — controls | 🔵 Optional | 🔵 Optional |
+| &ensp; `loopback` | 🔵 Default: `false` | 🔴 Unavailable |
+| &ensp; `desktop` | 🔴 Inherited access | 🔵 Default: `true` |
+| &ensp; `stdin` | 🔵 Default: `false` (NUL) | 🔵 Default: `false` (NUL) |
+| &ensp; `clipboard_read` | 🔵 Default: `false` | 🔵 Default: `false` |
+| &ensp; `clipboard_write` | 🔵 Default: `false` | 🔵 Default: `false` |
+| &ensp; `child_processes` | 🔵 Default: `true` | 🔵 Default: `true` |
+| **`[registry]`** — per-key R/W | 🔴 Unavailable | 🔵 Default: `[]` |
+| **`[environment]`** — parent env | 🔵 Optional | 🔵 Optional |
+| &ensp; `inherit` — full parent env | 🔵 Default: `false` | 🔵 Default: `false` |
+| &ensp; `pass` — extra variables | 🔵 Default: `[]` | 🔵 Default: `[]` |
+| **`[limit]`** — resources | 🔵 Default: `0` (unlimited) | 🔵 Default: `0` (unlimited) |
+
+Allow/deny rules grant or deny access to files and folders; “object only” means the named object without recursion. Capability names identify Windows SIDs. R/W means read/write grants. Resource limits cover time, memory and process count.
 
 ---
 
 ## Sandbox Modes
 
-Merged view across AppContainer, LPAC, and Restricted Token (Low / Medium integrity).
+**AppContainer (AC)** · **LPAC** (Less Privileged AppContainer) · **Restricted Low / Medium** (Restricted Token, RT).
+
+🔒 Fixed for the row · ❌ Blocked · ✅ Allowed · ⚙️ Configurable · ⚠️ May break apps · — Not applicable.
 
 | Aspect | AppContainer | LPAC | Restricted Low | Restricted Medium |
 |--------|:------------:|:----:|:--------------:|:-----------------:|
-| **Integrity level** | 🔒 Low | 🔒 Low | 🔒 Low | 🔒 Medium |
-| **Object namespace** | 🔒 Isolated | 🔒 Isolated | 🔒 Shared | 🔒 Shared |
-| **Process identity** | 🔒 AppContainer SID | 🔒 AppContainer SID | 🔒 Per-instance SID restricted | 🔒 Per-instance SID restricted |
-| **Elevation** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **Privilege stripping** | 🔒 All stripped | 🔒 All stripped | 🔒 All except SeChangeNotify | 🔒 All except SeChangeNotify |
-| **Isolation layers** | 🔒 2: SID + namespace | 🔒 2: SID + namespace | 🔒 2: SIDs + integrity | 🔒 1: SIDs only |
-| **Named pipes** | `LOCAL`; optional `[pipes]` mapping | `LOCAL`; optional `[pipes]` mapping | ✅ Allowed | ✅ Allowed |
-| **Desktop access** | ✅ Inherited | ✅ Inherited | ⚙️ `desktop` | ⚙️ `desktop` |
-| **Network** | ⚙️ `network` `lan` | ⚙️ `network` `lan` | ✅ Allowed | ✅ Allowed |
-| **App. Packages access** | ✅ Included | ❌ Excluded ¹ | n/a | n/a |
-| **System dir reads** | ✅ Via App. Packages | ✅ Via Restricted App. Packages ¹ | ✅ Allowed | ✅ Allowed |
-| **System dir writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **User profile reads** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ✅ Allowed | ✅ Allowed |
-| **User profile writes** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` ² | ✅ Allowed |
-| **Registry reads** | ACL-limited | ACL-limited; opt-in `registry_read` | ✅ Allowed | ✅ Allowed |
-| **Registry HKCU writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
-| **Registry HKLM writes** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ❌ Blocked |
-| **DLL/API set resolution** | ✅ Allowed | ⚠️ May break apps ³ | ⚠️ May break apps | ✅ Allowed |
-| **COM/RPC servers** | Restricted | Opt-in `com` (`lpacCom`); server policy still applies | ✅ Allowed | ✅ Allowed |
-| **Scheduled tasks** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
-| **Window messages (UIPI)** | ❌ Blocked | ❌ Blocked | ❌ Blocked | ✅ Allowed |
-| **Clipboard** | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` | ⚙️ `clipboard_read/write` |
-| **Child processes** | ⚙️ `child_processes` | ⚙️ `child_processes` | ⚙️ `child_processes` | ⚙️ `child_processes` |
-| **Stdin** | ⚙️ `stdin` | ⚙️ `stdin` | ⚙️ `stdin` | ⚙️ `stdin` |
-| **Environment** | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` | ⚙️ `inherit` |
-| **File/folder grants** | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` | ⚙️ `[allow.*]` |
-| **Resource limits** | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` | ⚙️ `[limit]` |
+| **Integrity level** 🔒 | Low | Low | Low | Medium |
+| **Object namespace** 🔒 | Isolated | Isolated | Shared | Shared |
+| **Process identity** 🔒 | AC SID | AC SID | Instance SID&nbsp;⁴ | Instance SID&nbsp;⁴ |
+| **Privilege stripping** 🔒 | All | All | All but one&nbsp;⁵ | All but one&nbsp;⁵ |
+| **Isolation layers** 🔒 | 2: SID + NS | 2: SID + NS | 2: SIDs + IL | 1: SIDs only |
+| **Elevation** | ❌ | ❌ | ❌ | ❌ |
+| **Named pipes** | `LOCAL`&nbsp;⁶ | `LOCAL`&nbsp;⁶ | ✅ | ✅ |
+| **Desktop access** | Inherited | Inherited | ⚙️ | ⚙️ |
+| **Network** | ⚙️&nbsp;⁷ | ⚙️&nbsp;⁷ | ✅ | ✅ |
+| **App. Packages access** | Included | Excluded&nbsp;¹ | — | — |
+| **System dir reads** | Via APP&nbsp;¹ | Via ARAP&nbsp;¹ | ✅ | ✅ |
+| **System dir writes** | ❌ | ❌ | ❌ | ❌ |
+| **User profile reads** | ⚙️ | ⚙️ | ✅ | ✅ |
+| **User profile writes** | ⚙️ | ⚙️ | ⚙️&nbsp;² | ✅ |
+| **Registry reads** | ACL‑limited&nbsp;⁷ | ACL‑limited&nbsp;⁷ | ✅ | ✅ |
+| **Registry HKCU writes** | ACL-based&nbsp;⁷ | ACL-based&nbsp;⁷ | ❌ | ✅ |
+| **Registry HKLM writes** | ❌ | ❌ | ❌ | ❌ |
+| **DLL/API set resolution** | ✅ | ⚠️&nbsp;³ | ⚠️ | ✅ |
+| **COM/RPC servers** | Per server&nbsp;⁷ | ⚙️ Opt‑in&nbsp;⁷ | ✅ | ✅ |
+| **Scheduled tasks** | ❌ | ❌ | ❌ | ✅ |
+| **Window messages (UIPI)** | ❌ | ❌ | ❌ | ✅ |
+| **Clipboard R/W** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
+| **Child processes** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
+| **Stdin** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
+| **Environment** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
+| **File/folder grants** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
+| **Resource limits** | ⚙️ | ⚙️ | ⚙️ | ⚙️ |
 
-🔒 fixed · ❌ blocked · ✅ allowed · ⚙️ configurable · ⚠️ warning
+**Controls:** Desktop, clipboard read/write, child processes and stdin use `[privileges]` keys `desktop`, `clipboard_read` / `clipboard_write`, `child_processes` and `stdin`. Environment uses `[environment] inherit`; file/folder and user-profile grants use `[allow.*]`; resource limits use `[limit]`. **NS** = object namespace; **IL** = integrity level.
 
-¹ LPAC opts out of `ALL APPLICATION PACKAGES` (`S-1-15-2-1`). Windows system directories (`C:\Windows`, `System32`, `Program Files`) carry `ALL RESTRICTED APPLICATION PACKAGES` (`S-1-15-2-2`) ACEs on Win10+ and are readable by LPAC. However, user-installed application directories (e.g. Python under `AppData\Local\Programs`) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via `[allow.*]`.
+¹ **APP** = `ALL APPLICATION PACKAGES` (`S-1-15-2-1`); **ARAP** = `ALL RESTRICTED APPLICATION PACKAGES` (`S-1-15-2-2`). LPAC opts out of APP. Windows system directories (`C:\Windows`, `System32`, `Program Files`) carry ARAP ACEs on Win10+ and are readable by LPAC. However, user-installed application directories (e.g. Python under `AppData\Local\Programs`) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via `[allow.*]`.
+
 ² Restricted Low writes to medium-integrity folders (most of `C:\Users`) are blocked by mandatory integrity even with `[allow.*]` grants. Use `AppData\LocalLow` or Restricted Medium for user profile writes.
+
 ³ LPAC DLLs from system directories resolve normally (ARAP ACEs present). DLLs loaded from user-installed application paths may fail because those paths lack ARAP ACEs — the app needs explicit `[allow.*]` execute grants for those directories.
 
-**Use AppContainer** when you need network isolation with broad system-directory access and do not require COM. Fixed pipe names can use `[pipes]` within the limits above.
+⁴ RT uses a per-instance SID in the token’s restricting list.
+
+⁵ Restricted Token retains `SeChangeNotify`; all other privileges are stripped.
+
+⁶ AppContainer and LPAC use `LOCAL` pipe names. Optional `[pipes]` mappings adapt an app's fixed names within the [documented interception limits](docs/config.html#pipes).
+
+⁷ **Network:** AC/LPAC use `[capabilities] names` plus `[privileges] loopback`. **Registry:** `registryRead` is opt-in; reads remain ACL-limited, HKCU writes depend on ACLs, and Sandy provides no per-key grants in AC/LPAC. **COM:** AppContainer can access permitted COM objects by default; LPAC needs `lpacCom` in `[capabilities] names`. Server permissions still apply in all modes. See [Microsoft's AppContainer overview](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer#appcontainer-overview).
+
+**Use AppContainer** when you need network isolation with broad system-directory access. COM access remains subject to server permissions; fixed pipe names can use `[pipes]` within the limits above.
 
 **Use LPAC** when you want AppContainer isolation with minimum default access — only explicitly granted resources are reachable.
 
-**Use Restricted Token** when the app needs general named-pipe compatibility (Flutter, Chromium, Mojo) or COM/RPC.
+**Use Restricted Token** when the app needs general named-pipe compatibility (Flutter, Chromium, Mojo), broader COM/RPC compatibility, or Medium integrity.
 
 ### Examples
 
@@ -529,10 +549,11 @@ token = 'appcontainer'
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
 
+[capabilities]
+names = ['internetClient']
 
 [privileges]
-network = true
-lan = false
+loopback = false
 stdin = false
 clipboard_read = false
 clipboard_write = false
@@ -562,7 +583,6 @@ integrity = 'medium'
 [allow.deep]
 read = ['C:\Python314', 'C:\projects\my_agent']
 all = ['C:\workspace']
-
 
 [privileges]
 desktop = true
@@ -658,7 +678,7 @@ Sandy treats **persistent named profiles** as a first-class execution model. A p
 > **AppContainer vs LPAC isolation.** AppContainer mode includes the `ALL APPLICATION PACKAGES` SID, giving read access to system directories and resources whose DACLs allow App. Packages. LPAC mode opts out — access is limited to `ALL RESTRICTED APPLICATION PACKAGES` resources and explicit `[allow.*]` grants. Most executables need system DLLs, so use `token = 'appcontainer'` unless you need strict isolation. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
-> **Localhost access** (AppContainer only) is enabled by setting `lan = 'with localhost'`. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). Loopback always implies LAN access — there is no localhost-only capability in the Windows AppContainer model.
+> **Localhost access** (AppContainer / LPAC) requires `names = ['privateNetworkClientServer']` in `[capabilities]` and `loopback = true` in `[privileges]`. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). Loopback always implies LAN access — there is no localhost-only capability in the Windows AppContainer model.
 
 > [!NOTE]
 > **Sandy stderr banner.** Sandy prints a config summary to stderr before running. Use `-q` to suppress it in automation pipelines where stderr is captured.
@@ -676,7 +696,7 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 |----------|-----------|-------------|
 | **ACL grants** | `[allow.*]` / `[deny.*]` folder/file grants, desktop access | `HKCU\Software\Sandy\Grants\<UUID>` (TYPE\|PATH\|SID per grant, written before the DACL changes) |
 | **Registry persistence** | Grant write-ahead log | Same key (cleared with ACLs) |
-| **Loopback exemption** | `lan = 'with localhost'` | In-memory flag + `CheckNetIsolation.exe` |
+| **Loopback exemption** | `loopback = true` | In-memory flag + `CheckNetIsolation.exe` |
 | **AppContainer profile** | Container creation | OS-managed (`Sandy_<UUID>`) — unique per instance |
 | **Scheduled task** | Crash safety net | Task Scheduler (`SandyCleanup_<UUID>`) — one per instance |
 

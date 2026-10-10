@@ -243,15 +243,14 @@ if __name__ == "__main__":
             'strict': 0,
             'stdin_mode': 'NUL',
             'booleans': [
-                ('_allow_network',      0, 'network'),
+                ('_allow_loopback',     0, 'loopback'),
+                ('_capability_count',   0, 'capability_count'),
                 ('_allow_clipboard_r',  0, 'clipboard_read'),
                 ('_allow_clipboard_w',  1, 'clipboard_write'),
                 ('_allow_child_procs',  0, 'child_processes'),
                 ('_env_inherit',        0, 'env_inherit'),
             ],
-            'strings': [
-                ('_lan_mode',           'off', 'lan_mode'),
-            ],
+            'strings': [],
             'allow_count': 10,
             'allow_tags': [
                 ('all.deep',),

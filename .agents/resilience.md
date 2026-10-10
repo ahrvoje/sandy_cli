@@ -42,6 +42,17 @@ instruction boundary the ledger names every ACE that can exist.
 - staging markers during creation / rollback
 - durable grant inventory for delete-profile and crash rollback
 
+Saved capability configuration uses `_capability_count`, indexed
+`_capability_<i>` names, and `_allow_loopback`. Missing or invalid metadata
+must fail profile loading rather than silently omit access settings. There is no
+legacy migration; old profiles must be recreated for execution. Profile teardown
+must remain usable without loading their saved configuration.
+
+Capability SIDs exist only in the child token and Sandy's temporary allocations.
+They require no host ACL rollback. Loopback exemptions are separate host state:
+transient runs own their exemptions; saved profiles own durable exemptions.
+Keep the existing container-based recovery and deletion paths for both.
+
 **Parent registry keys are permanent.** Cleanup removes subkeys and values, not the parent roots.
 
 ---

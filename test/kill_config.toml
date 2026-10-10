@@ -5,6 +5,7 @@ token = 'appcontainer'
 [allow.deep]
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 all = ['%USERPROFILE%\test_kill_A', '%USERPROFILE%\test_kill_B']
+
 [environment]
 inherit = true
 

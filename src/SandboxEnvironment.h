@@ -224,12 +224,13 @@ namespace Sandbox {
     {
         if (IsRestrictedTokenMode(config.tokenMode))
             return "unrestricted (no capability model)";
-        if (config.allowNetwork)
-            return "INTERNET";
-        if (config.lanMode == LanMode::WithLocalhost)
-            return "LAN + LOCALHOST";
-        if (config.lanMode == LanMode::WithoutLocalhost)
-            return "LAN";
+        bool internet = HasCapability(config, L"internetClient") ||
+                        HasCapability(config, L"internetClientServer");
+        bool lan = HasCapability(config, L"privateNetworkClientServer");
+        if (internet && lan)
+            return config.allowLoopback ? "INTERNET + LAN + LOCALHOST" : "INTERNET + LAN";
+        if (internet) return "INTERNET";
+        if (lan) return config.allowLoopback ? "LAN + LOCALHOST" : "LAN";
         return "BLOCKED";
     }
 
@@ -283,10 +284,11 @@ namespace Sandbox {
             fprintf(stderr, "Desktop:    ISOLATED (job UI limits)\n");
 
         fprintf(stderr, "Network:    %s\n", NetworkSummaryLabel(config));
-        if (config.allowRegistryRead)
-            fprintf(stderr, "Registry:   Windows registryRead capability (read only)\n");
-        if (config.allowCom)
-            fprintf(stderr, "COM:        Windows lpacCom capability\n");
+        if (!IsRestrictedTokenMode(config.tokenMode)) {
+            fprintf(stderr, "Capabilities: %zu\n", config.capabilityNames.size());
+            for (const auto& name : config.capabilityNames)
+                fprintf(stderr, "  %ls\n", name.c_str());
+        }
 
         if (const char* stdinLabel = StdinSummaryLabel(config.stdinMode))
             fprintf(stderr, "Stdin:      %s\n", stdinLabel);

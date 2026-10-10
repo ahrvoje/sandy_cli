@@ -9,6 +9,7 @@ all = ['%USERPROFILE%\test_RW']
 
 [deny.deep]
 write   = ['%USERPROFILE%\test_RW']
+
 [environment]
 inherit = true
 

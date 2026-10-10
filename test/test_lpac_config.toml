@@ -14,9 +14,11 @@ all     = ['%USERPROFILE%\test_lpac\workspace']
 [allow.this]
 stat    = ['%USERPROFILE%\test_lpac']
 
+[capabilities]
+names = []
+
 [privileges]
-network   = false
-lan       = false
+loopback = false
 
 [environment]
 inherit = true

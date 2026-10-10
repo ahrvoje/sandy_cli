@@ -20,7 +20,7 @@ namespace Sandbox {
         std::wstring type;
         std::wstring sidString;
         std::wstring containerName;
-        std::wstring lanMode;
+        bool allowLoopback = false;
         bool staging = false;
         bool allowDesktop = false;
     };
@@ -43,7 +43,7 @@ namespace Sandbox {
         out.type = ReadRegSz(hKey, L"_type");
         out.sidString = ReadRegSz(hKey, L"_sid");
         out.containerName = ReadRegSz(hKey, L"_container");
-        out.lanMode = ReadRegSz(hKey, L"_lan_mode");
+        out.allowLoopback = ReadRegDword(hKey, L"_allow_loopback") != 0;
 
         DWORD staging = 0;
         out.staging = TryReadRegDword(hKey, L"_staging", staging) && staging != 0;

@@ -33,7 +33,11 @@ inline void PrintFolderToml(const wchar_t* section,
                             const std::vector<FolderEntry>& entries,
                             GrantScope scope)
 {
-    printf("[%ls]\n", section);
+    if (std::none_of(entries.begin(), entries.end(),
+        [scope](const FolderEntry& entry) { return entry.scope == scope; }))
+        return;
+
+    printf("\n[%ls]\n", section);
     for (int a = 0; a <= static_cast<int>(AccessLevel::Create); a++) {
         auto lvl = static_cast<AccessLevel>(a);
         bool first = true;
@@ -67,11 +71,10 @@ inline void PrintResolvedConfig(const SandboxConfig& config)
         printf("strict = true\n");
     printf("workdir = ");
     TomlQuotedValue(config.workdir.empty() ? L"inherit" : config.workdir);
-    printf("\n\n");
+    printf("\n");
 
     PrintFolderToml(L"allow.deep", config.folders, GrantScope::Deep);
     PrintFolderToml(L"allow.this", config.folders, GrantScope::This);
-    printf("\n");
     PrintFolderToml(L"deny.deep", config.denyFolders, GrantScope::Deep);
     PrintFolderToml(L"deny.this", config.denyFolders, GrantScope::This);
 
@@ -85,17 +88,20 @@ inline void PrintResolvedConfig(const SandboxConfig& config)
         }
     }
 
-    printf("\n[privileges]\n");
-    if (config.tokenMode == TokenMode::LPAC) {
-        printf("registry_read   = %ls\n", config.allowRegistryRead ? L"true" : L"false");
-        printf("com             = %ls\n", config.allowCom ? L"true" : L"false");
-    }
     if (!isRT) {
-        printf("network         = %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("lan             = %ls\n", LanModeTomlDisplayValue(config.lanMode));
-    } else {
-        printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
+        printf("\n[capabilities]\nnames = [");
+        for (size_t i = 0; i < config.capabilityNames.size(); ++i) {
+            if (i) printf(", ");
+            TomlQuotedValue(config.capabilityNames[i]);
+        }
+        printf("]\n");
     }
+
+    printf("\n[privileges]\n");
+    if (!isRT)
+        printf("loopback        = %ls\n", config.allowLoopback ? L"true" : L"false");
+    else
+        printf("desktop         = %ls\n", config.allowDesktop ? L"true" : L"false");
     if (config.stdinMode == L"NUL")
         printf("stdin           = false\n");
     else if (config.stdinMode.empty())

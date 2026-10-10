@@ -138,8 +138,8 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | `[allow.this]` | same keys | `[]` | Single-object grants (no inheritance) |
 | `[deny.deep]` | `read/write/execute/append/delete/all/run/stat/touch/create` | `[]` | Recursive denies (RT only) |
 | `[deny.this]` | same keys | `[]` | Single-object denies (RT only) |
-| `[privileges]` | `network` | `false` | AC/LPAC only |
-| `[privileges]` | `lan` | `false` | AC/LPAC only; `false` · `'with localhost'` · `'without localhost'` |
+| `[capabilities]` | `names` | `[]` | AC/LPAC only; Windows or custom capability names |
+| `[privileges]` | `loopback` | `false` | AC/LPAC only; requires explicit `privateNetworkClientServer` capability |
 | `[privileges]` | `desktop` | `true` | RT only. `true` = WinSta0 + Desktop grant; `false` = job UI limits |
 | `[privileges]` | `stdin` | `false` | `false` = NUL, `true` = inherit, path = file |
 | `[privileges]` | `clipboard_read` | `false` | |
@@ -150,10 +150,36 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 | `[environment]` | `pass` | `[]` | |
 | `[limit]` | `timeout/memory/processes` | `0` | 0 = no limit. `timeout` covers the whole process tree |
 
+## Capability Contract
+
+- All capability selection is through `[capabilities] names`, including network,
+  `registryRead`, and `lpacCom`. No legacy Boolean aliases or LAN enum.
+- Empty by default. RT rejects the section and the `loopback` key, even if empty/false.
+- One shared validator for TOML and saved profiles: at most 256 input entries,
+  1–256 characters per name, no whitespace/control characters, case-insensitive
+  deduplication preserving the first spelling and order.
+- Derive SIDs with `DeriveCapabilitySidsFromName`; no fixed catalog or guessed SID.
+  A derived SID is not proof that Windows supports the requested service.
+  Keep all returned capability SIDs, deduplicate equal SIDs, and free all Windows
+  allocations. Derivation failure aborts launch.
+- `registryRead` is an additive identity, not a global read-only restriction.
+  Existing ACLs and the full access check determine rights. Per-key `[registry]`
+  grants remain RT only.
+- `[privileges]` keeps only loopback, desktop, stdin, clipboard job restrictions,
+  and child-process control. These cannot be replaced by capability SIDs.
+- Persist names and loopback explicitly; do not infer missing profile metadata.
+  Old profiles must be recreated to run, but cleanup must still remove their state.
+- Quick checks: `test/test_lpac_capabilities.py` verifies real child tokens,
+  custom/empty lists, validation, profile reuse and cleanup.
+  `test/test_libreoffice_launcher.py` verifies the documented LPAC application.
+
 ## Rules
 
 - **Wrong-mode keys are rejected.**
 - **Unknown keys/sections are rejected.**
+- TOML fixtures, examples, and emitted configs have no empty active tables and
+  exactly one blank line between sections. Keep optional template tables commented.
+  Run `test/test_toml_layout.py` after changing config rendering or fixtures.
 - **Filesystem paths expand `%NAME%` environment variables** at config load
   (`ExpandConfigPath`, called from `NormalizeConfigFilesystemPaths`, the one
   place where every configured path enters the config). A variable that is
@@ -168,6 +194,7 @@ and `token` are always mandatory. Omitting a field **never grants more access**.
 
 - Tests use the **toml + py + bat** stack.
 - Keep `.toml`, `.py`, and `.bat` separate. Do not inline TOML or Python into a batch script.
+- Preserve CRLF line endings in batch scripts; LF can make cmd.exe misread commands.
 - **No user name in a path.** Use `%USERPROFILE%` / `%LOCALAPPDATA%` in `.toml`
   and `.bat` files and `os.environ['USERPROFILE']` in Python. The same holds
   for documentation examples.

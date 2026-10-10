@@ -26,6 +26,7 @@ all = [
     '%USERPROFILE%\test_evil\arena\CaseSensitive',
 ]
 write = ['%USERPROFILE%\test_evil\arena\records']
+
 [environment]
 inherit = true
 

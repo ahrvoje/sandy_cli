@@ -250,8 +250,9 @@ namespace Sandbox {
     //   _token_mode         REG_SZ   "appcontainer" | "lpac" | "restricted"
     //   _cfg_integrity      REG_SZ   "low" | "medium"
     //   _workdir            REG_SZ   path (may be empty)
-    //   _allow_network      REG_DWORD  0 | 1
-    //   _lan_mode           REG_SZ     "off" | "with_localhost" | "without_localhost"
+    //   _allow_loopback     REG_DWORD  0 | 1
+    //   _capability_count   REG_DWORD  required count (new config contract)
+    //   _capability_0 ..    REG_SZ     Windows capability name
 
     //   _allow_desktop       REG_DWORD  0 | 1
     //   _strict              REG_DWORD  0 | 1
@@ -292,10 +293,8 @@ namespace Sandbox {
         ok &= TryWriteRegSz(hKey, L"_stdin_mode", cfg.stdinMode.empty() ? L"INHERIT" : cfg.stdinMode);
 
         // --- Booleans (REG_DWORD 0/1) ---
-        ok &= TryWriteRegDword(hKey, L"_allow_network",      cfg.allowNetwork     ? 1 : 0);
-        ok &= TryWriteRegDword(hKey, L"_allow_registry_read", cfg.allowRegistryRead ? 1 : 0);
-        ok &= TryWriteRegDword(hKey, L"_allow_com", cfg.allowCom ? 1 : 0);
-        ok &= TryWriteRegSz(hKey, L"_lan_mode", LanModeRegistryName(cfg.lanMode));
+        ok &= TryWriteRegDword(hKey, L"_allow_loopback", cfg.allowLoopback ? 1 : 0);
+        ok &= WriteIndexedStringValues(hKey, L"_capability_count", L"_capability_", cfg.capabilityNames);
 
         ok &= TryWriteRegDword(hKey, L"_allow_desktop",       cfg.allowDesktop     ? 1 : 0);
         ok &= TryWriteRegDword(hKey, L"_strict",              cfg.strict           ? 1 : 0);
@@ -410,17 +409,19 @@ namespace Sandbox {
         // P1a: _allow_desktop and _allow_child_procs must exist in the registry.
         // Missing values previously defaulted to 1 (enabled), silently granting
         // permissions the user never configured.  Now fail closed.
-        cfg.allowNetwork        = ReadRegDword(hKey, L"_allow_network")    != 0;
-        // Missing in older profiles means no additional capability.
-        cfg.allowRegistryRead = ReadRegDword(hKey, L"_allow_registry_read") != 0;
-        cfg.allowCom = ReadRegDword(hKey, L"_allow_com") != 0;
-        if ((cfg.allowRegistryRead || cfg.allowCom) && cfg.tokenMode != TokenMode::LPAC) {
-            g_logger.Log(L"PROFILE_LOAD: registry_read/com require LPAC — rejecting profile");
+        DWORD capabilityCount = 0, loopback = 0;
+        if (!TryReadRegDword(hKey, L"_capability_count", capabilityCount) ||
+            capabilityCount > kMaxRulesPerSection ||
+            !TryReadRegDword(hKey, L"_allow_loopback", loopback) || loopback > 1) {
+            g_logger.Log(L"PROFILE_LOAD: missing or invalid capability/loopback metadata; recreate this profile");
             cfg.parseError = true;
+        } else {
+            cfg.allowLoopback = loopback != 0;
+            if (!ReadIndexedStringValues(hKey, L"_capability_count", L"_capability_",
+                                         L"capability", cfg.capabilityNames))
+                cfg.parseError = true;
+            ValidateCapabilityConfig(cfg, cfg.parseError);
         }
-        std::wstring lanModeStr = ReadRegSz(hKey, L"_lan_mode");
-        if (!TryParseLanModeRegistryValue(lanModeStr, cfg.lanMode))
-            cfg.lanMode = LanMode::Off;
 
         {
             DWORD desktopVal = 0;
@@ -728,7 +729,7 @@ namespace Sandbox {
         if (!createConfig.isAppContainer && !GrantRegistryAccess(identity.sid, createConfig.config))
             grantOk = false;
         if (createConfig.isAppContainer &&
-            createConfig.config.lanMode == LanMode::WithLocalhost &&
+            createConfig.config.allowLoopback &&
             !EnsureProfileLoopback(identity.containerName)) {
             g_logger.Log(L"CREATE_PROFILE: profile-owned loopback enable FAILED");
             grantOk = false;
@@ -1147,7 +1148,7 @@ namespace Sandbox {
         const std::wstring& profileType = summary.type;
         const std::wstring& profileSid = summary.sidString;
         bool hadDesktop = summary.allowDesktop;
-        bool hadLoopback = (summary.lanMode == L"with_localhost");
+        bool hadLoopback = summary.allowLoopback;
 
         // Revoke profile-owned desktop ACEs (RT profiles with desktop = true)
         // Done before filesystem ACL rollback — desktop/loopback cleanup is

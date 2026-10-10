@@ -41,11 +41,12 @@ read [LPAC loader debugging](lpac_loader_debugging.md). The pipe hook avoids
 its own SxS requirement by having no manifest; it must work with zero
 capabilities.
 
-For applications that need them, `registry_read` and `com` add capability SIDs
-to the LPAC token. They do not edit host ACLs and do not create ACL grants to
-revoke. Their access scope comes from existing resource ACLs and the token;
-`registry_read` is not a one-key grant. Keep these application requirements
-separate from the hook's build invariant.
+For applications that need them, `[capabilities] names` adds capability SIDs
+to AC/LPAC tokens (for example `registryRead` and `lpacCom`). This does not
+edit host ACLs or create grants to revoke. The resource ACL and the complete
+Windows access check determine rights. `registryRead` is neither a one-key
+grant nor a global read-only restriction. Keep application requirements separate
+from the hook's build invariant. Per-key registry grants remain RT only.
 
 # ACL Propagation — Inheritance-Based Model
 

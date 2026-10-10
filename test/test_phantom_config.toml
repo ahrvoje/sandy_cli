@@ -16,5 +16,6 @@ all = ['%USERPROFILE%\test_phantom\arena\workspace']
 
 [privileges]
 child_processes = false
+
 [limit]
 timeout = 90

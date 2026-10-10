@@ -12,6 +12,7 @@ all = ['%USERPROFILE%\test_mixed\shared']
 
 [deny.deep]
 write   = ['%USERPROFILE%\test_mixed\shared\protected']
+
 [environment]
 inherit = true
 

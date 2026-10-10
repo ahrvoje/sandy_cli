@@ -10,6 +10,7 @@ read = [
     '%LOCALAPPDATA%\Programs\Python\Python314',
     '%USERPROFILE%\test_limits\scripts',
 ]
+
 [environment]
 inherit = true
 

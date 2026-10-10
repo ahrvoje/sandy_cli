@@ -24,7 +24,7 @@ token = 'appcontainer'     # 'appcontainer', 'lpac', or 'restricted'
 # Use single quotes for Windows paths (no backslash escaping needed).
 # A path can hold environment variables: '%USERPROFILE%\project'.
 
-[allow.deep]
+# [allow.deep]
 # read = [
 #     'C:\data\config.json',          # single file
 #     'C:\Python314',                 # entire folder (recursive)
@@ -42,14 +42,21 @@ token = 'appcontainer'     # 'appcontainer', 'lpac', or 'restricted'
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
 # ============================================================
-# PRIVILEGES — Optional, safe defaults shown
+# CAPABILITIES — AppContainer / LPAC only, empty by default
 # ============================================================
-# AppContainer: network, lan, stdin, clipboard_*, child_processes
+# [capabilities]
+# names = []                 # e.g. ['internetClient', 'registryRead', 'lpacCom']
+# Windows/custom names use the same SID derivation. Existing ACLs and Windows
+# policy determine access; these names do not create file or registry ACL grants.
+
+# ============================================================
+# PRIVILEGES — Other process controls, safe defaults shown
+# ============================================================
+# AppContainer / LPAC: loopback, stdin, clipboard_*, child_processes
 # Restricted:   desktop, stdin, clipboard_*, child_processes
 
 # [privileges]
-# network = false            # default false (appcontainer only)
-# lan = false                # false | 'with localhost' | 'without localhost' (appcontainer only)
+# loopback = false           # true requires privateNetworkClientServer in names
 # desktop = true             # default true (restricted only). false = no access to windows of other processes
 # stdin = false              # default false (NUL)
 # clipboard_read = false     # default false

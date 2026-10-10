@@ -2,7 +2,7 @@
 for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
 setlocal EnableDelayedExpansion
 REM ---------------------------------------------------------------
-REM test_allow_limits.bat — Test [privileges] and [limit] settings
+REM test_allow_limits.bat — Test [capabilities] and [limit] settings
 REM Tests: network, memory, process limits, timeout, and strict mode.
 REM Self-contained: uses %USERPROFILE%\test_limits for all scripts.
 REM ---------------------------------------------------------------

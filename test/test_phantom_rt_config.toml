@@ -15,5 +15,6 @@ write = ['%USERPROFILE%\test_phantom\arena\readonly']
 
 [privileges]
 child_processes = false
+
 [limit]
 timeout = 90

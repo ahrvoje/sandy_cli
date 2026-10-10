@@ -53,7 +53,7 @@
 
 <section id="prepare">
   <h2>Prepare and launch</h2>
-  <p>Start with an existing <code>sandy.exe</code> that supports <code>[pipes]</code>, Python 3.11 or later, and an unpacked 64-bit LibreOffice folder. That folder must contain <code>program\soffice.bin</code>, <code>program\soffice.com</code>, and the rest of the application files.</p>
+  <p>Start with an existing <code>sandy.exe</code> that supports <code>[pipes]</code> and <code>[capabilities]</code>, Python 3.11 or later, and an unpacked 64-bit LibreOffice folder. That folder must contain <code>program\soffice.bin</code>, <code>program\soffice.com</code>, and the rest of the application files.</p>
   <p>Save the <a href="libreoffice-demo.py" download>Python launcher</a> and its <a href="libreoffice.toml" download>TOML template</a> together. The launcher uses only Python's standard library. In PowerShell, open their folder and set these paths to your own locations:</p>
   <pre><code>$sandyExe = 'C:\AgentTools\sandy.exe'
 $libreOfficeRoot = 'C:\AgentTools\LibreOffice'
@@ -112,7 +112,7 @@ py -3 .\libreoffice-demo.py `
     <tr><td>Profile, work, and this run's temporary folder</td><td>Read, write, and delete; no file execution grant.</td></tr>
     <tr><td>Selected ancestor directories</td><td>Directory listing only, for path lookups. The launcher selects directories it can grant without elevation.</td></tr>
     <tr><td>Run configurations, logs, and launcher control files</td><td>No file-content grant.</td></tr>
-    <tr><td>Windows registry and COM</td><td>Registry-read and COM capabilities, needed for startup. No registry-write grant.</td></tr>
+    <tr><td>Windows registry and COM</td><td><code>registryRead</code> and <code>lpacCom</code> in the capability list, needed for startup. Existing Windows ACLs determine their rights; Sandy adds no registry ACL grants.</td></tr>
     <tr><td>Network, LAN, clipboard, and child processes</td><td>Disabled.</td></tr>
   </tbody></table></div>
   <p><strong>Named pipes:</strong> LibreOffice requests a pipe outside <code>LOCAL</code>. The launcher calculates its exact name from the Windows user and LibreOffice profile, then writes an explicit <code>[pipes]</code> rule. Sandy intercepts that name and substitutes a <code>\\.\pipe\LOCAL\…</code> name in the sandbox's private pipe namespace. The application files stay unchanged.</p>
@@ -159,12 +159,12 @@ read = [
 # Traverse the working directory; do not grant execution to its files.
 execute = ['C:\AgentWork\office-job\work']
 
+[capabilities]
+names = ['registryRead', 'lpacCom']
+
 [privileges]
-registry_read = true
-com = true
 child_processes = false
-network = false
-lan = false
+loopback = false
 clipboard_read = false
 clipboard_write = false
 

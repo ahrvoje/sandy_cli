@@ -67,13 +67,17 @@ inline int HandleDryRun(const SandboxConfig& config,
     printf("\n");
     PrintFolderEntries(L"deny.this", config.denyFolders, GrantScope::This);
 
-    printf("\n[privileges]\n");
     if (!isRestricted) {
-        printf("  network:         %ls\n", config.allowNetwork ? L"true" : L"false");
-        printf("  lan:             %ls\n", LanModeTomlDisplayValue(config.lanMode));
-    } else {
-        printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
+        printf("\n[capabilities]\n");
+        if (config.capabilityNames.empty()) printf("  (none)\n");
+        for (const auto& name : config.capabilityNames)
+            printf("  %ls\n", name.c_str());
     }
+    printf("\n[privileges]\n");
+    if (!isRestricted)
+        printf("  loopback:        %ls\n", config.allowLoopback ? L"true" : L"false");
+    else
+        printf("  desktop:         %ls\n", config.allowDesktop ? L"true" : L"false");
     // P3: Map internal stdinMode to user-visible representation
     // (NUL = false, empty = true/inherited, other = file path)
     if (config.stdinMode == L"NUL")

@@ -140,6 +140,10 @@
 <span class="syn-cmt"># Run from a saved profile</span>
 <span class="syn-cmd">sandy.exe</span> <span class="syn-flag">-p</span> <span class="syn-arg">&lt;profile&gt;</span>      <span class="syn-opt">[-l &lt;log&gt;] [-q]</span>       <span class="syn-flag">-x</span> <span class="syn-arg">&lt;exe&gt;</span> <span class="syn-opt">[args...]</span></pre>
 
+    <p>Select Windows capabilities through <a href="config.html#capabilities"><code>[capabilities] names</code></a>
+      in the TOML configuration. The same list applies to file, inline, and saved-profile runs.
+      The default is empty; there is no separate capability CLI flag.</p>
+
     <div class="callout info" style="margin-top:20px;">
       <div class="callout-title">💡 Config sources are mutually exclusive</div>
       <p><code>-c</code>, <code>-s</code>, and <code>-p</code> cannot be combined. If more than one is present, Sandy exits with code 125.</p>

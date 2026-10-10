@@ -26,6 +26,7 @@ write = ['%USERPROFILE%\test_diabolical\arena\readonly_zone']
 
 [privileges]
 child_processes = false
+
 [environment]
 inherit = true
 

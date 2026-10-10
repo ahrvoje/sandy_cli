@@ -7,6 +7,7 @@ token = 'appcontainer'
 [allow.deep]
 read    = ['%USERPROFILE%\test_sandy_profile\data']
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
+
 [environment]
 inherit = true
 

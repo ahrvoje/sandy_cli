@@ -1,0 +1,6 @@
+@echo off
+setlocal
+for /f %%p in ('powershell -NoProfile -Command "$c=(Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID)).ParentProcessId; (Get-CimInstance Win32_Process -Filter ('ProcessId='+$c)).ParentProcessId"') do echo  PID: %%p
+if not defined PYTHON set "PYTHON=python"
+"%PYTHON%" "%~dp0test_toml_layout.py" %*
+exit /b %ERRORLEVEL%

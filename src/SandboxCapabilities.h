@@ -13,128 +13,72 @@
 
 namespace Sandbox {
 
-    // -----------------------------------------------------------------------
-    // CapabilityState — holds allocated capability SIDs and the array.
-    // Caller must call FreeCapabilities() when done.
-    // -----------------------------------------------------------------------
+    // Every SID in caps is owned here and released with LocalFree.
     struct CapabilityState {
-        SID_AND_ATTRIBUTES caps[4] = {};
-        DWORD  capCount = 0;
-        PSID   pNetSid = nullptr;
-        PSID   pLanSid = nullptr;
-        PSID   pRegistrySid = nullptr;  // ConvertStringSidToSid: LocalFree
-        PSID   pComSid = nullptr;       // ConvertStringSidToSid: LocalFree
-        bool   failed = false;  // P3: true if any requested capability allocation failed
+        std::vector<SID_AND_ATTRIBUTES> caps;
+        bool failed = false;
     };
 
-    // -----------------------------------------------------------------------
-    // BuildCapabilities — allocate explicitly requested capability SIDs.
-    //
-    // Inputs:  config — network flags and opt-in LPAC capabilities
-    // Returns: CapabilityState with allocated SIDs
-    // Verifiable: capCount matches requested capabilities;
-    //             SIDs can be verified via ConvertSidToStringSidW
-    //
-    // NOTE: LanMode::WithLocalhost and LanMode::WithoutLocalhost both
-    // require PRIVATE_NETWORK_CLIENT_SERVER capability.  Loopback
-    // additionally needs CheckNetIsolation exemption (see SandboxCleanup.h).
-    // There is no localhost-only capability SID — loopback always implies
-    // LAN access.  The LanMode enum makes this explicit at the config level.
-    // -----------------------------------------------------------------------
+    inline void FreeCapabilities(CapabilityState& state)
+    {
+        for (auto& cap : state.caps)
+            LocalFree(cap.Sid);
+        state.caps.clear();
+    }
+
     inline CapabilityState BuildCapabilities(const SandboxConfig& config)
     {
         CapabilityState state;
+        if (config.capabilityNames.empty())
+            return state;
 
-        if (config.allowNetwork) {
-            SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
-            if (AllocateAndInitializeSid(&appAuthority,
-                SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
-                SECURITY_CAPABILITY_BASE_RID,
-                SECURITY_CAPABILITY_INTERNET_CLIENT,
-                0, 0, 0, 0, 0, 0, &state.pNetSid))
-            {
-                state.caps[state.capCount].Sid = state.pNetSid;
-                state.caps[state.capCount].Attributes = SE_GROUP_ENABLED;
-                state.capCount++;
-                LPWSTR capSidStr = nullptr;
-                if (ConvertSidToStringSidW(state.pNetSid, &capSidStr)) {
-                    std::wstring capMsg = std::wstring(L"CAPABILITY: INTERNET_CLIENT SID=") + capSidStr;
-                    g_logger.Log(capMsg.c_str());
-                    LocalFree(capSidStr);
-                } else {
-                    g_logger.Log(L"CAPABILITY: INTERNET_CLIENT");
+        using DeriveFn = BOOL (WINAPI*)(LPCWSTR, PSID**, DWORD*, PSID**, DWORD*);
+        auto derive = reinterpret_cast<DeriveFn>(
+            GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "DeriveCapabilitySidsFromName"));
+        if (!derive) {
+            g_logger.Log(L"CAPABILITY: DeriveCapabilitySidsFromName unavailable");
+            state.failed = true;
+            return state;
+        }
+
+        for (const auto& name : config.capabilityNames) {
+            PSID* groups = nullptr;
+            PSID* caps = nullptr;
+            DWORD groupCount = 0, capCount = 0;
+            BOOL ok = derive(name.c_str(), &groups, &groupCount, &caps, &capCount);
+            DWORD error = ok ? ERROR_INVALID_SID : GetLastError();
+            if (!ok || capCount == 0) {
+                g_logger.LogFmt(L"CAPABILITY: %s derivation failed (error %lu)", name.c_str(), error);
+                state.failed = true;
+            }
+            for (DWORD i = 0; i < groupCount; ++i)
+                LocalFree(groups[i]);
+            LocalFree(groups);
+
+            for (DWORD i = 0; i < capCount; ++i) {
+                if (!ok || !IsValidSid(caps[i])) {
+                    state.failed = true;
+                    LocalFree(caps[i]);
+                    continue;
                 }
-            } else {
-                g_logger.LogFmt(L"CAPABILITY: INTERNET_CLIENT AllocateAndInitializeSid FAILED (error %lu)",
-                                GetLastError());
-                state.failed = true;
-            }
-        }
-
-        if (config.lanMode != LanMode::Off) {
-            SID_IDENTIFIER_AUTHORITY appAuthority = SECURITY_APP_PACKAGE_AUTHORITY;
-            if (AllocateAndInitializeSid(&appAuthority,
-                SECURITY_BUILTIN_APP_PACKAGE_RID_COUNT,
-                SECURITY_CAPABILITY_BASE_RID,
-                SECURITY_CAPABILITY_PRIVATE_NETWORK_CLIENT_SERVER,
-                0, 0, 0, 0, 0, 0, &state.pLanSid))
-            {
-                state.caps[state.capCount].Sid = state.pLanSid;
-                state.caps[state.capCount].Attributes = SE_GROUP_ENABLED;
-                state.capCount++;
-                LPWSTR capSidStr = nullptr;
-                if (ConvertSidToStringSidW(state.pLanSid, &capSidStr)) {
-                    std::wstring capMsg = std::wstring(L"CAPABILITY: PRIVATE_NETWORK SID=") + capSidStr;
-                    g_logger.Log(capMsg.c_str());
-                    LocalFree(capSidStr);
-                } else {
-                    g_logger.Log(L"CAPABILITY: PRIVATE_NETWORK");
+                bool duplicate = std::any_of(state.caps.begin(), state.caps.end(),
+                    [&](const SID_AND_ATTRIBUTES& entry) { return EqualSid(entry.Sid, caps[i]) != FALSE; });
+                if (duplicate) {
+                    LocalFree(caps[i]);
+                    continue;
                 }
-            } else {
-                g_logger.LogFmt(L"CAPABILITY: PRIVATE_NETWORK AllocateAndInitializeSid FAILED (error %lu)",
-                                GetLastError());
-                state.failed = true;
+                state.caps.push_back({ caps[i], SE_GROUP_ENABLED });
+                LPWSTR sid = nullptr;
+                if (ConvertSidToStringSidW(caps[i], &sid)) {
+                    g_logger.LogFmt(L"CAPABILITY: %s SID=%s", name.c_str(), sid);
+                    LocalFree(sid);
+                }
             }
+            LocalFree(caps);
+            if (state.failed)
+                break;
         }
-
-        // Windows named capabilities, as returned by DeriveCapabilitySidsFromName.
-        // Each opt-in adds one SID to this token; it does not edit host ACLs.
-        struct NamedCapability { bool enabled; const wchar_t* name; const wchar_t* sid; PSID* storage; };
-        const NamedCapability named[] = {
-            { config.allowRegistryRead, L"registryRead",
-              L"S-1-15-3-1024-1065365936-1281604716-3511738428-1654721687-432734479-3232135806-4053264122-3456934681", &state.pRegistrySid },
-            { config.allowCom, L"lpacCom",
-              L"S-1-15-3-1024-2405443489-874036122-4286035555-1823921565-1746547431-2453885448-3625952902-991631256", &state.pComSid },
-        };
-        for (const auto& cap : named) {
-            if (!cap.enabled) continue;
-            if (config.tokenMode == TokenMode::LPAC &&
-                ConvertStringSidToSidW(cap.sid, cap.storage)) {
-                state.caps[state.capCount++] = { *cap.storage, SE_GROUP_ENABLED };
-                g_logger.LogFmt(L"CAPABILITY: %s SID=%s", cap.name, cap.sid);
-            } else {
-                g_logger.LogFmt(L"CAPABILITY: %s allocation failed or mode is not LPAC", cap.name);
-                state.failed = true;
-            }
-        }
-
         return state;
-    }
-
-    // -----------------------------------------------------------------------
-    // FreeCapabilities — release allocated capability SIDs.
-    //
-    // Inputs:  state — CapabilityState returned from BuildCapabilities
-    // Effect:  FreeSid for built-in SIDs, LocalFree for string-derived SIDs
-    // Verifiable: SID pointers become invalid after this call
-    // -----------------------------------------------------------------------
-    inline void FreeCapabilities(CapabilityState& state)
-    {
-        if (state.pNetSid) { FreeSid(state.pNetSid); state.pNetSid = nullptr; }
-        if (state.pLanSid) { FreeSid(state.pLanSid); state.pLanSid = nullptr; }
-        if (state.pRegistrySid) { LocalFree(state.pRegistrySid); state.pRegistrySid = nullptr; }
-        if (state.pComSid) { LocalFree(state.pComSid); state.pComSid = nullptr; }
-        state.capCount = 0;
     }
 
     // -----------------------------------------------------------------------

@@ -139,19 +139,20 @@ LibreOffice's own startup needs SxS registry access in the tested workflow.
 Its launcher-generated configuration explicitly requests:
 
 ```toml
-[privileges]
-registry_read = true
-com = true
+[capabilities]
+names = ['registryRead', 'lpacCom']
 ```
 
-`registry_read` adds the Windows `registryRead` capability to the LPAC token;
-`com` adds `lpacCom` for a separate COM/OLE startup requirement. These are
+The names add Windows capability SIDs to the LPAC token: `registryRead` for
+SxS access and `lpacCom` for a separate COM/OLE startup requirement. These are
 application needs, not requirements of the pipe hook.
 
 The capability approach needs no host registry ACL change or UAC elevation.
 It grants access where ACLs accept that capability, broader than a single SxS
 key. File grants stay separate. Do not describe it as unrestricted registry
-access, registry writes, or a grant confined to one key.
+access, a guarantee of writes, or a grant confined to one key. It is also not a
+global read-only restriction: existing ACLs can permit writes when the complete
+access check allows them.
 
 Do not copy these capabilities into the basic pipe regression test to make
 injection pass. Do not strip LibreOffice's manifest to avoid its requirements.

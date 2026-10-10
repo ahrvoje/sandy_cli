@@ -25,15 +25,15 @@ set FAIL=0
 set OUT=%TEMP%\sandy_bugs_out.txt
 
 REM --- 1: the same key twice in one section ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\Windows']\nread = ['C:\Users']" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\Windows']\nread = ['C:\Users']" >"%OUT%" 2>&1
 call :expect_exit 128 "1: duplicate key in a section is rejected"
 
 REM --- 2: limit value beyond the allowed range (was clamped silently) ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[limit]\ntimeout = 99999999999" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[limit]\ntimeout = 99999999999" >"%OUT%" 2>&1
 call :expect_exit 128 "2: timeout overflow is rejected"
 
 REM --- 3: the same path in two spellings (Windows paths ignore case) ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\Windows', 'c:\windows']" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\Windows', 'c:\windows']" >"%OUT%" 2>&1
 findstr /C:"Duplicate path" "%OUT%" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 3: case-different duplicate path gives a warning
@@ -45,19 +45,19 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM --- 4: empty string in a path array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['', 'C:\Windows']" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['', 'C:\Windows']" >"%OUT%" 2>&1
 call :expect_exit 128 "4: empty path in an allow array is rejected"
 
 REM --- 5: empty string in the environment pass array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[environment]\npass = ['', 'PATH', '']" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[environment]\npass = ['', 'PATH', '']" >"%OUT%" 2>&1
 call :expect_exit 128 "5: empty variable name in [environment] pass is rejected"
 
 REM --- 6: the same section header twice ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\Windows']\n[allow.deep]\nwrite = ['C:\Users']" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\Windows']\n\n[allow.deep]\nwrite = ['C:\Users']" >"%OUT%" 2>&1
 call :expect_exit 128 "6: duplicate section header is rejected"
 
 REM --- 7: memory limit beyond the allowed range ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[limit]\nmemory = 3000000" >"%OUT%" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[limit]\nmemory = 3000000" >"%OUT%" 2>&1
 call :expect_exit 128 "7: memory limit overflow is rejected"
 
 del "%OUT%" 2>nul

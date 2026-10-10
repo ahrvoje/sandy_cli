@@ -8,5 +8,6 @@ workdir = '%USERPROFILE%'
 
 [allow.deep]
 read    = ['%USERPROFILE%']
+
 [environment]
 inherit = true

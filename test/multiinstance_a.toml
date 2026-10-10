@@ -6,5 +6,6 @@ token = 'appcontainer'
 read = ['%USERPROFILE%\test_multiinstance\scripts']
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 all = ['%USERPROFILE%\test_multiinstance\shared']
+
 [environment]
 inherit = true

@@ -12,7 +12,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 
 ---
 
-## Level 1 - 128 methods
+## Level 1 - 124 methods
 
 ### Sandbox.h
 - `Sandbox.h > CollectDenyPaths` - leaf method
@@ -140,14 +140,10 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 - `SandboxTypes.h > AllocateInstanceSid` - leaf method
 - `SandboxTypes.h > GetSystemErrorMessage` - leaf method
 - `SandboxTypes.h > IsRestrictedTokenMode` - leaf method
+- `SandboxTypes.h > HasCapability` - leaf method
 - `SandboxTypes.h > TokenModeName` - leaf method
 - `SandboxTypes.h > TokenModeSummaryLabel` - leaf method
 - `SandboxTypes.h > TryParseTokenMode` - leaf method
-- `SandboxTypes.h > LanModeRegistryName` - leaf method
-- `SandboxTypes.h > LanModePhrase` - leaf method
-- `SandboxTypes.h > LanModeTomlDisplayValue` - leaf method
-- `SandboxTypes.h > TryParseLanModeConfigValue` - leaf method
-- `SandboxTypes.h > TryParseLanModeRegistryValue` - leaf method
 - `SandboxTypes.h > SandyLogger::Timestamp` - leaf method
 - `SandboxTypes.h > SandyLogger::StdinLogValue` - leaf method
 - `SandboxTypes.h > SandyLogger::WriteConfigHeaderUnlocked` - leaf method
@@ -163,7 +159,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 ### sandy.cpp
 - `sandy.cpp > StampLogPath` - leaf method
 
-## Level 2 - 52 methods
+## Level 2 - 53 methods
 
 ### Sandbox.h
 - `Sandbox.h > PathDepth` - Sandy refs: `SandboxTypes.h > NormalizeFsPath`
@@ -172,6 +168,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 ### SandboxCLI.h
 - `SandboxCLI.h > CollectArgs` - Sandy refs: `SandboxCLI.h > QuoteArg`
 ### SandboxConfig.h
+- `SandboxConfig.h > ValidateCapabilityConfig` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > HasCapability`, `SandboxTypes.h > NormalizeLookupKey`
 - `SandboxConfig.h > ReadTomlFileText` - Sandy refs: `SandboxConfig.h > ReadTomlFileUtf8`, `TomlAdapter.h > Utf8ToWide`
 - `SandboxConfig.h > ParseFolderRuleSection` - Sandy refs: `SandboxConfig.h > FolderAccessKeyMap`
 - `SandboxConfig.h > TryParseBoolValue` - Sandy refs: `SandboxConfig.h > RequireScalarValue`
@@ -187,7 +184,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 ### SandboxEnvironment.h
 - `SandboxEnvironment.h > ShouldKeepEnvironmentVar` - Sandy refs: `SandboxEnvironment.h > IsEssentialEnvironmentVar`, `SandboxEnvironment.h > IsExplicitlyPassedEnvironmentVar`
 - `SandboxEnvironment.h > SerializeEnvironmentBlock` - Sandy refs: `SandboxEnvironment.h > AppendSerializedEnvironmentEntry`
-- `SandboxEnvironment.h > NetworkSummaryLabel` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`
+- `SandboxEnvironment.h > NetworkSummaryLabel` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > HasCapability`
 - `SandboxEnvironment.h > PrintSummaryHeader` - Sandy refs: `SandboxTypes.h > TokenModeSummaryLabel`
 - `SandboxEnvironment.h > PrintSummaryFolders` - Sandy refs: `SandboxTypes.h > AccessTag`
 - `SandboxEnvironment.h > PrintSummaryRegistry` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`
@@ -204,7 +201,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 - `SandboxProcess.h > CloseHiddenProcessOutputWriter` - Sandy refs: `SandboxProcess.h > CloseHandleIfValid`
 - `SandboxProcess.h > FinalizeHiddenProcessOutput` - Sandy refs: `SandboxProcess.h > DrainHiddenProcessPipe`
 ### SandboxProfileRegistry.h
-- `SandboxProfileRegistry.h > ReadSavedProfileRegistrySummary` - Sandy refs: `SandboxRegistry.h > ReadRegSz`, `SandboxRegistry.h > TryReadRegDword`
+- `SandboxProfileRegistry.h > ReadSavedProfileRegistrySummary` - Sandy refs: `SandboxRegistry.h > ReadRegSz`, `SandboxRegistry.h > ReadRegDword`, `SandboxRegistry.h > TryReadRegDword`
 ### SandboxRecoveryLedger.h
 - `SandboxRecoveryLedger.h > OpenRecoveryLedgerKey` - Sandy refs: `SandboxRecoveryLedger.h > GetRecoveryLedgerKey`
 - `SandboxRecoveryLedger.h > EnumRecoveryLedgerInstanceIds` - Sandy refs: `SandboxRecoveryLedger.h > GetRecoveryLedgerParentKey`
@@ -228,7 +225,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 - `SandboxTypes.h > SandyLogger::Stop` - Sandy refs: `SandboxTypes.h > SandyLogger::Timestamp`
 - `SandboxTypes.h > SandyLogger::WriteAccessSectionUnlocked` - Sandy refs: `SandboxTypes.h > AccessTag`
 - `SandboxTypes.h > SandyLogger::WriteRegistrySectionUnlocked` - Sandy refs: `SandboxTypes.h > SandyLogger::WriteRegistryEntriesUnlocked`
-- `SandboxTypes.h > SandyLogger::WritePrivilegesSectionUnlocked` - Sandy refs: `SandboxTypes.h > SandyLogger::StdinLogValue`, `SandboxTypes.h > LanModePhrase`
+- `SandboxTypes.h > SandyLogger::WritePrivilegesSectionUnlocked` - Sandy refs: `SandboxTypes.h > SandyLogger::StdinLogValue`
 - `SandboxTypes.h > SandyLogger::WriteLogLineUnlocked` - Sandy refs: `SandboxTypes.h > SandyLogger::Timestamp`
 - `SandboxTypes.h > SandyLogger::LogSummary` - Sandy refs: `SandboxTypes.h > SandyLogger::Timestamp`
 ### TomlAdapter.h
@@ -243,9 +240,9 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 - `SandboxConfig.h > ValidateConfiguredPath` - Sandy refs: `SandboxConfig.h > GetConfiguredPathValidationError`, `SandboxConfig.h > ReportConfiguredPathValidationError`
 - `SandboxConfig.h > ValidateModeSpecificConfig` - Sandy refs: `SandboxTypes.h > IsAppContainerFamilyTokenMode`, `SandboxTypes.h > IsRestrictedTokenMode`
 ### SandboxConfigRender.h
-- `SandboxConfigRender.h > PrintResolvedConfig` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > TokenModeName`, `SandboxConfigRender.h > TomlQuotedValue`, `SandboxConfigRender.h > PrintFolderToml`, `SandboxTypes.h > LanModeTomlDisplayValue`
+- `SandboxConfigRender.h > PrintResolvedConfig` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > TokenModeName`, `SandboxConfigRender.h > TomlQuotedValue`, `SandboxConfigRender.h > PrintFolderToml`
 ### SandboxDryRun.h
-- `SandboxDryRun.h > HandleDryRun` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > TokenModeName`, `SandboxDryRun.h > PrintFolderEntries`, `SandboxTypes.h > LanModeTomlDisplayValue`
+- `SandboxDryRun.h > HandleDryRun` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxTypes.h > TokenModeName`, `SandboxDryRun.h > PrintFolderEntries`
 ### SandboxEnvironment.h
 - `SandboxEnvironment.h > FilterEnvironmentVars` - Sandy refs: `SandboxEnvironment.h > ShouldKeepEnvironmentVar`
 - `SandboxEnvironment.h > PrintSummaryPrivileges` - Sandy refs: `SandboxTypes.h > IsRestrictedTokenMode`, `SandboxEnvironment.h > NetworkSummaryLabel`, `SandboxEnvironment.h > StdinSummaryLabel`
@@ -292,7 +289,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 ### SandboxRecoveryLedger.h
 - `SandboxRecoveryLedger.h > QueryRecoveryLedgerPresence` - Sandy refs: `SandboxRecoveryLedger.h > RecoveryLedgerExists`
 ### SandboxSavedProfile.h
-- `SandboxSavedProfile.h > WriteConfigToRegistry` - Sandy refs: `TomlAdapter.h > ParseResult::ok`, `SandboxRegistry.h > TryWriteRegSz`, `SandboxTypes.h > TokenModeName`, `SandboxRegistry.h > TryWriteRegDword`, `SandboxTypes.h > LanModeRegistryName`, `SandboxSavedProfile.h > WriteIndexedFolderEntries`, `SandboxSavedProfile.h > WriteIndexedStringValues`
+- `SandboxSavedProfile.h > WriteConfigToRegistry` - Sandy refs: `TomlAdapter.h > ParseResult::ok`, `SandboxRegistry.h > TryWriteRegSz`, `SandboxTypes.h > TokenModeName`, `SandboxRegistry.h > TryWriteRegDword`, `SandboxSavedProfile.h > WriteIndexedFolderEntries`, `SandboxSavedProfile.h > WriteIndexedStringValues`
 ### SandboxTypes.h
 - `SandboxTypes.h > SandyLogger::LogFmt` - Sandy refs: `TomlAdapter.h > ParseResult::ok`, `SandboxTypes.h > SandyLogger::TryFormatLogMessage`, `SandboxTypes.h > SandyLogger::RecordFormattingDiagnostic`, `SandboxTypes.h > SandyLogger::Log`
 ### TomlAdapter.h
@@ -360,7 +357,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 - `SandboxACL.h > AclMutexGuard::AclMutexGuard(const std::wstring&)` - Sandy refs: `SandboxACL.h > AclMutexGuard::Acquire`
 - `SandboxACL.h > AclMutexGuard::AclMutexGuard(const wchar_t* fixedName)` - Sandy refs: `SandboxACL.h > AclMutexGuard::Acquire`
 ### SandboxConfig.h
-- `SandboxConfig.h > MapConfig` - Sandy refs: `TomlAdapter.h > ParseResult::ok`, `SandboxConfig.h > RequireScalarValue`, `SandboxTypes.h > TryParseTokenMode`, `SandboxConfig.h > TryParseBoolValue`, `SandboxConfig.h > ParseFolderRuleSection`, `SandboxConfig.h > RegistryArrayKeyMap`, `SandboxConfig.h > AppendStringArrayValues`, `SandboxConfig.h > PrivilegeBoolKeyMap`, `SandboxTypes.h > TryParseLanModeConfigValue`, `SandboxConfig.h > LimitKeyMap`, `SandboxConfig.h > TryParseBoundedNonNegativeInteger`, `SandboxConfig.h > ValidateModeSpecificConfig`, `SandboxConfig.h > NormalizeConfigFilesystemPaths`, `SandboxConfig.h > ValidateConfiguredPath`, `SandboxConfig.h > ValidateFolderEntryPaths`, `SandboxConfig.h > ValidateRegistryPathPrefixes`, `SandboxConfig.h > ValidateConfigSanityLimits`
+- `SandboxConfig.h > MapConfig` - Sandy refs: `TomlAdapter.h > ParseResult::ok`, `SandboxConfig.h > RequireScalarValue`, `SandboxTypes.h > TryParseTokenMode`, `SandboxConfig.h > TryParseBoolValue`, `SandboxConfig.h > ParseFolderRuleSection`, `SandboxConfig.h > RegistryArrayKeyMap`, `SandboxConfig.h > AppendStringArrayValues`, `SandboxConfig.h > PrivilegeBoolKeyMap`, `SandboxConfig.h > LimitKeyMap`, `SandboxConfig.h > TryParseBoundedNonNegativeInteger`, `SandboxConfig.h > ValidateModeSpecificConfig`, `SandboxConfig.h > NormalizeConfigFilesystemPaths`, `SandboxConfig.h > ValidateConfiguredPath`, `SandboxConfig.h > ValidateFolderEntryPaths`, `SandboxConfig.h > ValidateRegistryPathPrefixes`, `SandboxConfig.h > ValidateConfigSanityLimits`, `SandboxConfig.h > ValidateCapabilityConfig`
 ### SandboxGrants.h
 - `SandboxGrants.h > InitializeRunLedger` - Sandy refs: `SandboxRecoveryLedger.h > GetGrantsRegKey`, `SandboxGrants.h > GetCurrentProcessCreationTime`, `SandboxGrants.h > MarkGrantTrackingFailure`, `SandboxGrants.h > HardenRegistryKeyAgainstRestricted`
 - `SandboxGrants.h > RecordGrant` - Sandy refs: `SandboxTypes.h > NormalizeFsPath`, `SandboxTypes.h > SandyLogger::LogFmt`, `SandboxGrants.h > MarkGrantTrackingFailure`, `SandboxRecoveryLedger.h > GetGrantsRegKey`, `SandboxTypes.h > SandyLogger::Log`
@@ -371,7 +368,7 @@ Format: `File > Method` or `File > Method(params)` for overloads - Sandy refs: `
 ### SandboxProcess.h
 - `SandboxProcess.h > RunHiddenProcessDetailed` - Sandy refs: `SandboxProcess.h > HiddenProcessLogTarget`, `SandboxProcess.h > SetupHiddenProcessCapture`, `SandboxProcess.h > LaunchHiddenProcessInstance`, `SandboxProcess.h > CloseHiddenProcessHandles`, `SandboxProcess.h > CloseHiddenProcessOutputWriter`, `SandboxProcess.h > AttachHiddenProcessJob`, `SandboxProcess.h > WaitForHiddenProcessCompletion`, `SandboxProcess.h > TerminateHiddenProcessForTimeout`, `SandboxProcess.h > FinalizeHiddenProcessOutput`
 ### SandboxSavedProfile.h
-- `SandboxSavedProfile.h > ReadConfigFromRegistry` - Sandy refs: `SandboxRegistry.h > ReadRegSz`, `SandboxTypes.h > TryParseTokenMode`, `SandboxTypes.h > SandyLogger::LogFmt`, `SandboxTypes.h > NormalizeFsPath`, `SandboxConfig.h > GetConfiguredPathValidationError`, `SandboxRegistry.h > ReadRegDword`, `SandboxTypes.h > TryParseLanModeRegistryValue`, `SandboxRegistry.h > TryReadRegDword`, `SandboxTypes.h > SandyLogger::Log`, `SandboxSavedProfile.h > ReadIndexedFolderEntries`, `SandboxSavedProfile.h > ReadIndexedStringValues`
+- `SandboxSavedProfile.h > ReadConfigFromRegistry` - Sandy refs: `SandboxRegistry.h > ReadRegSz`, `SandboxTypes.h > TryParseTokenMode`, `SandboxTypes.h > SandyLogger::LogFmt`, `SandboxTypes.h > NormalizeFsPath`, `SandboxConfig.h > GetConfiguredPathValidationError`, `SandboxRegistry.h > ReadRegDword`, `SandboxRegistry.h > TryReadRegDword`, `SandboxTypes.h > SandyLogger::Log`, `SandboxSavedProfile.h > ReadIndexedFolderEntries`, `SandboxSavedProfile.h > ReadIndexedStringValues`, `SandboxConfig.h > ValidateCapabilityConfig`
 - `SandboxSavedProfile.h > BeginProfileCreationTransaction` - Sandy refs: `SandboxGrants.h > HardenRegistryKeyAgainstRestricted`, `SandboxRegistry.h > TryWriteRegDword`, `SandboxRegistry.h > TryWriteRegQword`, `SandboxGrants.h > GetCurrentProcessCreationTime`, `SandboxSavedProfile.h > DeleteProfileRegistryState`
 - `SandboxSavedProfile.h > AbortUncommittedProfileCreation` - Sandy refs: `SandboxSavedProfile.h > FreeProfileCreateSid`, `SandboxSavedProfile.h > DeleteProfileRegistryState`
 - `SandboxSavedProfile.h > FinalizeProfileCreateRollback` - Sandy refs: `SandboxTypes.h > SandyLogger::LogFmt`, `SandboxSavedProfile.h > DeleteProfileRegistryState`

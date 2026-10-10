@@ -1,0 +1,19 @@
+# Layout fixture: validated and printed only; no grants are applied.
+[sandbox]
+token = 'restricted'
+integrity = 'low'
+
+[allow.deep]
+read = ['%SANDY_TOML_TEST_DIR%\allow-deep']
+
+[allow.this]
+stat = ['%SANDY_TOML_TEST_DIR%\allow-this']
+
+[deny.deep]
+write = ['%SANDY_TOML_TEST_DIR%\deny-deep']
+
+[deny.this]
+delete = ['%SANDY_TOML_TEST_DIR%\deny-this']
+
+[registry]
+read = ['HKCU\Software\Sandy\Test']

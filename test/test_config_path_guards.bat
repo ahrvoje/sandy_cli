@@ -81,7 +81,7 @@ del "%TEMP%\sandy_pg2.txt" 2>nul
 echo.
 echo --- PG3: stdin relative path rejected ---
 
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nstdin = 'relative_input.txt'" >nul 2>"%TEMP%\sandy_pg3.txt"
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\nstdin = 'relative_input.txt'" >nul 2>"%TEMP%\sandy_pg3.txt"
 set PG3_EC=!ERRORLEVEL!
 
 if !PG3_EC! EQU 128 (
@@ -106,7 +106,7 @@ del "%TEMP%\sandy_pg3.txt" 2>nul
 echo.
 echo --- PG4: stdin missing file rejected ---
 
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nstdin = '!MISSING_FILE!'" >nul 2>"%TEMP%\sandy_pg4.txt"
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\nstdin = '!MISSING_FILE!'" >nul 2>"%TEMP%\sandy_pg4.txt"
 set PG4_EC=!ERRORLEVEL!
 
 if !PG4_EC! EQU 128 (
@@ -131,7 +131,7 @@ del "%TEMP%\sandy_pg4.txt" 2>nul
 echo.
 echo --- PG5: stdin directory path rejected ---
 
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nstdin = '!TMP_DIR!'" >nul 2>"%TEMP%\sandy_pg5.txt"
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\nstdin = '!TMP_DIR!'" >nul 2>"%TEMP%\sandy_pg5.txt"
 set PG5_EC=!ERRORLEVEL!
 
 if !PG5_EC! EQU 128 (
@@ -156,7 +156,7 @@ del "%TEMP%\sandy_pg5.txt" 2>nul
 echo.
 echo --- PG6: environment variables in paths are expanded ---
 
-"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\nworkdir = '%%USERPROFILE%%'\n[allow.this]\nstat = ['%%LOCALAPPDATA%%']" >"%TEMP%\sandy_pg6.txt" 2>&1
+"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\nworkdir = '%%USERPROFILE%%'\n\n[allow.this]\nstat = ['%%LOCALAPPDATA%%']" >"%TEMP%\sandy_pg6.txt" 2>&1
 set PG6_EC=!ERRORLEVEL!
 
 if !PG6_EC! EQU 0 (
@@ -199,7 +199,7 @@ del "%TEMP%\sandy_pg6.txt" 2>nul
 echo.
 echo --- PG7: variable that is not set is rejected ---
 
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['%%SANDY_TEST_NO_SUCH_VAR%%\data']" >nul 2>"%TEMP%\sandy_pg7.txt"
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['%%SANDY_TEST_NO_SUCH_VAR%%\data']" >nul 2>"%TEMP%\sandy_pg7.txt"
 set PG7_EC=!ERRORLEVEL!
 
 if !PG7_EC! EQU 128 (

@@ -4,9 +4,12 @@ token = 'lpac'
 [allow.this]
 execute = ['%SANDY_PIPE_TEST_DIR%', '%SANDY_PIPE_TEST_DIR%\pipe_hook_app.exe']
 
+[capabilities]
+names = ['registryRead', 'lpacCom', 'lpacCryptoServices', 'lpacIdentityServices', 'internetClient', 'privateNetworkClientServer', 'REGISTRYREAD']
+
 [privileges]
-registry_read = true
-com = true
+loopback = false
+child_processes = false
 
 [pipes]
 '\\.\pipe\sandy-capability-test' = '\\.\pipe\LOCAL\sandy-capability-test'

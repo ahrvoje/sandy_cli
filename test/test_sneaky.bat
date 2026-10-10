@@ -27,7 +27,7 @@ echo.
 REM 1a: Backslash before closing DQ — the \" should escape the quote,
 REM      leaving the string unterminated.
 echo --- 1a: Backslash-quote in DQ string ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n[allow.deep]\nread = [\"C:\\path\\\"]" >"%TEMP%\sneaky_1a.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n\n[allow.deep]\nread = [\"C:\\path\\\"]" >"%TEMP%\sneaky_1a.txt" 2>&1
 set DRY_1A=!ERRORLEVEL!
 if !DRY_1A! NEQ 0 (
     echo   [PASS] 1a: Backslash-quote malformed string rejected
@@ -41,7 +41,7 @@ del "%TEMP%\sneaky_1a.txt" 2>nul
 
 REM 1b: Array without commas — ['a' 'b'] must be rejected
 echo --- 1b: Comma-less array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows' 'C:\\Users']" >"%TEMP%\sneaky_1b.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows' 'C:\\Users']" >"%TEMP%\sneaky_1b.txt" 2>&1
 findstr /C:"value-separator" "%TEMP%\sneaky_1b.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 1b: Comma-less array rejected
@@ -69,7 +69,7 @@ del "%TEMP%\sneaky_1c.txt" 2>nul
 
 REM 1d: Mixed quote types in array — valid TOML
 echo --- 1d: Mixed quote types in array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows', \"C:\\Windows\\Temp\"]" >"%TEMP%\sneaky_1d.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows', \"C:\\Windows\\Temp\"]" >"%TEMP%\sneaky_1d.txt" 2>&1
 set DRY_1D=!ERRORLEVEL!
 if !DRY_1D! EQU 0 (
     echo   [PASS] 1d: Mixed quotes accepted
@@ -83,7 +83,7 @@ del "%TEMP%\sneaky_1d.txt" 2>nul
 
 REM 1e: Empty array — valid
 echo --- 1e: Empty array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = []" >"%TEMP%\sneaky_1e.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = []" >"%TEMP%\sneaky_1e.txt" 2>&1
 set DRY_1E=!ERRORLEVEL!
 if !DRY_1E! EQU 0 (
     echo   [PASS] 1e: Empty array accepted
@@ -97,7 +97,7 @@ del "%TEMP%\sneaky_1e.txt" 2>nul
 
 REM 1f: Unquoted stray token in array
 echo --- 1f: Unquoted stray token in array ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = [C:\Windows]" >"%TEMP%\sneaky_1f.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = [C:\Windows]" >"%TEMP%\sneaky_1f.txt" 2>&1
 set DRY_1F=!ERRORLEVEL!
 if !DRY_1F! NEQ 0 (
     echo   [PASS] 1f: Unquoted token in array rejected
@@ -111,7 +111,7 @@ del "%TEMP%\sneaky_1f.txt" 2>nul
 
 REM 1g: DQ string with valid escape sequences
 echo --- 1g: Valid escape sequences in DQ ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = [\"C:\\Windows\\System32\"]" >"%TEMP%\sneaky_1g.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = [\"C:\\Windows\\System32\"]" >"%TEMP%\sneaky_1g.txt" 2>&1
 set DRY_1G=!ERRORLEVEL!
 if !DRY_1G! EQU 0 (
     echo   [PASS] 1g: Escaped backslashes in DQ path accepted
@@ -146,7 +146,7 @@ del "%TEMP%\sneaky_2a.txt" 2>nul
 
 REM 2b: [deny.deep] on AC — must reject
 echo --- 2b: deny on appcontainer ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[deny.deep]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2b.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[deny.deep]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2b.txt" 2>&1
 findstr /I /C:"deny" "%TEMP%\sneaky_2b.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2b: Deny on AC rejected
@@ -160,7 +160,7 @@ del "%TEMP%\sneaky_2b.txt" 2>nul
 
 REM 2d: desktop on AC — must reject
 echo --- 2d: desktop on appcontainer ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\ndesktop = true" >"%TEMP%\sneaky_2d.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\ndesktop = true" >"%TEMP%\sneaky_2d.txt" 2>&1
 findstr /C:"desktop" "%TEMP%\sneaky_2d.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2d: desktop on AC rejected
@@ -172,15 +172,15 @@ if !ERRORLEVEL! EQU 0 (
 )
 del "%TEMP%\sneaky_2d.txt" 2>nul
 
-REM 2e: network on RT — must reject
-echo --- 2e: network on restricted ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n[privileges]\nnetwork = true" >"%TEMP%\sneaky_2e.txt" 2>&1
-findstr /C:"network" "%TEMP%\sneaky_2e.txt" >nul 2>nul
+REM 2e: capabilities on RT — must reject
+echo --- 2e: capabilities on restricted ---
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n\n[capabilities]\nnames = ['internetClient']" >"%TEMP%\sneaky_2e.txt" 2>&1
+findstr /C:"capabilities" "%TEMP%\sneaky_2e.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] 2e: network on RT rejected
+    echo   [PASS] 2e: capabilities on RT rejected
     set /a PASS+=1
 ) else (
-    echo   [FAIL] 2e: network on RT should be rejected
+    echo   [FAIL] 2e: capabilities on RT should be rejected
     type "%TEMP%\sneaky_2e.txt"
     set /a FAIL+=1
 )
@@ -188,7 +188,7 @@ del "%TEMP%\sneaky_2e.txt" 2>nul
 
 REM 2f: [registry] on AC — must reject
 echo --- 2f: registry on appcontainer ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[registry]\nread = ['HKCU\\Software']" >"%TEMP%\sneaky_2f.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[registry]\nread = ['HKCU\\Software']" >"%TEMP%\sneaky_2f.txt" 2>&1
 findstr /C:"registry" "%TEMP%\sneaky_2f.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2f: registry on AC rejected
@@ -216,7 +216,7 @@ del "%TEMP%\sneaky_2g.txt" 2>nul
 
 REM 2h: All 10 access levels in allow.deep — must be accepted
 echo --- 2h: All 10 access levels accepted ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows']\nwrite = ['C:\\Windows\\Temp']\nexecute = ['C:\\Windows']\nappend = ['C:\\Windows\\Temp']\ndelete = ['C:\\Windows\\Temp']\nall = ['C:\\Windows\\Temp']\nrun = ['C:\\Windows']\nstat = ['C:\\Windows']\ntouch = ['C:\\Windows\\Temp']\ncreate = ['C:\\Windows\\Temp']" >"%TEMP%\sneaky_2h.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows']\nwrite = ['C:\\Windows\\Temp']\nexecute = ['C:\\Windows']\nappend = ['C:\\Windows\\Temp']\ndelete = ['C:\\Windows\\Temp']\nall = ['C:\\Windows\\Temp']\nrun = ['C:\\Windows']\nstat = ['C:\\Windows']\ntouch = ['C:\\Windows\\Temp']\ncreate = ['C:\\Windows\\Temp']" >"%TEMP%\sneaky_2h.txt" 2>&1
 set DRY_2H=!ERRORLEVEL!
 if !DRY_2H! EQU 0 (
     echo   [PASS] 2h: All 10 access levels accepted
@@ -230,7 +230,7 @@ del "%TEMP%\sneaky_2h.txt" 2>nul
 
 REM 2i: Old [allow] section rejected
 echo --- 2i: Old [allow] section rejected ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2i.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2i.txt" 2>&1
 findstr /C:"no longer supported" "%TEMP%\sneaky_2i.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2i: Old [allow] rejected with helpful message
@@ -244,7 +244,7 @@ del "%TEMP%\sneaky_2i.txt" 2>nul
 
 REM 2j: Old [deny] section rejected
 echo --- 2j: Old [deny] section rejected ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n[deny]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2j.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n\n[deny]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2j.txt" 2>&1
 findstr /C:"no longer supported" "%TEMP%\sneaky_2j.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2j: Old [deny] rejected with helpful message
@@ -258,7 +258,7 @@ del "%TEMP%\sneaky_2j.txt" 2>nul
 
 REM 2k: Unknown section rejected
 echo --- 2k: Unknown section rejected ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[hacker]\nshell = 'cmd.exe'" >"%TEMP%\sneaky_2k.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[hacker]\nshell = 'cmd.exe'" >"%TEMP%\sneaky_2k.txt" 2>&1
 findstr /C:"Unknown config section" "%TEMP%\sneaky_2k.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2k: Unknown section rejected
@@ -300,7 +300,7 @@ del "%TEMP%\sneaky_2m.txt" 2>nul
 
 REM 2n: LPAC with deny — must reject (same as AC)
 echo --- 2n: deny on LPAC ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'lpac'\n[deny.deep]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2n.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'lpac'\n\n[deny.deep]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2n.txt" 2>&1
 findstr /C:"deny" "%TEMP%\sneaky_2n.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 2n: Deny on LPAC rejected
@@ -321,7 +321,7 @@ echo.
 
 REM 3a: Path with forward slashes — must be accepted
 echo --- 3a: Forward slash path ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:/Windows/System32']" >"%TEMP%\sneaky_3a.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:/Windows/System32']" >"%TEMP%\sneaky_3a.txt" 2>&1
 set DRY_3A=!ERRORLEVEL!
 if !DRY_3A! EQU 0 (
     echo   [PASS] 3a: Forward slash path accepted
@@ -335,7 +335,7 @@ del "%TEMP%\sneaky_3a.txt" 2>nul
 
 REM 3b: Path with dotdot — must be resolved and accepted
 echo --- 3b: Dotdot path canonicalization ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows\\System32\\..']" >"%TEMP%\sneaky_3b.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows\\System32\\..']" >"%TEMP%\sneaky_3b.txt" 2>&1
 set DRY_3B=!ERRORLEVEL!
 if !DRY_3B! EQU 0 (
     echo   [PASS] 3b: Dotdot path accepted and resolved
@@ -349,7 +349,7 @@ del "%TEMP%\sneaky_3b.txt" 2>nul
 
 REM 3c: Path with single dot — must be resolved and accepted
 echo --- 3c: Single dot path ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows\\.']" >"%TEMP%\sneaky_3c.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows\\.']" >"%TEMP%\sneaky_3c.txt" 2>&1
 set DRY_3C=!ERRORLEVEL!
 if !DRY_3C! EQU 0 (
     echo   [PASS] 3c: Single-dot path accepted and resolved
@@ -363,7 +363,7 @@ del "%TEMP%\sneaky_3c.txt" 2>nul
 
 REM 3d: Trailing backslash — C:\Windows\ -> C:\Windows
 echo --- 3d: Trailing backslash stripped ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\Windows\\']" >"%TEMP%\sneaky_3d.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\Windows\\']" >"%TEMP%\sneaky_3d.txt" 2>&1
 set DRY_3D=!ERRORLEVEL!
 if !DRY_3D! EQU 0 (
     echo   [PASS] 3d: Trailing backslash path accepted
@@ -377,7 +377,7 @@ del "%TEMP%\sneaky_3d.txt" 2>nul
 
 REM 3e: Root path preservation — C:\ must stay C:\
 echo --- 3e: Root path preserved ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:\\']" >"%TEMP%\sneaky_3e.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:\\']" >"%TEMP%\sneaky_3e.txt" 2>&1
 set DRY_3E=!ERRORLEVEL!
 if !DRY_3E! EQU 0 (
     echo   [PASS] 3e: Root path accepted
@@ -391,7 +391,7 @@ del "%TEMP%\sneaky_3e.txt" 2>nul
 
 REM 3f: Mixed slashes with dotdot
 echo --- 3f: Mixed slashes with dotdot ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['C:/Windows/System32/../Temp']" >"%TEMP%\sneaky_3f.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['C:/Windows/System32/../Temp']" >"%TEMP%\sneaky_3f.txt" 2>&1
 set DRY_3F=!ERRORLEVEL!
 if !DRY_3F! EQU 0 (
     echo   [PASS] 3f: Mixed slashes + dotdot resolved
@@ -405,7 +405,7 @@ del "%TEMP%\sneaky_3f.txt" 2>nul
 
 REM 3g: Relative path rejected
 echo --- 3g: Relative path rejected ---
-"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n[allow.deep]\nread = ['relative\\path']" >"%TEMP%\sneaky_3g.txt" 2>&1
+"!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[allow.deep]\nread = ['relative\\path']" >"%TEMP%\sneaky_3g.txt" 2>&1
 findstr /C:"not an absolute" "%TEMP%\sneaky_3g.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] 3g: Relative path rejected
@@ -528,11 +528,14 @@ copy /y "%~dp0test_sneaky.py" "!SCOPE_ROOT!\scripts\test_sneaky.py" >nul
 REM Build scope config with resolved paths — use [environment] inherit to pass SNEAKY_SCOPE_ROOT
 echo [sandbox]>"%TEMP%\sneaky_scope_run.toml"
 echo token = 'appcontainer'>>"%TEMP%\sneaky_scope_run.toml"
+echo.>>"%TEMP%\sneaky_scope_run.toml"
 echo [allow.this]>>"%TEMP%\sneaky_scope_run.toml"
 echo stat = ['!SCOPE_ROOT!\stat_only']>>"%TEMP%\sneaky_scope_run.toml"
+echo.>>"%TEMP%\sneaky_scope_run.toml"
 echo [allow.deep]>>"%TEMP%\sneaky_scope_run.toml"
 echo read = ['!SCOPE_ROOT!\deep_read', '!SCOPE_ROOT!\scripts']>>"%TEMP%\sneaky_scope_run.toml"
 echo execute = ['%LOCALAPPDATA%\Programs\Python\Python314']>>"%TEMP%\sneaky_scope_run.toml"
+echo.>>"%TEMP%\sneaky_scope_run.toml"
 echo [environment]>>"%TEMP%\sneaky_scope_run.toml"
 echo inherit = false>>"%TEMP%\sneaky_scope_run.toml"
 echo pass = ['SNEAKY_SCOPE_ROOT', 'PATH', 'TEMP', 'SYSTEMROOT']>>"%TEMP%\sneaky_scope_run.toml"

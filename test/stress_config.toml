@@ -6,6 +6,7 @@ token = 'appcontainer'
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 read = ['%USERPROFILE%\test_stress_scripts']
 all = ['%USERPROFILE%\test_stress_A', '%USERPROFILE%\test_stress_B', '%USERPROFILE%\test_stress_C']
+
 [environment]
 inherit = true
 

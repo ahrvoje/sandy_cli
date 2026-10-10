@@ -73,7 +73,7 @@ del "%TEMP%\sandy_sg2.txt" 2>nul
 echo.
 echo --- SG3: stdin = [] rejected ---
 
-"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nstdin = []" >nul 2>"%TEMP%\sandy_sg3.txt"
+"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\nstdin = []" >nul 2>"%TEMP%\sandy_sg3.txt"
 set SG3_EC=!ERRORLEVEL!
 
 if !SG3_EC! EQU 128 (
@@ -98,7 +98,7 @@ del "%TEMP%\sandy_sg3.txt" 2>nul
 echo.
 echo --- SG4: stdin = '' rejected ---
 
-"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\n[privileges]\nstdin = ''" >nul 2>"%TEMP%\sandy_sg4.txt"
+"!SANDY!" --print-config -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\nstdin = ''" >nul 2>"%TEMP%\sandy_sg4.txt"
 set SG4_EC=!ERRORLEVEL!
 
 if !SG4_EC! EQU 128 (

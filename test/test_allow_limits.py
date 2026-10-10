@@ -1,11 +1,11 @@
 """
-test_allow_limits.py - Tests for [privileges] and [limit] settings.
+test_allow_limits.py - Tests for [capabilities] and [limit] settings.
 
 Run inside the sandbox:
     sandy.exe -c test_allow_limits_config.toml -x <python.exe> test_allow_limits.py
 
 Tests cover:
-  1. Network access (network = true)     -> outbound HTTP works
+  1. Network access (internetClient capability)     -> outbound HTTP works
   2. Memory limit                        -> allocation beyond limit fails
   3. Process count limit                 -> spawning beyond limit fails
   4. Timeout                             -> tested externally by batch runner
@@ -47,7 +47,7 @@ def expect_blocked(label, fn):
 
 
 # ---------------------------------------------------------------------------
-# 1. NETWORK ACCESS (network = true)
+# 1. NETWORK ACCESS (internetClient capability)
 #    Outbound internet should be allowed (unlike the main test suite).
 # ---------------------------------------------------------------------------
 print("--- Network access (allowed) ---")

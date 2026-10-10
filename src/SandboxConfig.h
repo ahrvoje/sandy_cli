@@ -323,9 +323,7 @@ namespace Sandbox {
     inline const std::map<std::wstring, bool SandboxConfig::*>& PrivilegeBoolKeyMap()
     {
         static const std::map<std::wstring, bool SandboxConfig::*> kPrivilegeBoolKeys = {
-            {L"network", &SandboxConfig::allowNetwork},
-            {L"registry_read", &SandboxConfig::allowRegistryRead},
-            {L"com", &SandboxConfig::allowCom},
+            {L"loopback", &SandboxConfig::allowLoopback},
             {L"desktop", &SandboxConfig::allowDesktop},
             {L"clipboard_read", &SandboxConfig::allowClipboardRead},
             {L"clipboard_write", &SandboxConfig::allowClipboardWrite},
@@ -501,6 +499,40 @@ namespace Sandbox {
             e.path = ingest(e.path);
     }
 
+    // Used for both TOML and saved profiles. Names are opt-in, not a fixed
+    // catalogue: deriving a SID does not prove that a service accepts it.
+    inline void ValidateCapabilityConfig(SandboxConfig& config, bool& parseError)
+    {
+        if (config.capabilityNames.size() > kMaxRulesPerSection) {
+            fprintf(stderr, "Error: Too many capability names (max %zu).\n", kMaxRulesPerSection);
+            parseError = true;
+            return;
+        }
+        std::set<std::wstring> seen;
+        std::vector<std::wstring> unique;
+        for (const auto& name : config.capabilityNames) {
+            if (name.empty() || name.size() > 256 ||
+                std::any_of(name.begin(), name.end(),
+                    [](wchar_t ch) { return ch <= 32 || ch == 127 || iswspace(ch); })) {
+                fprintf(stderr, "Error: Capability names must contain 1-256 characters without whitespace or controls.\n");
+                parseError = true;
+                continue;
+            }
+            if (seen.insert(NormalizeLookupKey(name)).second)
+                unique.push_back(name);
+        }
+        config.capabilityNames = std::move(unique);
+        if (IsRestrictedTokenMode(config.tokenMode) &&
+            (!config.capabilityNames.empty() || config.allowLoopback)) {
+            fprintf(stderr, "Error: Capabilities and loopback require appcontainer/lpac mode.\n");
+            parseError = true;
+        }
+        if (config.allowLoopback && !HasCapability(config, L"privateNetworkClientServer")) {
+            fprintf(stderr, "Error: loopback = true requires privateNetworkClientServer in [capabilities] names.\n");
+            parseError = true;
+        }
+    }
+
     inline void ValidateModeSpecificConfig(const SandboxConfig& config,
                                            bool integritySeen,
                                            bool registrySeen,
@@ -510,19 +542,9 @@ namespace Sandbox {
         bool isAC = IsAppContainerFamilyTokenMode(config.tokenMode);
         bool isRT = IsRestrictedTokenMode(config.tokenMode);
 
-        if (config.tokenMode != TokenMode::LPAC &&
-            (privSeen.count(L"registry_read") || privSeen.count(L"com"))) {
-            fprintf(stderr, "Error: 'registry_read' and 'com' are available only in lpac mode.\n");
-            parseError = true;
-        }
-
         if (isRT) {
-            if (privSeen.count(L"network")) {
-                fprintf(stderr, "Error: 'network' is not available in restricted mode (network is always unrestricted).\n");
-                parseError = true;
-            }
-            if (privSeen.count(L"lan")) {
-                fprintf(stderr, "Error: 'lan' is not available in restricted mode (network is always unrestricted).\n");
+            if (privSeen.count(L"loopback")) {
+                fprintf(stderr, "Error: 'loopback' is not available in restricted mode.\n");
                 parseError = true;
             }
             if (!integritySeen) {
@@ -719,7 +741,7 @@ namespace Sandbox {
                 name != L"sandbox" &&
                 name != L"allow.deep" && name != L"allow.this" &&
                 name != L"deny.deep" && name != L"deny.this" &&
-                name != L"privileges" && name != L"pipes" &&
+                name != L"privileges" && name != L"capabilities" && name != L"pipes" &&
                 name != L"registry" && name != L"environment" && name != L"limit")
             {
                 fprintf(stderr, "Error: Unknown config section: [%ls]\n", name.c_str());
@@ -810,7 +832,24 @@ namespace Sandbox {
             }
         }
 
-        // --- [privileges] — sandbox capabilities ---
+        // --- [capabilities] ---
+        if (auto sit = doc.find(L"capabilities"); sit != doc.end()) {
+            if (IsRestrictedTokenMode(config.tokenMode)) {
+                fprintf(stderr, "Error: [capabilities] is available only in appcontainer/lpac mode.\n");
+                config.parseError = true;
+            }
+            for (const auto& [key, val] : sit->second) {
+                if (key != L"names") {
+                    fprintf(stderr, "Error: Unknown key in [capabilities]: %ls\n", key.c_str());
+                    config.parseError = true;
+                    continue;
+                }
+                AppendStringArrayValues(val, L"capabilities", key, config.capabilityNames,
+                                        config.parseError, L"['registryRead']", L"capability name");
+            }
+        }
+
+        // --- [privileges] — non-capability controls ---
         std::set<std::wstring> privSeen;
         {
             auto sit = doc.find(L"privileges");
@@ -833,21 +872,6 @@ namespace Sandbox {
                         } else {
                             config.stdinMode = valStr;  // file path
                         }
-                    }
-                    else if (key == L"lan") {
-                        if (!RequireScalarValue(valObj, L"privileges", key, config.parseError))
-                            continue;
-                        if (!TryParseLanModeConfigValue(valObj.str, config.lanMode)) {
-                            fprintf(stderr, "Error: Invalid value for 'lan': '%ls'. "
-                                    "Expected false, 'with localhost', or 'without localhost'.\n",
-                                    valObj.str.c_str());
-                            config.parseError = true;
-                        }
-                    }
-                    else if (key == L"localhost") {
-                        fprintf(stderr, "Error: Key 'localhost' has been removed. "
-                                "Use lan = 'with localhost' instead.\n");
-                        config.parseError = true;
                     }
                     else if (auto it = privilegeBoolKeys.find(key); it != privilegeBoolKeys.end()) {
                         bool enabled = false;
@@ -921,6 +945,8 @@ namespace Sandbox {
             fprintf(stderr, "Error: [sandbox] section is required. Add [sandbox] with token = \"appcontainer\", \"lpac\", or \"restricted\".\n");
             config.parseError = true;
         }
+
+        ValidateCapabilityConfig(config, config.parseError);
 
         // --- Mode-specific validation ---
         if (!config.parseError) {

@@ -8,6 +8,7 @@ token = 'appcontainer'
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 read = ['%USERPROFILE%\test_collusion\scripts']
 all = ['%USERPROFILE%\test_collusion\shared']
+
 [privileges]
 child_processes = false
 

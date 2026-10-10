@@ -2,6 +2,7 @@
 reviews/
 sandy/
 x64/
+test/capabilities_proof.json
 test/pipe_hook_proof.json
 test/pipe_hook_external_proof.json
 test/libreoffice_lpac_proof.json

@@ -9,8 +9,9 @@ read = [
     '%LOCALAPPDATA%\Programs\Python\Python314',
     '%USERPROFILE%\test_limits\scripts',
 ]
-[privileges]
-network = true
+
+[capabilities]
+names = ['internetClient']
 
 [environment]
 inherit = true

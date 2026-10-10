@@ -21,5 +21,6 @@ all = ['%USERPROFILE%\test_expert\arena\playground', '%USERPROFILE%\test_expert\
 
 [privileges]
 child_processes = false
+
 [limit]
 timeout = 90

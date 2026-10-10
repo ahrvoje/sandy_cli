@@ -393,7 +393,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM P7c: -p + -s + -x = COLLISION
-"!SANDY!" -p test_ac -s "[sandbox]" -x cmd.exe >nul 2>"%TEMP%\sandy_p7c.txt"
+"!SANDY!" -p test_ac -s "[sandbox]\ntoken = 'appcontainer'" -x cmd.exe >nul 2>"%TEMP%\sandy_p7c.txt"
 set P7C_EC=!ERRORLEVEL!
 if !P7C_EC! EQU 125 (
     echo   [PASS] P7c: -p -s -x rejected with exit code 125
@@ -412,7 +412,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM P7m: -c + -s + -x = the same kind of conflict, so the same exit code
-"!SANDY!" -c "!AC_CONFIG!" -s "[sandbox]" -x cmd.exe /c exit >nul 2>nul
+"!SANDY!" -c "!AC_CONFIG!" -s "[sandbox]\ntoken = 'appcontainer'" -x cmd.exe /c exit >nul 2>nul
 set P7M_EC=!ERRORLEVEL!
 if !P7M_EC! EQU !P7A_EC! (
     echo   [PASS] P7m: -c -s -x gives the same exit code as -p -c -x ^(!P7M_EC!^)
@@ -433,7 +433,7 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM P7f: -p + --string + -x = COLLISION (long form)
-"!SANDY!" -p test_ac --string "[sandbox]" -x cmd.exe >nul 2>"%TEMP%\sandy_p7f.txt"
+"!SANDY!" -p test_ac --string "[sandbox]\ntoken = 'appcontainer'" -x cmd.exe >nul 2>"%TEMP%\sandy_p7f.txt"
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P7f: -p --string -x rejected
     set /a PASS+=1
@@ -461,7 +461,7 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM P7i: -p + -s WITHOUT -x = collision fires first
-"!SANDY!" -p test_ac -s "[sandbox]" >nul 2>"%TEMP%\sandy_p7i.txt"
+"!SANDY!" -p test_ac -s "[sandbox]\ntoken = 'appcontainer'" >nul 2>"%TEMP%\sandy_p7i.txt"
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] P7i: -p -s without -x rejected
     set /a PASS+=1
@@ -812,13 +812,13 @@ if "!P17I_VAL!"=="0x1" (
     set /a FAIL+=1
 )
 
-REM P17j: _allow_network should be 0
-for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _allow_network 2^>nul ^| findstr _allow_network') do set P17J_VAL=%%v
+REM P17j: _capability_count should be 0
+for /f "tokens=3" %%v in ('reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _capability_count 2^>nul ^| findstr _capability_count') do set P17J_VAL=%%v
 if "!P17J_VAL!"=="0x0" (
-    echo   [PASS] P17j: _allow_network = 0
+    echo   [PASS] P17j: _capability_count = 0
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P17j: _allow_network = !P17J_VAL! (expected 0x0^)
+    echo   [FAIL] P17j: _capability_count = !P17J_VAL! (expected 0x0^)
     set /a FAIL+=1
 )
 

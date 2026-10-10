@@ -712,7 +712,7 @@ namespace Sandbox {
                                            const std::wstring& containerName,
                                            SandboxGuard& guard)
     {
-        if (config.lanMode != LanMode::WithLocalhost)
+        if (!config.allowLoopback)
             return true;
 
         if (identity.persistentProfile) {
@@ -781,8 +781,8 @@ namespace Sandbox {
                 return false;
             }
             state.sc.AppContainerSid = pSid;
-            state.sc.Capabilities = state.caps.capCount > 0 ? state.caps.caps : nullptr;
-            state.sc.CapabilityCount = state.caps.capCount;
+            state.sc.Capabilities = state.caps.caps.empty() ? nullptr : state.caps.caps.data();
+            state.sc.CapabilityCount = static_cast<DWORD>(state.caps.caps.size());
             guard.Add([&state]() { FreeCapabilities(state.caps); });
         }
 

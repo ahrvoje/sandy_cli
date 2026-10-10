@@ -96,6 +96,10 @@ def main():
             require(not state['exit_codes'], 'Sandboxed launch needed a retry after initialization')
             config = tomllib.loads(Path(state['config']).read_text(encoding='utf-8'))
             require(Path(config['sandbox']['workdir']) == scratch / 'work', 'Wrong working directory')
+            require(config['capabilities']['names'] == ['registryRead', 'lpacCom'],
+                    'LibreOffice capability list changed')
+            require(not any(k in config['privileges'] for k in ('network', 'lan', 'registry_read', 'com')),
+                    'Launcher emitted removed privilege switches')
             require(config['pipes'] == {state['pipe_source']: state['pipe_destination']}, 'Wrong pipe map')
             require(not any(k in config for k in ('compat', 'application', 'restart', 'directories')),
                     'Generated config uses proposed, unimplemented features')

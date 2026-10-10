@@ -2,7 +2,7 @@
 # ============================================================
 # AppContainer mode provides kernel-enforced isolation with network
 # control and object namespace isolation.
-# Named pipe creation is blocked (kernel restriction).
+# Named pipes use LOCAL names; [pipes] can map fixed application names.
 #
 # Only [sandbox] token is required. All other sections are optional
 # with safe defaults (deny-all / disabled / unlimited).
@@ -31,12 +31,19 @@ token = 'appcontainer'
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 
 # ============================================================
-# PRIVILEGES — Optional, safe defaults shown
+# CAPABILITIES — AppContainer / LPAC only, empty by default
+# ============================================================
+# [capabilities]
+# names = []                 # e.g. ['internetClient', 'registryRead', 'lpacCom']
+# Windows/custom names use the same SID derivation. Existing ACLs and Windows
+# policy determine access; these names do not create file or registry ACL grants.
+
+# ============================================================
+# PRIVILEGES — Other process controls, safe defaults shown
 # ============================================================
 
 # [privileges]
-# network         = false   # default false: no outbound internet
-# lan             = false   # false | 'with localhost' | 'without localhost'
+# loopback = false           # true requires privateNetworkClientServer in names
 # stdin           = false   # default false (NUL). true=inherit, path=file
 # clipboard_read  = false   # default false
 # clipboard_write = false   # default false

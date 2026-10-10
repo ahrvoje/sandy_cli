@@ -6,5 +6,6 @@ token = 'appcontainer'
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
 read = ['%USERPROFILE%\test_concurrent\scripts']
 write = ['%USERPROFILE%\test_concurrent\data']
+
 [environment]
 inherit = true

@@ -39,6 +39,7 @@ write   = ['%USERPROFILE%\test_deep\app\src\core']
 all     = ['%USERPROFILE%\test_deep\app\src\contrib']
 read    = ['%USERPROFILE%\test_deep\app\docs\classified', '%USERPROFILE%\test_deep\library\experimental']
 execute = ['%USERPROFILE%\test_deep\scripts\restricted']
+
 [environment]
 inherit = true
 

@@ -16,6 +16,7 @@ for %%F in (
     test_acl_grants_rt.bat
     test_allow_limits.bat
     test_lpac.bat
+    test_lpac_capabilities.bat
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat
@@ -48,6 +49,7 @@ for %%F in (
     test_grant_matrix.bat
     test_clean.bat
     test_dryrun.bat
+    test_toml_layout.bat
     test_string_mode_semantics.bat
     test_config_scalar_guards.bat
     test_config_path_guards.bat

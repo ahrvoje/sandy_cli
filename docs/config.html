@@ -154,7 +154,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
 
     <div class="callout warning">
       <div class="callout-title">⛔ Wrong-mode keys are rejected</div>
-      <p>Using an AC-only key (e.g. <code>network</code>) in an RT config, or an RT-only key (<code>desktop</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
+      <p>Using an AC-only key (e.g. <code>loopback</code>) in an RT config, or an RT-only key (<code>desktop</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
     </div>
   </div>
 </section>
@@ -262,32 +262,68 @@ token = <span class="code-string">'appcontainer'</span></pre>
       Run <code>test\test_pipe_hook.bat</code> after building to verify native echo IPC, token isolation,
       the kernel pipe name and cleanup.</p>
 
+    <!-- [capabilities] -->
+    <div class="section-header" id="capabilities">
+      <h3><code>[capabilities]</code> — Windows capability names</h3><span class="tag ac">AppContainer / LPAC</span>
+    </div>
+    <pre><code>[capabilities]
+names = ['registryRead', 'lpacCom']</code></pre>
+    <p><code>names</code> is a string array; its default is <code>[]</code>. Sandy derives capability SIDs
+      with Windows <code>DeriveCapabilitySidsFromName</code> and adds them to the child token.
+      Windows and custom capability names use the same interface; Sandy has no fixed catalog.
+      Restricted Token mode rejects this section.</p>
+    <p>The input accepts at most 256 names, each 1–256 characters, without spaces or control characters.
+      Names are deduplicated without regard to case, preserving the first spelling and order.
+      Names persist in saved profiles and appear in logs, dry runs, and config output.
+      A SID can be derived even if no resource accepts it; a name does not guarantee API or service support.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Example name</th><th>Purpose, subject to Windows policy and resource permissions</th></tr></thead>
+        <tbody>
+          <tr><td>internetClient</td><td>Outbound internet</td></tr>
+          <tr><td>internetClientServer</td><td>Internet client and server access</td></tr>
+          <tr><td>privateNetworkClientServer</td><td>Private network access; required for Sandy's loopback option</td></tr>
+          <tr><td>registryRead</td><td>Registry access where existing ACLs grant this capability rights</td></tr>
+          <tr><td>lpacCom</td><td>LPAC COM/OLE access where the server permits it</td></tr>
+          <tr><td>lpacCryptoServices</td><td>Access to participating cryptographic services</td></tr>
+          <tr><td>lpacIdentityServices</td><td>Access to participating identity services</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Capabilities add token identities without changing host ACLs. Read and write rights come from
+      resource ACLs and other Windows access checks. <code>registryRead</code> does not grant access
+      to every key or impose a global read-only limit; writes can succeed when the complete access
+      check allows them. See the <a href="libreoffice.html">LibreOffice guide</a> for a tested use.</p>
+    <p><a href="https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer">Windows AppContainer and LPAC reference</a></p>
+
     <!-- [privileges] -->
     <div class="section-header">
-      <h3><code>[privileges]</code> — Sandbox capabilities</h3><span class="tag both">both (mode-gated keys)</span>
+      <h3><code>[privileges]</code> — Other process controls</h3><span class="tag both">both (mode-gated keys)</span>
     </div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>network</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Outbound internet. RT mode: always allowed.</td></tr>
-          <tr><td>registry_read</td><td>bool</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td><td>Add Windows <code>registryRead</code>: read keys whose ACLs allow this capability. Broader than one key; no registry writes or host ACL changes.</td></tr>
-          <tr><td>com</td><td>bool</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td><td>Add Windows <code>lpacCom</code> for COM/OLE. Both LPAC options persist in saved profiles and are rejected in other modes even when false. See the <a href="libreoffice.html">LibreOffice guide</a>.</td></tr>
-          <tr><td>lan</td><td>bool / string</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>LAN + loopback. <code>false</code> · <code>'with localhost'</code> · <code>'without localhost'</code>.</td></tr>
+          <tr><td>loopback</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Add a sandbox loopback exemption. Requires <code>privateNetworkClientServer</code> in <code>[capabilities] names</code>; no capability is added implicitly.</td></tr>
           <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. <code>false</code> isolates through job-object UI limits: the sandbox cannot list or use windows of other processes. It does not hide the desktop object itself. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / absolute path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; absolute path=redirect from file</td></tr>
-          <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow reading from the system clipboard</td></tr>
-          <tr><td>clipboard_write</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow writing to the system clipboard</td></tr>
+          <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Remove Sandy's clipboard-read job restriction; other Windows checks still apply</td></tr>
+          <tr><td>clipboard_write</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Remove Sandy's clipboard-write job restriction; other Windows checks still apply</td></tr>
           <tr><td>child_processes</td><td>bool</td><td><code>true</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Allow spawning child processes. Set <code>false</code> only for strictly single-process scripts.</td></tr>
         </tbody>
       </table>
     </div>
 
+    <p>These controls do not select capability SIDs. Clipboard job restrictions are separate from
+      capabilities such as <code>lpacClipboard</code>. Loopback requires private-network access, so
+      this is not a localhost-only configuration. Run-owned exemptions are removed at exit;
+      saved-profile exemptions remain until profile deletion.</p>
+
     <!-- [registry] -->
     <div class="section-header">
       <h3><code>[registry]</code> — Registry key grants</h3><span class="tag rt">Restricted only</span>
     </div>
-    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Per-key grants are not available in AppContainer / LPAC mode. LPAC can opt into Windows' broader <code>registryRead</code> capability with <code>[privileges] registry_read = true</code>. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
+    <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:12px;">Per-key grants are not available in AppContainer / LPAC mode. AC / LPAC can request Windows' broader <code>registryRead</code> capability in <code>[capabilities] names</code>. It does not replace per-key ACL grants or guarantee writes. Most <code>HKLM\Software</code> and <code>HKCU</code> keys are already readable via <code>BUILTIN\Users</code> in RT.</p>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
@@ -361,10 +397,9 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[allow.deep] / [allow.this]</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[deny.deep] / [deny.this]</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td><a href="#pipes">[pipes]</a></td><td>empty</td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td><a href="#capabilities">[capabilities] names</a></td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td style="color:var(--text-primary);font-weight:600;font-family:inherit;">[privileges]</td><td>—</td><td colspan="2" style="text-align:center;color:var(--text-muted);font-style:italic;">mode-gated</td></tr>
-          <tr><td>&ensp;network</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
-          <tr><td>&ensp;registry_read / com</td><td><code>false</code></td><td>LPAC only</td><td><span class="status na">N/A</span></td></tr>
-          <tr><td>&ensp;lan</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
+          <tr><td>&ensp;loopback</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td></tr>
           <tr><td>&ensp;desktop</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;stdin</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>
           <tr><td>&ensp;clipboard_read</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td></tr>

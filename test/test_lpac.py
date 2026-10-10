@@ -16,7 +16,7 @@ Test matrix:
     3. List C:\Program Files                    (App. Packages only, not granted)
     4. List C:\Windows\Temp                     (always blocked)
     5. Read user profile (Desktop)              (no grant)
-    6. Outbound network (network = false)
+    6. Outbound network (no network capabilities)
     7. Write to explicitly read-only granted folder
     8. Read folder with no grant (sibling of workspace)
 
@@ -113,7 +113,7 @@ expect_blocked("List user Desktop",
     lambda: f"listed {len(os.listdir(desktop))} entries")
 
 # 6. Network — explicitly disabled
-print("  [6] Outbound network (network = false)")
+print("  [6] Outbound network (no network capabilities)")
 try:
     import urllib.request
     expect_blocked("HTTP GET example.com",

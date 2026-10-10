@@ -619,12 +619,14 @@
 
 <span class="code-flag">sandy.exe</span> -c cleanup.toml -x cmd.exe /c <span class="code-string">"del /s /q * &amp;&amp; rd /s /q ."</span>
 
-<span class="code-comment"># cleanup.toml — only 7 lines needed:</span>
+<span class="code-comment"># cleanup.toml — minimal configuration:</span>
 <span class="code-keyword">[sandbox]</span>
 token = <span class="code-string">'appcontainer'</span>
 workdir = <span class="code-string">'C:\project\test\output'</span>
+
 <span class="code-keyword">[allow.deep]</span>
 all = [<span class="code-string">'C:\project\test\output'</span>]  <span class="code-comment"># nothing else is reachable</span>
+
 <span class="code-keyword">[limit]</span>
 timeout = 30
 
@@ -801,7 +803,7 @@ timeout = 30
           <li>Configurable network isolation (internet, LAN, localhost)</li>
           <li>LPAC mode opts out of App. Packages for stricter default access</li>
           <li>Container-local pipes; optional <a href="config.html#pipes">[pipes] mapping</a> for fixed names</li>
-          <li>Registry access follows Windows ACLs; LPAC offers opt-in <code>registry_read</code> and <code>com</code> capabilities</li>
+          <li>Registry access follows Windows ACLs; AC / LPAC accept capability names such as <code>registryRead</code> and <code>lpacCom</code> in <code>[capabilities]</code></li>
           <li>Deny rules not supported (kernel ignores DENY ACEs for AC SIDs)</li>
         </ul>
       </div>
@@ -828,7 +830,7 @@ timeout = 30
     <div class="callout info" style="margin-top: 32px;">
       <div class="callout-title">💡 Choosing a mode</div>
       <p>
-        <strong>Use AppContainer / LPAC</strong> when you need network isolation. Fixed pipe names can use <a href="config.html#pipes">[pipes]</a> within its documented limits. LPAC supports opt-in COM/OLE through <code>com</code>; see the verified <a href="libreoffice.html">LibreOffice Writer guide</a>.<br>
+        <strong>Use AppContainer / LPAC</strong> when you need network isolation. Fixed pipe names can use <a href="config.html#pipes">[pipes]</a> within its documented limits. LPAC supports opt-in COM/OLE through <code>lpacCom</code> in <code>[capabilities] names</code>; see the verified <a href="libreoffice.html">LibreOffice Writer guide</a>.<br>
         <strong>Use Restricted Token</strong> when the sandboxed app needs general named-pipe support, COM/RPC, or medium integrity
         for broader compatibility.
       </p>

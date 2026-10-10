@@ -163,7 +163,7 @@ if !DESK_EXIT! NEQ 0 (
     set /a FAIL+=1
 )
 
-REM 3d: Network access blocked (network = false)
+REM 3d: Network access blocked (no network capabilities)
 "%SANDY%" -q -c "%~dp0test_lpac_config.toml" -x "%CMD%" /c "ping -n 1 -w 1000 8.8.8.8" >nul 2>nul
 set PING_EXIT=!ERRORLEVEL!
 if !PING_EXIT! NEQ 0 (

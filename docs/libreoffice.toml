@@ -15,12 +15,12 @@ read = @ANCESTORS@
 # The working directory itself needs traverse/execute; its files do not.
 execute = [@WORK@]
 
+[capabilities]
+names = ['registryRead', 'lpacCom']
+
 [privileges]
-registry_read = true
-com = true
 child_processes = false
-network = false
-lan = false
+loopback = false
 clipboard_read = false
 clipboard_write = false
 

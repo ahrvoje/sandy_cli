@@ -26,6 +26,7 @@ all = ['%USERPROFILE%\test_acl\workspace']
 read    = ['%USERPROFILE%\test_acl\data\private']
 write   = ['%USERPROFILE%\test_acl\workspace\build']
 all     = ['%USERPROFILE%\test_acl\workspace\secrets']
+
 [environment]
 inherit = true
 

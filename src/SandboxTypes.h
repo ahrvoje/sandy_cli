@@ -5,6 +5,7 @@
 // and the SandyLogger used for session logging.
 // =========================================================================
 #pragma once
+#include <algorithm>
 
 #include "framework.h"
 #include <io.h>
@@ -306,62 +307,6 @@ namespace Sandbox {
     enum class IntegrityLevel { Low, Medium };
 
     // -----------------------------------------------------------------------
-    // LAN mode — three valid states for private-network + loopback access.
-    //
-    // Windows AppContainer requires PRIVATE_NETWORK_CLIENT_SERVER capability
-    // for both LAN and loopback.  Loopback additionally requires a
-    // CheckNetIsolation exemption.  There is no localhost-only capability
-    // SID — loopback always implies LAN access.
-    // -----------------------------------------------------------------------
-    enum class LanMode { Off, WithoutLocalhost, WithLocalhost };
-
-    inline const wchar_t* LanModeRegistryName(LanMode mode)
-    {
-        switch (mode) {
-        case LanMode::WithLocalhost:    return L"with_localhost";
-        case LanMode::WithoutLocalhost: return L"without_localhost";
-        case LanMode::Off:
-        default:                        return L"off";
-        }
-    }
-
-    inline const wchar_t* LanModePhrase(LanMode mode)
-    {
-        switch (mode) {
-        case LanMode::WithLocalhost:    return L"with localhost";
-        case LanMode::WithoutLocalhost: return L"without localhost";
-        case LanMode::Off:
-        default:                        return L"false";
-        }
-    }
-
-    inline const wchar_t* LanModeTomlDisplayValue(LanMode mode)
-    {
-        switch (mode) {
-        case LanMode::WithLocalhost:    return L"'with localhost'";
-        case LanMode::WithoutLocalhost: return L"'without localhost'";
-        case LanMode::Off:
-        default:                        return L"false";
-        }
-    }
-
-    inline bool TryParseLanModeConfigValue(const std::wstring& value, LanMode& out)
-    {
-        if (value == L"false")             { out = LanMode::Off; return true; }
-        if (value == L"with localhost")    { out = LanMode::WithLocalhost; return true; }
-        if (value == L"without localhost") { out = LanMode::WithoutLocalhost; return true; }
-        return false;
-    }
-
-    inline bool TryParseLanModeRegistryValue(const std::wstring& value, LanMode& out)
-    {
-        if (value == L"off")               { out = LanMode::Off; return true; }
-        if (value == L"with_localhost")    { out = LanMode::WithLocalhost; return true; }
-        if (value == L"without_localhost") { out = LanMode::WithoutLocalhost; return true; }
-        return false;
-    }
-
-    // -----------------------------------------------------------------------
     // Full sandbox configuration (parsed from TOML)
     // -----------------------------------------------------------------------
     struct SandboxConfig {
@@ -375,11 +320,11 @@ namespace Sandbox {
         // [pipes] — named-pipe name interception (AppContainer/LPAC only)
         std::vector<PipeMapEntry> pipeMap;
 
-        // [privileges] — sandbox capabilities (optional, defaults shown)
-        bool allowNetwork    = false;
-        bool allowRegistryRead = false;  // LPAC: Windows registryRead capability
-        bool allowCom = false;           // LPAC: Windows lpacCom capability
-        LanMode lanMode      = LanMode::Off;
+        // [capabilities] — explicit Windows capability names (AC/LPAC only)
+        std::vector<std::wstring> capabilityNames;
+
+        // [privileges] — controls other than capability SIDs
+        bool allowLoopback = false;
 
         // restricted mode: true = grant WinSta0 + Desktop access (default);
         // false = isolate from the desktop with job UI limits
@@ -416,6 +361,12 @@ namespace Sandbox {
         // Parse error flag (set if unknown section/key encountered)
         bool parseError = false;
     };
+
+    inline bool HasCapability(const SandboxConfig& config, const wchar_t* name)
+    {
+        return std::any_of(config.capabilityNames.begin(), config.capabilityNames.end(),
+            [name](const std::wstring& value) { return _wcsicmp(value.c_str(), name) == 0; });
+    }
 
     // -----------------------------------------------------------------------
     // Sandy Logger — Process output and sandbox event log
@@ -591,16 +542,12 @@ namespace Sandbox {
                      config.envInherit ? L"inherit" : L"filtered");
 
             if (!isRT) {
-                fwprintf(logFile, L"[%s]     network         = %s\n", ts.c_str(),
-                         config.allowNetwork ? L"yes" : L"no");
-                fwprintf(logFile, L"[%s]     lan             = %ls\n", ts.c_str(),
-                         LanModePhrase(config.lanMode));
-            }
-            if (config.tokenMode == TokenMode::LPAC) {
-                fwprintf(logFile, L"[%s]     registry_read   = %s\n", ts.c_str(),
-                         config.allowRegistryRead ? L"yes" : L"no");
-                fwprintf(logFile, L"[%s]     com             = %s\n", ts.c_str(),
-                         config.allowCom ? L"yes" : L"no");
+                fwprintf(logFile, L"[%s]     loopback        = %s\n", ts.c_str(),
+                         config.allowLoopback ? L"yes" : L"no");
+                fwprintf(logFile, L"[%s] CAPABILITIES: %zu\n", ts.c_str(),
+                         config.capabilityNames.size());
+                for (const auto& name : config.capabilityNames)
+                    fwprintf(logFile, L"[%s]     %s\n", ts.c_str(), name.c_str());
             }
         }
 
