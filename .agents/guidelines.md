@@ -265,6 +265,19 @@ host-global cleanup have repeatedly produced disproportionate regressions.
 - Prefer `.bat` for test orchestration.
 - For **UAC elevation**, use VBScript (`ShellExecute "runas"`) rather than PowerShell elevation tricks.
 
+# LPAC Payload Build Invariant
+
+The injected pipe hook must load in LPAC with **zero capabilities**. Preserve
+`GenerateManifest=false` and the static CRT in
+`pipehook/sandy_pipe_hook.vcxproj`. A generated manifest previously introduced
+an SxS activation requirement that prevented loading in that token. Static CRT
+alone does not remove the manifest.
+
+Before changing payload build settings or debugging a remote LoadLibrary
+failure, read [LPAC loader debugging](lpac_loader_debugging.md). It records the
+fix, binary inspection steps, remote-error reporting traps, and the distinction
+from LibreOffice's separate registryRead requirement.
+
 # Build
 
 The only reliable build command is:

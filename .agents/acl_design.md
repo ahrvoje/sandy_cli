@@ -33,6 +33,20 @@ rely on removing ACEs by the exact owning SID.
 Do not write logic that assumes all AppContainer grants are transient. Profile-owned
 ACL state is durable and must survive normal run exit.
 
+# LPAC Loader Access Is More Than File Access
+
+A DLL read/execute grant does not guarantee that Windows can activate its
+manifest. Before widening file or registry permissions for a load failure,
+read [LPAC loader debugging](lpac_loader_debugging.md). The pipe hook avoids
+its own SxS requirement by having no manifest; it must work with zero
+capabilities.
+
+For applications that need them, `registry_read` and `com` add capability SIDs
+to the LPAC token. They do not edit host ACLs and do not create ACL grants to
+revoke. Their access scope comes from existing resource ACLs and the token;
+`registry_read` is not a one-key grant. Keep these application requirements
+separate from the hook's build invariant.
+
 # ACL Propagation — Inheritance-Based Model
 
 ## One write path: `AddAcesToObject`
