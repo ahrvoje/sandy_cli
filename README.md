@@ -14,28 +14,6 @@
 
 ---
 
-## Quick Start
-
-Saved-profile previews use `--dry-run -p NAME` or `--print-config -p NAME`.
-They do not launch a child or change sandbox state; `-x` is optional.
-`--print-config` cannot be combined with `--create-profile`; use `-c` to inspect that config.
-`-L` applies to all modes that accept `-l`.
-Profile names contain 1–58 letters, digits, `.`, `_` or `-`, and start with a letter or digit.
-
-```
-sandy.exe --print-container-toml > myconfig.toml     # generate template
-sandy.exe --dry-run -c myconfig.toml -x python.exe   # validate config (no changes)
-sandy.exe -c myconfig.toml -x python.exe script.py   # run sandboxed
-sandy.exe --status                                   # check active instances
-sandy.exe --cleanup                                  # fix stale state
-sandy.exe --explain 131                              # decode exit code
-```
-
-In Windows PowerShell 5.1, generate the config with
-`cmd /c "sandy.exe --print-container-toml > myconfig.toml"`.
-The `>` operator in that shell writes UTF-16, which Sandy rejects. The Quick Start
-redirection works in cmd.exe and PowerShell 7.
-
 ## What is Sandy?
 
 Sandy launches executables inside a kernel-enforced Windows sandbox. Normal launches need no elevation; changing ACLs on protected host paths requires permission to those paths. Adding loopback exemptions requires an administrator. Three isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (App. Packages — the same technology used by UWP apps and Edge), **LPAC** (Restricted App. Packages — stricter AppContainer that opts out of ALL APPLICATION PACKAGES), and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
