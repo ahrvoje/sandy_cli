@@ -1,7 +1,7 @@
 # Sandy scope test — Restricted Token allow + deny, deep + this
 [sandbox]
 token     = 'restricted'
-integrity = 'low'
+integrity = 'medium'
 
 [allow.deep]
 all     = ['%USERPROFILE%\test_scope\deep', '%USERPROFILE%\test_scope\deep_all']
@@ -11,7 +11,7 @@ execute = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_scope
 all = ['%USERPROFILE%\test_scope\this']
 
 # deny tests: deny_deep and deny_this get NO allow grants
-# RT low has BUILTIN\Users read from OS, so deny must override that
+# Medium integrity permits baseline writes; only the deny ACE must block them.
 [deny.deep]
 all = ['%USERPROFILE%\test_scope\deny_deep']
 

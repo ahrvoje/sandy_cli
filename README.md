@@ -16,6 +16,12 @@
 
 ## Quick Start
 
+Saved-profile previews use `--dry-run -p NAME` or `--print-config -p NAME`.
+They do not launch a child or change sandbox state; `-x` is optional.
+`--print-config` cannot be combined with `--create-profile`; use `-c` to inspect that config.
+`-L` applies to all modes that accept `-l`.
+Profile names contain 1–58 letters, digits, `.`, `_` or `-`, and start with a letter or digit.
+
 ```
 sandy.exe --print-container-toml > myconfig.toml     # generate template
 sandy.exe --dry-run -c myconfig.toml -x python.exe   # validate config (no changes)
@@ -25,11 +31,22 @@ sandy.exe --cleanup                                  # fix stale state
 sandy.exe --explain 131                              # decode exit code
 ```
 
+In Windows PowerShell 5.1, generate the config with
+`cmd /c "sandy.exe --print-container-toml > myconfig.toml"`.
+The `>` operator in that shell writes UTF-16, which Sandy rejects. The Quick Start
+redirection works in cmd.exe and PowerShell 7.
+
 ## What is Sandy?
 
-Sandy launches executables inside a kernel-enforced Windows sandbox. Normal launches need no elevation; changing ACLs on protected host paths requires permission to those paths. Three isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (App. Packages — the same technology used by UWP apps and Edge), **LPAC** (Restricted App. Packages — stricter AppContainer that opts out of ALL APPLICATION PACKAGES), and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
+Sandy launches executables inside a kernel-enforced Windows sandbox. Normal launches need no elevation; changing ACLs on protected host paths requires permission to those paths. Adding loopback exemptions requires an administrator. Three isolation modes are supported: [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) (App. Packages — the same technology used by UWP apps and Edge), **LPAC** (Restricted App. Packages — stricter AppContainer that opts out of ALL APPLICATION PACKAGES), and **Restricted Token** (restricting SIDs with configurable integrity level). The sandbox uses an explicit TOML model with safe, locked-down defaults for any omitted settings.
 
 No VMs, Docker, WSL, or Hyper-V — just a single native executable. Sandy is lean, unprivileged sandboxing for agentic AI workflows, automation scripts, and tool-use pipelines: you define exactly which folders, files, and network access the process gets.
+
+When ACL cleanup fails, Sandy keeps the recovery ledger and logon task and
+reports incomplete cleanup. If the child returned zero, Sandy returns 125;
+otherwise the child's error or timeout result is preserved. Startup and
+`--cleanup` retry the recorded removals. Ledger creation and inspection share
+a lock, so abandoned incomplete records can be recovered without touching a live writer.
 
 ### Key Features
 
@@ -143,6 +160,8 @@ workdir = 'C:\projects'   # absolute child working directory (default: inherit S
 | `integrity` | `'low'`, `'medium'` | restricted | Integrity level *(required)* · `'low'` = strongest isolation, `'medium'` = wider app compatibility |
 | `strict` | `true`, `false` | restricted | Exclude user SID from restricting list · Default: `false`. When `true`, user-owned resources require explicit `[allow.*]` grants |
 | `workdir` | absolute path | both | Child process working directory (default: `'inherit'` — Sandy's current working directory) |
+
+The `-s` option converts a literal `\n` outside strings and comments to a line break. File input (`-c`) uses standard TOML semantics. Unknown sections and wrong-mode items are rejected even when empty or false.
 
 ### `[allow.deep]` / `[allow.this]` — File and folder grants
 
@@ -338,7 +357,7 @@ Wrong-mode keys are rejected.
 
 | Key | Available in | Default | Description |
 |-----|-------------|---------|-------------|
-| `loopback` | appcontainer / lpac | `false` | Add a sandbox loopback exemption; requires `privateNetworkClientServer` in `names` |
+| `loopback` | appcontainer / lpac | `false` | Add a sandbox loopback exemption; requires an administrator and `privateNetworkClientServer` in `names` |
 | `desktop` | restricted | `true` | Grant WinSta0 + Desktop access; `false` applies job UI limits to other processes' windows |
 | `stdin` | all | `false` | `true` = inherit, `false` = NUL, or an absolute input file path |
 | `clipboard_read` | all | `false` | Remove Sandy's clipboard-read job restriction |
@@ -393,6 +412,8 @@ Both modes use the same AppContainer pipeline. The difference is membership in t
 
 Grant read or write access to specific registry keys. Most keys under `HKLM\Software` and `HKCU` are already readable by default via `BUILTIN\Users`.
 
+Each registry path must start with `HKCU\` or `HKLM\`.
+
 ```toml
 [registry]
 read  = ['HKCU\Software\MyApp']
@@ -425,6 +446,9 @@ When `inherit = false`, the following essential Windows vars are always passed:
 | Hardware | `PROCESSOR_ARCHITECTURE`, `NUMBER_OF_PROCESSORS` |
 
 ### `[limit]` — Resource constraints
+
+Values must be non-negative integers. Maximums: `timeout` = 86400 seconds,
+`memory` = 65536 MB, `processes` = 1024. Zero means no limit.
 
 ```toml
 [limit]
@@ -678,7 +702,7 @@ Sandy treats **persistent named profiles** as a first-class execution model. A p
 > **AppContainer vs LPAC isolation.** AppContainer mode includes the `ALL APPLICATION PACKAGES` SID, giving read access to system directories and resources whose DACLs allow App. Packages. LPAC mode opts out — access is limited to `ALL RESTRICTED APPLICATION PACKAGES` resources and explicit `[allow.*]` grants. Most executables need system DLLs, so use `token = 'appcontainer'` unless you need strict isolation. In Restricted Token mode, system directories are always readable.
 
 > [!NOTE]
-> **Localhost access** (AppContainer / LPAC) requires `names = ['privateNetworkClientServer']` in `[capabilities]` and `loopback = true` in `[privileges]`. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). Loopback always implies LAN access — there is no localhost-only capability in the Windows AppContainer model.
+> **Localhost access** (AppContainer / LPAC) requires an administrator to add the exemption, plus `names = ['privateNetworkClientServer']` in `[capabilities]` and `loopback = true` in `[privileges]`. Sandy uses `CheckNetIsolation.exe` (resolved from `System32` to prevent search-order hijacking) to manage a per-instance loopback exemption (matching the AppContainer's unique `Sandy_<UUID>` profile name). Loopback always implies LAN access — there is no localhost-only capability in the Windows AppContainer model.
 
 > [!NOTE]
 > **Sandy stderr banner.** Sandy prints a config summary to stderr before running. Use `-q` to suppress it in automation pipelines where stderr is captured.
@@ -720,7 +744,7 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 2. **Scheduled task safety net:** A per-instance `SandyCleanup_<UUID>` scheduled task is created to run `sandy.exe --cleanup` at next logon — for both normal and profile-mode (`-p`) runs. It only fires if Sandy didn't clean up normally (crash/power loss). Deleted on clean exit. Sandy registers the task for the current user through the Task Scheduler API; no elevation is needed.
 
-3. **Multi-instance safety:** Each instance generates a UUID at startup and uses a unique SID for all ACL operations — AppContainer uses a UUID-derived profile SID (`S-1-15-2-*`), Restricted Token uses a GUID-derived SID (`S-1-9-*`). This means concurrent instances have completely independent file grants that cannot interfere with each other. On exit, each instance removes only its own ACEs via `RemoveSidFromDacl`. Registry subkeys use the UUID as the key name, with stored PID for liveness checks during `--cleanup`.
+3. **Multi-instance safety:** Transient runs use unique SIDs; saved profiles reuse their durable SID. Runs have separate UUIDs and liveness records. Cleanup removes only the owning identity's ACEs via `RemoveSidFromDaclDetailed`. A profile's grants remain until profile deletion, which is refused while a run still uses that profile.
 
    > **For agents and automation:** Multiple Sandy instances can safely run concurrently with overlapping folder grants. Each instance's sandbox is fully isolated. Use `--status` to inspect active instances and `--cleanup` to clear any stale state.
 
@@ -738,8 +762,8 @@ Sandy never leaves system state dirty. Five run-scoped resources are tracked and
 
 | Guarantee | Mechanism |
 |-----------|-----------|
-| **ACL grants restored** on clean exit | `RemoveSidFromDacl` per path and SID |
-| **DACLs identical** after cleanup | Sandy removes only the ACEs it added. ACE order, protection flag and ACEs of other identities are never changed |
+| **ACL grants restored** on clean exit | `RemoveSidFromDaclDetailed` per path and SID |
+| **ACE-level cleanup** | Sandy preserves other identities' explicit ACEs and DACL protection. Windows recomputes inherited ACEs on DACL writes: a moved file can lose ACEs inherited from its former parent. Windows can also set the auto-inherited flag |
 | **Registry grants cleared** on clean exit | `RegDeleteTreeW` on instance subkey |
 | **Loopback exemption removed** on clean exit | `CheckNetIsolation.exe LoopbackExempt -d` |
 | **Scheduled task deleted** on clean exit | Task Scheduler API |

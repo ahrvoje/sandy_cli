@@ -32,11 +32,15 @@ start /b "" "!SANDY!" --create-profile f1_test -c "%TEMP%\sandy_f1_config.toml" 
 start /b "" "!SANDY!" --create-profile f1_test -c "%TEMP%\sandy_f1_config.toml" >"%TEMP%\sandy_f1_2.txt" 2>&1
 
 REM Wait for both to finish
-:wait_f1
-tasklist /FI "IMAGENAME eq sandy.exe" 2>nul | findstr /I "sandy.exe" >nul
-if !ERRORLEVEL! EQU 0 (
-    ping 127.0.0.1 -n 2 >nul
-    goto wait_f1
+set "LIVE=1"
+for /l %%W in (1,1,60) do if "!LIVE!"=="1" (
+    set "LIVE=0"
+    for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) ^| Where-Object { $_.CommandLine -like '*--create-profile f1_test*' }).Count"') do if %%N GTR 0 set "LIVE=1"
+    if "!LIVE!"=="1" ping 127.0.0.1 -n 2 >nul
+)
+if "!LIVE!"=="1" (
+    echo   [FAIL] Timed out waiting for f1 test instances
+    exit /b 1
 )
 
 set SUCCESS_COUNT=0
@@ -135,11 +139,15 @@ if !ERRORLEVEL! EQU 0 (
 )
 
 REM Cleanup background process naturally
-:wait_f3
-tasklist /FI "IMAGENAME eq ping.exe" 2>nul | findstr /I "ping.exe" >nul
-if !ERRORLEVEL! EQU 0 (
-    ping 127.0.0.1 -n 2 >nul
-    goto wait_f3
+set "LIVE=1"
+for /l %%W in (1,1,60) do if "!LIVE!"=="1" (
+    set "LIVE=0"
+    for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) ^| Where-Object { $_.CommandLine -like '*sandy_f3_config.toml*' }).Count"') do if %%N GTR 0 set "LIVE=1"
+    if "!LIVE!"=="1" ping 127.0.0.1 -n 2 >nul
+)
+if "!LIVE!"=="1" (
+    echo   [FAIL] Timed out waiting for f3 test instances
+    exit /b 1
 )
 
 del "%TEMP%\sandy_f3_config.toml" 2>nul

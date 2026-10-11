@@ -43,27 +43,7 @@ REM The RT run must not depend on files the AC run created — Part 2 has to
 REM be self-sufficient and order-independent.
 call :BuildTree
 
-REM === Pre-seed RT write targets as Low-integrity files ===
-REM At integrity 'low' the OS mandatory policy (NoWriteUp) blocks CREATING
-REM files in implicitly-Medium directories regardless of any DACL grant.
-REM The RT write assertions exercise DACL scope semantics, so the legitimate
-REM write targets are seeded as existing Low-labeled files the probe can
-REM open for write.  this\child\write_test.txt is deliberately NOT seeded:
-REM with the user SID in the restricting list (non-strict), an existing Low
-REM file would be writable via the user's own ACEs — creation-blocking is
-REM the only enforceable this-scope write boundary in RT (see the P18h4
-REM note in test_profile.bat).
-for %%T in (
-    "%ROOT%\deep\write_test.txt"
-    "%ROOT%\deep\child\write_test.txt"
-    "%ROOT%\deep_all\w.txt"
-    "%ROOT%\deep_all\child\w.txt"
-    "%ROOT%\this\write_test.txt"
-) do (
-    echo seed>%%T
-    icacls %%T /setintegritylevel low >nul
-)
-
+REM Medium integrity keeps write-denial checks independent of NoWriteUp.
 REM === Part 2: RT test ===
 echo --- Part 2: Restricted Token scope test ---
 set TEST_MODE=RT

@@ -133,8 +133,7 @@ echo.
 REM 2a: strict=true on AC — must reject
 echo --- 2a: strict on appcontainer ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\nstrict = true" >"%TEMP%\sneaky_2a.txt" 2>&1
-findstr /C:"strict" "%TEMP%\sneaky_2a.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2a: strict on AC rejected
     set /a PASS+=1
 ) else (
@@ -147,8 +146,7 @@ del "%TEMP%\sneaky_2a.txt" 2>nul
 REM 2b: [deny.deep] on AC — must reject
 echo --- 2b: deny on appcontainer ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[deny.deep]\nread = ['C:\\Windows']" >"%TEMP%\sneaky_2b.txt" 2>&1
-findstr /I /C:"deny" "%TEMP%\sneaky_2b.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2b: Deny on AC rejected
     set /a PASS+=1
 ) else (
@@ -161,8 +159,7 @@ del "%TEMP%\sneaky_2b.txt" 2>nul
 REM 2d: desktop on AC — must reject
 echo --- 2d: desktop on appcontainer ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[privileges]\ndesktop = true" >"%TEMP%\sneaky_2d.txt" 2>&1
-findstr /C:"desktop" "%TEMP%\sneaky_2d.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2d: desktop on AC rejected
     set /a PASS+=1
 ) else (
@@ -175,8 +172,7 @@ del "%TEMP%\sneaky_2d.txt" 2>nul
 REM 2e: capabilities on RT — must reject
 echo --- 2e: capabilities on restricted ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'\nintegrity = 'low'\n\n[capabilities]\nnames = ['internetClient']" >"%TEMP%\sneaky_2e.txt" 2>&1
-findstr /C:"capabilities" "%TEMP%\sneaky_2e.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2e: capabilities on RT rejected
     set /a PASS+=1
 ) else (
@@ -189,8 +185,7 @@ del "%TEMP%\sneaky_2e.txt" 2>nul
 REM 2f: [registry] on AC — must reject
 echo --- 2f: registry on appcontainer ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'appcontainer'\n\n[registry]\nread = ['HKCU\\Software']" >"%TEMP%\sneaky_2f.txt" 2>&1
-findstr /C:"registry" "%TEMP%\sneaky_2f.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2f: registry on AC rejected
     set /a PASS+=1
 ) else (
@@ -203,8 +198,7 @@ del "%TEMP%\sneaky_2f.txt" 2>nul
 REM 2g: Missing integrity on RT — must reject
 echo --- 2g: Missing integrity on restricted ---
 "!SANDY!" --dry-run -s "[sandbox]\ntoken = 'restricted'" >"%TEMP%\sneaky_2g.txt" 2>&1
-findstr /C:"integrity" "%TEMP%\sneaky_2g.txt" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
+if !ERRORLEVEL! EQU 128 (
     echo   [PASS] 2g: Missing integrity on RT rejected
     set /a PASS+=1
 ) else (

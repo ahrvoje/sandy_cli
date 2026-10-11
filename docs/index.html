@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Sandy — a lightweight Windows sandbox runner. Run any executable in an isolated sandbox with fine-grained file, folder, and network access control. No VMs, no Docker, no elevation required.">
+  <meta name="description" content="Sandy — a lightweight Windows sandbox runner. Run any executable in an isolated sandbox with fine-grained file, folder, and network access control. No VMs or Docker. Normal runs need no elevation; loopback exemptions require an administrator.">
   <title>Sandy — Lightweight Windows Sandbox Runner</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -604,7 +604,7 @@
     <p class="hero-sub">
       A lightweight Windows sandbox runner. Run any executable in an isolated, kernel-enforced
       sandbox with fine-grained file, folder, and network access control — no VMs, no Docker,
-      no elevation required. Features first-class persistent profiles and transient one-shot sandboxes.
+      no elevation for normal runs; loopback exemptions require an administrator. Features first-class persistent profiles and transient one-shot sandboxes.
     </p>
     <div class="hero-badges">
       <span class="badge"><span class="icon">⚡</span> Single native executable</span>
@@ -984,9 +984,9 @@ PIPELINE: sorted 3 entries by path depth:
           <tr><td>Clean exit</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>RAII guard</td></tr>
           <tr><td>Child crash</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Child exit ≠ Sandy exit</td></tr>
           <tr><td>Ctrl+C / Ctrl+Break</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Sandy ends the child tree, runs the complete cleanup, and exits with <code>0xC000013A</code></td></tr>
-          <tr><td>Console close</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Sandy ends the child tree. Not a full cleanup in-process: the next Sandy start, <code>--cleanup</code> or the logon task does the rest</td></tr>
+          <tr><td>Console close</td><td>⏳</td><td>⏳</td><td>⏳</td><td>⏳</td><td>⏳</td><td>Sandy ends the child tree. Not a full cleanup in-process: the next Sandy start, <code>--cleanup</code> or the logon task does the rest</td></tr>
           <tr><td>Sandy crash (SEH)</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>__except handler</td></tr>
-          <tr><td>Power loss / taskkill</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>Recovery: the next Sandy start, <code>sandy.exe --cleanup</code>, or the scheduled task at logon</td></tr>
+          <tr><td>Power loss / taskkill</td><td>⏳</td><td>⏳</td><td>⏳</td><td>⏳</td><td>⏳</td><td>Recovery: the next Sandy start, <code>sandy.exe --cleanup</code>, or the scheduled task at logon</td></tr>
         </tbody>
       </table>
     </div>
@@ -1022,10 +1022,10 @@ PIPELINE: sorted 3 entries by path depth:
         <h3>ACE-Level Restoration</h3>
         <p>
           Cleanup walks each stale grant and removes exactly the ACEs that the dead instance added:
-          the ACEs of its SID (via <code>RemoveSidFromDacl</code>) and the helper ACEs next to its deny
-          rules (<code>OWNER RIGHTS</code> ACE, delete guard on the parent folder). Then it deletes the
-          registry subkey. After cleanup the DACL is identical to the one before the run: same ACEs,
-          same order, same protection and auto-inherit flags. Live instances' grants are never touched.
+          the ACEs of its SID (via <code>RemoveSidFromDaclDetailed</code>) and the helper ACEs next to its deny
+          rules (<code>OWNER RIGHTS</code> ACE, delete guard on the parent folder). It deletes the
+          registry subkey only after successful removal; a failure keeps the recovery record and task.
+          Sandy preserves other identities' explicit ACEs and DACL protection. Windows recomputes inheritance on DACL writes: moved files can lose inherited ACEs from their former parent, and Windows can set the auto-inherited flag. Live instances' grants are never touched.
         </p>
       </li>
     </ol>
@@ -1034,7 +1034,7 @@ PIPELINE: sorted 3 entries by path depth:
       <div class="callout-title">✅ Five resources tracked and cleaned</div>
       <p>
         ACL grants &middot; Registry persistence &middot; Loopback exemptions &middot; AppContainer profiles &middot;
-        Scheduled tasks — all automatically restored regardless of exit path.
+        Scheduled tasks — cleaned on normal exit or recovered after a crash. Failed removals remain recorded for retry.
       </p>
     </div>
   </div>

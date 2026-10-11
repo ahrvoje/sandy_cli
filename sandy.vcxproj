@@ -141,7 +141,7 @@
   <ItemGroup>
     <ClInclude Include="src\framework.h" />
     <ClInclude Include="src\Resource.h" />
-    <ClInclude Include="src\sandy.h" />
+    <ClInclude Include="src\SandboxPipeHook.h" />
     <ClInclude Include="src\targetver.h" />
     <ClInclude Include="src\TomlAdapter.h" />
     <ClInclude Include="src\SandboxTypes.h" />

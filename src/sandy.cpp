@@ -9,8 +9,9 @@
 #include "SandboxStatus.h"
 #include "SandboxDryRun.h"
 #include "SandboxSavedProfile.h"
+#include <clocale>
 
-constexpr const char* kVersion = "0.9995";
+constexpr const char* kVersion = "0.9996";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
@@ -109,7 +110,6 @@ struct CliPreamble
 {
     std::wstring logPath;
     bool         logStamp = false;
-    bool         quiet    = false;
 };
 
 // Extract preamble options from argv and return the remaining arg tokens.
@@ -129,7 +129,7 @@ static bool ExtractCliPreamble(int argc, wchar_t* argv[],
             break;
         }
         if (arg == L"-q" || arg == L"--quiet") {
-            preamble.quiet = true;
+            // Accepted for info actions, which have no run banner.
         } else if (arg == L"-L" || arg == L"--log-stamp") {
             preamble.logStamp = true;
         } else if (arg == L"-l" || arg == L"--log") {
@@ -333,6 +333,10 @@ static bool ParseRunMainOptions(int argc,
 
 static int RunCreateProfileMode(const RunMainOptions& options)
 {
+    if (options.printConfig) {
+        fprintf(stderr, "Error: --print-config cannot be used with --create-profile. Use -c instead.\n");
+        return SandyExit::ConfigError;
+    }
     if (options.configPath.empty()) {
         fprintf(stderr, "Error: --create-profile requires -c <config.toml>.\n\n");
         PrintUsage(kVersion);
@@ -356,31 +360,33 @@ static int RunSavedProfileMode(const RunMainOptions& options)
         fprintf(stderr, "       Profile already contains its configuration.\n\n");
         return SandyExit::InternalError;
     }
-    if (options.exePath.empty()) {
+    if (options.exePath.empty() && !options.dryRun && !options.printConfig) {
         fprintf(stderr, "Error: -p/--profile requires -x <executable>.\n\n");
         PrintUsage(kVersion);
         return SandyExit::InternalError;
     }
 
     SavedProfile profile;
+    if (!options.logPath.empty())
+        g_logger.Start(options.logPath);
     g_recoveryConsoleOutput = false;  // a run: stdout belongs to the child
-    CleanStagingProfiles();
     SavedProfileLoadStatus loadStatus = LoadSavedProfile(options.profileName, profile);
     if (loadStatus == SavedProfileLoadStatus::NotFound) {
         fprintf(stderr, "Error: profile '%ls' not found.\n", options.profileName.c_str());
         return SandyExit::ConfigError;
     }
     if (loadStatus == SavedProfileLoadStatus::Invalid) {
-        fprintf(stderr, "Error: profile '%ls' is corrupted or incomplete. Recreate it or delete it.\n",
+        fprintf(stderr, "Error: profile '%ls' could not be loaded. Check its saved configuration and paths.\n",
                 options.profileName.c_str());
         return SandyExit::ConfigError;
     }
 
-    profile.config.logPath = options.logPath;
     profile.config.quiet = options.quiet;
     profile.config.configSource = L"profile:" + options.profileName;
-    if (!options.logPath.empty())
-        g_logger.Start(options.logPath);
+    if (options.printConfig)
+        return HandlePrintConfig(profile.config);
+    if (options.dryRun)
+        return HandleDryRun(profile.config, options.exePath, options.exeArgs);
 
     int result = RunWithProfile(profile, options.exePath, options.exeArgs);
     g_logger.Stop();
@@ -420,7 +426,7 @@ static bool LoadConfiguredSandbox(const RunMainOptions& options, SandboxConfig& 
     }
 
     if (config.parseError) {
-        fprintf(stderr, "Error: Config contains unknown sections or keys. Aborting.\n");
+        fprintf(stderr, "Error: Config could not be loaded or validated. Aborting.\n");
         return false;
     }
 
@@ -444,8 +450,6 @@ static int RunConfigDrivenMode(RunMainOptions options)
         return SandyExit::InternalError;
     }
 
-    if (options.logStamp)
-        options.logPath = StampLogPath(options.logPath);
     if (!options.logPath.empty())
         g_logger.Start(options.logPath);
 
@@ -457,7 +461,6 @@ static int RunConfigDrivenMode(RunMainOptions options)
     if (options.dryRun)
         return HandleDryRun(config, options.exePath, options.exeArgs);
 
-    config.logPath = options.logPath;
     config.quiet = options.quiet;
     config.configSource = !options.configPath.empty() ? options.configPath : L"<inline>";
     return RunSandboxed(config, options.exePath, options.exeArgs);
@@ -475,6 +478,8 @@ static int RunMain(int argc, wchar_t* argv[])
     RunMainOptions options;
     if (!ParseRunMainOptions(argc, argv, options, exitCode))
         return exitCode;
+    if (options.logStamp)
+        options.logPath = StampLogPath(options.logPath);
     if (!options.createProfileName.empty())
         return RunCreateProfileMode(options);
     if (!options.profileName.empty())
@@ -487,10 +492,13 @@ static int RunMain(int argc, wchar_t* argv[])
 // -----------------------------------------------------------------------
 int wmain(int argc, wchar_t* argv[])
 {
+    // printf's wide-string conversion must also work when output is redirected.
+    setlocale(LC_CTYPE, ".UTF8");
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
 
     __try {
         int exitCode = RunMain(argc, argv);
+        g_logger.Stop();
         // After Ctrl+C / Ctrl+Break the run was cut short on request.
         return ShutdownRequested() ? static_cast<int>(STATUS_CONTROL_C_EXIT) : exitCode;
     }

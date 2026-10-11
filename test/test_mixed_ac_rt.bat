@@ -36,6 +36,7 @@ if exist "%ROOT%" rmdir /s /q "%ROOT%"
 mkdir "%ROOT%\shared\workspace"
 mkdir "%ROOT%\shared\protected"
 mkdir "%ROOT%\scripts"
+mkdir "%ROOT%\ungranted"
 
 REM Seed files
 echo shared workspace data>"%ROOT%\shared\workspace\seed.txt"
@@ -46,12 +47,12 @@ echo.
 
 REM === Capture pre-Sandy SDDLs ===
 echo --- Pre-Sandy SDDL snapshots ---
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared').Sddl" 2^>nul') do set "PRE_SDDL_0=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\workspace').Sddl" 2^>nul') do set "PRE_SDDL_1=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\protected').Sddl" 2^>nul') do set "PRE_SDDL_2=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared" 2^>nul') do set "PRE_SDDL_0=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared\workspace" 2^>nul') do set "PRE_SDDL_1=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared\protected" 2^>nul') do set "PRE_SDDL_2=%%S"
 REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
 for %%V in (PRE_SDDL_0 PRE_SDDL_1 PRE_SDDL_2) do if not defined %%V (
-    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(DACL reader gave no output^)
     exit /b 1
 )
 echo   Captured 3 pre-Sandy SDDLs
@@ -64,6 +65,7 @@ echo ===================================================================
 echo.
 "%SANDY%" -c "%AC_CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_mixed_ac_rt.py"
 set AC_EXIT=!ERRORLEVEL!
+if !AC_EXIT! NEQ 0 set /a FAIL+=1
 echo.
 echo   AC exit code: !AC_EXIT!
 echo.
@@ -75,6 +77,7 @@ echo ===================================================================
 echo.
 "%SANDY%" -c "%RT_CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_mixed_ac_rt.py"
 set RT_EXIT=!ERRORLEVEL!
+if !RT_EXIT! NEQ 0 set /a FAIL+=1
 echo.
 echo   RT exit code: !RT_EXIT!
 echo.
@@ -155,9 +158,9 @@ REM --- SDDL Fidelity ---
 echo.
 echo --- SDDL Fidelity Check ---
 
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared').Sddl" 2^>nul') do set "POST_SDDL_0=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\workspace').Sddl" 2^>nul') do set "POST_SDDL_1=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%ROOT%\shared\protected').Sddl" 2^>nul') do set "POST_SDDL_2=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared" 2^>nul') do set "POST_SDDL_0=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared\workspace" 2^>nul') do set "POST_SDDL_1=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%ROOT%\shared\protected" 2^>nul') do set "POST_SDDL_2=%%S"
 
 if "!POST_SDDL_0!"=="!PRE_SDDL_0!" (
     echo   [PASS] shared/ DACL restored exactly

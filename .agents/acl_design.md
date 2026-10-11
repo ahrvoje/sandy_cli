@@ -14,7 +14,7 @@ execution sessions** that may be either transient or profile-backed.
 
 ## Restricted Token
 
-- Always uses a unique run SID under `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-*`).
+- Transient runs use a unique run SID; saved profiles reuse their durable SID under `SECURITY_RESOURCE_MANAGER_AUTHORITY` (`S-1-9-*`).
 - `S-1-5-12` remains a restricting SID for system-object behavior only; it is not a grant owner SID.
 - By default, the user's own SID is included in the restricting list so existing
   file access passes the dual check. When `strict = true`, the user SID is
@@ -28,7 +28,7 @@ rely on removing ACEs by the exact owning SID.
 
 - **Transient AppContainer:** grants are per run.
 - **Saved-profile AppContainer:** grants are per profile.
-- **Restricted Token:** grants are per run.
+- **Restricted Token:** transient grants are per run; saved-profile grants are per profile.
 
 Do not write logic that assumes all AppContainer grants are transient. Profile-owned
 ACL state is durable and must survive normal run exit.
@@ -77,12 +77,15 @@ propagation (`ACL_REPROPAGATE`).
 ## DACL Protection Invariant — `WriteDaclToObject`
 
 Sandy **never** changes the protection of a DACL. `WriteDaclToObject()` reads
-`SE_DACL_PROTECTED` and `SE_DACL_AUTO_INHERITED` from the existing security
-descriptor and writes both back unchanged. It has **no parameter** to choose
-another value, so no caller can set or clear protection by mistake.
+`SE_DACL_PROTECTED` from the existing security descriptor and preserves it.
+It has **no parameter** to choose another value, so no caller can set or clear
+protection by mistake. Object-only writes also preserve `SE_DACL_AUTO_INHERITED`;
+Windows can recompute this flag when it propagates inheritance.
 
-After cleanup a DACL is identical to the one before the run: same ACEs, same
-order, same flags. `test_dacl_fidelity.bat` holds this as a test.
+Sandy preserves unrelated explicit ACEs and DACL protection. Windows recomputes
+inheritance on DACL writes: moved files can lose ACEs inherited from a former
+parent, and Windows can set the auto-inherited flag. `test_dacl_fidelity.bat`
+checks normal fidelity and this moved-file exception.
 
 > [!CAUTION]
 > **Never** add a bare `SetNamedSecurityInfoW` or `SetKernelObjectSecurity` call
@@ -125,8 +128,8 @@ Do not “fix” loader failures by adding execute to the read mask.
 | Delete | `delete` | `DELETE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Delete only, no read/write |
 | All | `all` | `FILE_ALL_ACCESS & ~(FILE_DELETE_CHILD \| WRITE_DAC \| WRITE_OWNER)` | Full data control, no ACL modification |
 | Run | `run` | `FILE_EXECUTE \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Execute only, no read (can't copy binary) |
-| Stat | `stat` | `FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Attributes only (NON-recursive, like ) |
-| Touch | `touch` | `FILE_WRITE_ATTRIBUTES \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Modify attributes only (NON-recursive, like ) |
+| Stat | `stat` | `FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Attributes only (scope follows `.this` or `.deep`) |
+| Touch | `touch` | `FILE_WRITE_ATTRIBUTES \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Modify attributes only (scope follows `.this` or `.deep`) |
 | Create | `create` | `FILE_ADD_FILE \| FILE_ADD_SUBDIRECTORY \| FILE_READ_ATTRIBUTES \| SYNCHRONIZE` | Create new files/subdirs, no overwrite |
 
 # DENY ACEs — Restricted Token Only

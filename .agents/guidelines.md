@@ -31,7 +31,7 @@ documented there are **settled facts, not suggestions**. If a design here says
 
 - **Never use UTF-16 for ANY output** — not stdout, not stderr, not log files.
 - No `_O_U16TEXT`, no `_setmode` to wide mode, no `L"w"` without `ccs=UTF-8`.
-- **Use `printf` with `%ls`** for user-facing output that includes wide strings.
+- **Initialize `LC_CTYPE` to `.UTF8` before output and use `printf` with `%ls`** for user-facing output that includes wide strings.
 - **Log files** opened with `_wfsopen`/`_wfopen` **must** use `L"wN, ccs=UTF-8"`
   to ensure `fwprintf` transcodes wide strings to UTF-8 on disk. The `N` makes
   the handle non-inheritable: the sandboxed child must not get a handle to the log.
@@ -80,7 +80,7 @@ App. Packages (`ALL APPLICATION PACKAGES`) for stricter default access.
 
 | Aspect | AppContainer | Restricted Token |
 |--------|-------------|-----------------|
-| SID | Transient run: unique per run (`S-1-15-2-*`); saved profile: durable per profile (`S-1-15-2-*`) | Unique per run (`S-1-9-*`) |
+| SID | Transient run: unique per run (`S-1-15-2-*`); saved profile: durable per profile (`S-1-15-2-*`) | Transient: unique per run; saved profile: durable per profile (`S-1-9-*`) |
 | DENY ACEs | **Ignored by kernel** — deny not supported | Honored normally |
 | Deny mechanism | Not available (config error) | Real `DENY_ACCESS` ACEs |
 | Cleanup | Remove ACEs by owning SID | Remove ACEs by owning SID |

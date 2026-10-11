@@ -144,12 +144,12 @@ except Exception as e:
 # SUMMARY
 # ===========================================================================
 passed = sum(1 for r in results if r[0] == 'PASS')
-failed = sum(1 for r in results if r[0] == 'FAIL')
+failed = sum(1 for r in results if r[0] in ('FAIL', 'ERR', 'SKIP'))
 info = sum(1 for r in results if r[0] == 'INFO')
 
 # Signal Bob is done (used by batch script for completion detection)
 with open(os.path.join(SIGNALS, 'bob_done'), 'w') as f:
-    f.write('exit')
+    f.write(str(int(failed > 0)))
 
 print(f"\n  BOB: {passed} pass, {failed} fail, {info} info")
 

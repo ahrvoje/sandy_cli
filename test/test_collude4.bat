@@ -62,14 +62,14 @@ copy /y "%~dp0test_collude4_probe.py" "!ROOT!\scripts\probe.py" >nul
 REM === Record pre-Sandy SDDL snapshots ===
 echo.
 echo --- Pre-Sandy SDDL snapshots ---
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!').Sddl" 2^>nul') do set "PRE_HUB=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\vault').Sddl" 2^>nul') do set "PRE_VAULT=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\logs').Sddl" 2^>nul') do set "PRE_LOGS=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\drop').Sddl" 2^>nul') do set "PRE_DROP=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\quarantine').Sddl" 2^>nul') do set "PRE_QUAR=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!" 2^>nul') do set "PRE_HUB=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\vault" 2^>nul') do set "PRE_VAULT=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\logs" 2^>nul') do set "PRE_LOGS=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\drop" 2^>nul') do set "PRE_DROP=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\quarantine" 2^>nul') do set "PRE_QUAR=%%S"
 REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
 for %%V in (PRE_HUB PRE_VAULT PRE_LOGS PRE_DROP PRE_QUAR) do if not defined %%V (
-    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(DACL reader gave no output^)
     exit /b 1
 )
 echo   hub/:        %PRE_HUB:~0,50%...
@@ -106,7 +106,8 @@ for /l %%W in (1,1,180) do (
 )
 
 if !ALL_DONE! EQU 0 (
-    echo   [WARN] Not all actors finished within 180s!
+    echo   [FAIL] Not all actors finished within 180s!
+    set /a FAIL+=1
 ) else (
     echo   [OK] All 4 actors finished. Waiting for Sandy cleanup...
 )
@@ -119,7 +120,10 @@ for /l %%W in (1,1,60) do if "!LIVE!"=="1" (
     for /f %%N in ('powershell -NoProfile -Command "@(Get-CimInstance Win32_Process -Filter ('Name='+[char]39+'sandy.exe'+[char]39) | Where-Object { $_.CommandLine -like '*test_collude4*' }).Count"') do if %%N GTR 0 set "LIVE=1"
     if "!LIVE!"=="1" ping -n 2 127.0.0.1 >nul
 )
-if "!LIVE!"=="1" echo   [WARN] A Sandy instance of this test is still running after the wait
+if "!LIVE!"=="1" (
+    echo   [FAIL] A Sandy instance of this test is still running after the wait
+    set /a FAIL+=1
+)
 
 REM === Print outputs ===
 for %%A in (alpha beta gamma delta) do (
@@ -132,6 +136,8 @@ for %%A in (alpha beta gamma delta) do (
 
 REM === Parse pass/fail from each actor's output ===
 for %%A in (alpha beta gamma delta) do (
+    findstr /C:"pass," "%TEMP%\collude4_%%A.txt" >nul 2>nul
+    if !ERRORLEVEL! NEQ 0 set /a FAIL+=1
     for /f "tokens=2,4" %%P in ('findstr /C:"pass," "%TEMP%\collude4_%%A.txt" 2^>nul') do (
         set /a PASS+=%%P
         set /a FAIL+=%%Q
@@ -145,7 +151,7 @@ echo  Post-Cleanup Verification (THE CRITICAL TEST)
 echo =====================================================================
 
 REM Check no AppContainer SIDs remain on the tree
-powershell -NoProfile -Command "(Get-Acl '%HUB%').Sddl + (Get-Acl '%HUB%\vault').Sddl + (Get-Acl '%HUB%\logs').Sddl + (Get-Acl '%HUB%\drop').Sddl + (Get-Acl '%HUB%\quarantine').Sddl + (Get-Acl '%HUB%\common').Sddl" 2>nul | findstr /C:"S-1-15-2-" >nul 2>nul
+"%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%HUB%" "%HUB%\vault" "%HUB%\logs" "%HUB%\drop" "%HUB%\quarantine" "%HUB%\common" 2>nul | findstr /C:"S-1-15-2-" >nul 2>nul
 if !ERRORLEVEL! NEQ 0 (
     echo   [PASS] No AppContainer SIDs on any directory
     set /a PASS+=1
@@ -167,11 +173,11 @@ if !ERRORLEVEL! NEQ 0 (
 REM === SDDL Fidelity ===
 echo.
 echo --- SDDL Fidelity (forensic proof) ---
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!').Sddl" 2^>nul') do set "POST_HUB=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\vault').Sddl" 2^>nul') do set "POST_VAULT=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\logs').Sddl" 2^>nul') do set "POST_LOGS=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\drop').Sddl" 2^>nul') do set "POST_DROP=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '!HUB!\quarantine').Sddl" 2^>nul') do set "POST_QUAR=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!" 2^>nul') do set "POST_HUB=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\vault" 2^>nul') do set "POST_VAULT=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\logs" 2^>nul') do set "POST_LOGS=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\drop" 2^>nul') do set "POST_DROP=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "!HUB!\quarantine" 2^>nul') do set "POST_QUAR=%%S"
 
 if "!POST_HUB!"=="!PRE_HUB!" (
     echo   [PASS] hub/ DACL restored to original

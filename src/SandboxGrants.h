@@ -161,8 +161,6 @@ namespace Sandbox {
         std::wstring type;          // "FILE" or "REG"
         std::wstring path;
         std::wstring sidString;
-        std::wstring trappedSids;   // semicolon-separated trapped AC SIDs
-        bool         wasDenied = false;
         bool         wasThis = false;
         OwnerAce     ownerAce = OwnerAce::None;
     };
@@ -266,16 +264,13 @@ namespace Sandbox {
             return reject(L"SID does not match S-<rev>-<auth> format");
 
         // Parse optional |KEY:VALUE suffixes
-        out.wasDenied = false;
         out.wasThis = false;
         out.ownerAce = OwnerAce::None;
-        out.trappedSids.clear();
         if (pipePos != std::wstring::npos) {
             remaining = remaining.substr(pipePos);
             while (!remaining.empty() && remaining[0] == L'|') {
                 remaining = remaining.substr(1);
                 if (remaining.compare(0, 6, L"DENY:1") == 0) {
-                    out.wasDenied = true;
                     remaining = remaining.substr(6);
                 } else if (remaining.compare(0, 7, L"OWNER:I") == 0) {
                     out.ownerAce = OwnerAce::Inherit;
@@ -295,13 +290,13 @@ namespace Sandbox {
                 } else if (remaining.compare(0, 8, L"TRAPPED:") == 0) {
                     remaining = remaining.substr(8);
                     auto nextPipe = remaining.find(L'|');
-                    out.trappedSids = (nextPipe != std::wstring::npos)
+                    std::wstring trappedSids = (nextPipe != std::wstring::npos)
                                      ? remaining.substr(0, nextPipe) : remaining;
                     remaining = (nextPipe != std::wstring::npos)
                                 ? remaining.substr(nextPipe) : L"";
                     // Validate each trapped SID substring
-                    if (!out.trappedSids.empty()) {
-                        std::wstring buf = out.trappedSids;
+                    if (!trappedSids.empty()) {
+                        std::wstring buf = trappedSids;
                         size_t pos = 0;
                         while (pos < buf.size()) {
                             auto semi = buf.find(L';', pos);
@@ -312,7 +307,6 @@ namespace Sandbox {
                             pos = (semi != std::wstring::npos) ? semi + 1 : buf.size();
                         }
                     }
-                    out.wasDenied = true; // backward compat: trapped always means deny
                 } else {
                     return reject(L"unknown flag suffix");
                 }
@@ -406,7 +400,7 @@ namespace Sandbox {
     // GrantLedgerEntry — resolved snapshot of one Grants\<instanceId> subkey.
     //
     // Liveness semantics are defined HERE, not in callers:
-    //   isCommitted=false → Incomplete (fail closed, writer initializing)
+    //   isCommitted=false → Stale while holding the writer lock; otherwise Incomplete
     //   isCommitted=true  → Active or Stale based on PID + creation time
     // -----------------------------------------------------------------------
     struct GrantLedgerEntry {
@@ -419,6 +413,28 @@ namespace Sandbox {
         std::wstring profileName;
         bool         profileMode = false;
     };
+
+    // HKCU ledgers are shared across logon sessions. Use a per-user global
+    // mutex so a reader cannot mistake another session's writer for a crash.
+    inline std::wstring RecoveryLedgerMutexName()
+    {
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+            return {};
+        DWORD size = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+        std::vector<BYTE> data(size);
+        std::wstring name;
+        if (size && GetTokenInformation(token, TokenUser, data.data(), size, &size)) {
+            LPWSTR sid = nullptr;
+            if (ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(data.data())->User.Sid, &sid)) {
+                name = L"Global\\Sandy_Ledger_" + std::wstring(sid);
+                LocalFree(sid);
+            }
+        }
+        CloseHandle(token);
+        return name;
+    }
 
     inline RecoveryLedgerLiveness ResolveRecoveryLedgerLiveness(bool isCommitted,
                                                                 DWORD pid,
@@ -433,6 +449,9 @@ namespace Sandbox {
 
     inline std::vector<GrantLedgerEntry> SnapshotGrantLedgers()
     {
+        // All ledger writers hold this lock through their commit marker.
+        // An incomplete key seen while holding it has no active writer.
+        AclMutexGuard ledgerLock(RecoveryLedgerMutexName().c_str());
         std::vector<GrantLedgerEntry> entries;
         for (const auto& subKey : EnumRecoveryLedgerInstanceIds(RecoveryLedgerKind::Grants)) {
             GrantLedgerEntry e;
@@ -457,8 +476,10 @@ namespace Sandbox {
 
             RegCloseKey(hKey);
 
-            // Liveness: uncommitted = alive (fail closed), committed = check
+            // With the writer lock acquired, incomplete means abandoned.
             e.liveness = ResolveRecoveryLedgerLiveness(e.isCommitted, e.pid, e.ctime);
+            if (!e.isCommitted && ledgerLock.hMutex)
+                e.liveness = RecoveryLedgerLiveness::Stale;
             entries.push_back(std::move(e));
         }
         return entries;
@@ -479,6 +500,7 @@ namespace Sandbox {
 
     inline std::vector<TransientContainerEntry> SnapshotTransientContainerLedgers()
     {
+        AclMutexGuard ledgerLock(RecoveryLedgerMutexName().c_str());
         std::vector<TransientContainerEntry> entries;
         for (const auto& subKey : EnumRecoveryLedgerInstanceIds(RecoveryLedgerKind::TransientContainerRetry)) {
             TransientContainerEntry e;
@@ -496,6 +518,8 @@ namespace Sandbox {
             RegCloseKey(hKey);
 
             e.liveness = ResolveRecoveryLedgerLiveness(e.isCommitted, e.pid, e.ctime);
+            if (!e.isCommitted && ledgerLock.hMutex)
+                e.liveness = RecoveryLedgerLiveness::Stale;
             entries.push_back(std::move(e));
         }
         return entries;
@@ -568,6 +592,11 @@ namespace Sandbox {
     inline void InitializeRunLedger(const std::wstring& containerName)
     {
         if (!g_grantPersistence) return;
+        AclMutexGuard ledgerLock(RecoveryLedgerMutexName().c_str());
+        if (!ledgerLock.hMutex) {
+            MarkGrantTrackingFailure(L"lock ledger initialization");
+            return;
+        }
 
         std::wstring regKey = GetGrantsRegKey();
         HKEY hKey = nullptr;
@@ -774,6 +803,8 @@ namespace Sandbox {
                                                  const std::wstring& containerName)
     {
         if (instanceId.empty() || containerName.empty()) return false;
+        AclMutexGuard ledgerLock(RecoveryLedgerMutexName().c_str());
+        if (!ledgerLock.hMutex) return false;
 
         std::wstring regKey = GetTransientContainerRegKey(instanceId);
         HKEY hKey = nullptr;
@@ -924,6 +955,8 @@ namespace Sandbox {
     inline bool PersistLiveState(const std::wstring& containerName,
                                  const std::wstring& profileName = L"")
     {
+        AclMutexGuard ledgerLock(RecoveryLedgerMutexName().c_str());
+        if (!ledgerLock.hMutex) return false;
         std::wstring regKey = GetGrantsRegKey();
         HKEY hKey = nullptr;
         DWORD disposition = 0;
@@ -1082,7 +1115,7 @@ namespace Sandbox {
         if (g_cleanedUp.exchange(true)) return;
 
         // Serialize the entire cleanup sequence across Sandy instances.
-        // Individual RemoveSidFromDacl calls already acquire this mutex,
+        // Individual RemoveSidFromDaclDetailed calls already acquire this mutex,
         // but Windows named mutexes are recursive (same-thread reacquisition
         // succeeds), so this outer lock prevents interleaving of multi-path
         // cleanup where SetNamedSecurityInfoW auto-inheritance from one
@@ -1096,9 +1129,15 @@ namespace Sandbox {
             AddGrantCleanupTarget(plan, g.path, g.objType, g.sidString, g.wasThis, g.ownerAce);
 
         int removed = 0;
-        for (auto it = plan.rbegin(); it != plan.rend(); ++it)
-            removed += RemoveSidFromDacl(it->path, it->sidString, it->objType,
-                                         it->skipTreeSet, it->ownerAce);
+        for (auto it = plan.rbegin(); it != plan.rend(); ++it) {
+            AceRemovalResult result = RemoveSidFromDaclDetailed(
+                it->path, it->sidString, it->objType, it->skipTreeSet, it->ownerAce);
+            removed += result.removed;
+            if (!result.Succeeded()) {
+                RequestGrantMetadataPreservation(L"ACL removal failed");
+                RequestDeferredCleanup(L"ACL removal failed");
+            }
+        }
         g_logger.LogFmt(L"REVOKE_SUMMARY: %d ACEs removed", removed);
         g_aclGrants.clear();
         ReleaseSRWLockExclusive(&g_aclGrantsLock);

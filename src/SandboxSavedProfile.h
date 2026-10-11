@@ -4,7 +4,7 @@
 // Creates, loads, deletes, and enumerates named profiles that persist
 // SID + ACL grants + TOML config between Sandy runs.  Composes existing
 // primitives: ApplyAccessPipeline, SetupAppContainer/SetupRestrictedToken,
-// RecordGrant format, RemoveSidFromDacl.
+// RecordGrant format, RemoveSidFromDaclDetailed.
 // =========================================================================
 #pragma once
 
@@ -24,7 +24,6 @@ namespace Sandbox {
         std::wstring sidString;
         std::wstring containerName; // AC only: "Sandy_<name>"
         std::wstring created;       // ISO 8601
-        std::wstring tomlText;      // raw TOML config
         SandboxConfig config;       // parsed config
     };
 
@@ -259,7 +258,7 @@ namespace Sandbox {
     //   _allow_clipboard_r   REG_DWORD  0 | 1
     //   _allow_clipboard_w   REG_DWORD  0 | 1
     //   _allow_child_procs   REG_DWORD  0 | 1
-    //   _stdin_mode          REG_SZ   "NUL" | "" | path
+    //   _stdin_mode          REG_SZ   "NUL" | "INHERIT" | path
     //   _env_inherit         REG_DWORD  0 | 1
     //   _timeout             REG_DWORD  seconds (0 = none)
     //   _memory_limit_mb     REG_DWORD  MB (0 = none)
@@ -393,7 +392,7 @@ namespace Sandbox {
             default:
                 return;
             }
-            cfg.parseError = true;
+            ReportConfiguredPathValidationError(value, sectionName, keyName, error, cfg.parseError);
         };
 
         if (!cfg.workdir.empty()) {
@@ -492,7 +491,6 @@ namespace Sandbox {
 
     struct ProfileCreateConfig {
         SandboxConfig config;
-        std::wstring tomlText;
         bool isAppContainer = false;
         std::wstring typeStr;
         std::wstring integrityStr;
@@ -579,15 +577,15 @@ namespace Sandbox {
     inline bool LoadProfileCreateConfig(const std::wstring& configPath,
                                         ProfileCreateConfig& createConfig)
     {
-        createConfig.tomlText = ReadTomlFileText(configPath);
-        if (createConfig.tomlText.empty()) {
+        std::wstring tomlText = ReadTomlFileText(configPath);
+        if (tomlText.empty()) {
             fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
             return false;
         }
 
-        createConfig.config = ParseConfigFileText(createConfig.tomlText);
+        createConfig.config = ParseConfigFileText(tomlText);
         if (createConfig.config.parseError) {
-            fprintf(stderr, "Error: config contains unknown sections or keys.\n");
+            fprintf(stderr, "Error: config could not be loaded or validated.\n");
             return false;
         }
 
@@ -600,6 +598,7 @@ namespace Sandbox {
     }
 
     inline ProfileCreateTransactionStatus BeginProfileCreationTransaction(const std::wstring& name,
+                                                                         const std::wstring& containerName,
                                                                          HKEY& hKey)
     {
         std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + name;
@@ -627,6 +626,10 @@ namespace Sandbox {
         stageOk &= TryWriteRegDword(hKey, L"_staging", stagingFlag);
         stageOk &= TryWriteRegDword(hKey, L"_staging_pid", GetCurrentProcessId());
         stageOk &= TryWriteRegQword(hKey, L"_staging_ctime", GetCurrentProcessCreationTime());
+        // Publish ownership before Windows can expose the new container to
+        // another run's startup recovery.
+        if (!containerName.empty())
+            stageOk &= TryWriteRegSz(hKey, L"_container", containerName);
         if (stageOk)
             return ProfileCreateTransactionStatus::Ok;
 
@@ -637,12 +640,10 @@ namespace Sandbox {
         return ProfileCreateTransactionStatus::InternalError;
     }
 
-    inline bool CreateProfileIdentity(const std::wstring& name,
-                                      const ProfileCreateConfig& createConfig,
+    inline bool CreateProfileIdentity(const ProfileCreateConfig& createConfig,
                                       ProfileCreateIdentity& identity)
     {
         if (createConfig.isAppContainer) {
-            identity.containerName = std::wstring(kContainerPrefix) + name;
             PSID containerSid = nullptr;
             HRESULT hr = CreateAppContainerProfile(
                 identity.containerName.c_str(), L"Sandy Sandbox Profile",
@@ -805,7 +806,6 @@ namespace Sandbox {
         commitOk &= TryWriteRegSz(hKey, L"_type", createConfig.typeStr);
         commitOk &= TryWriteRegSz(hKey, L"_integrity", createConfig.integrityStr);
         commitOk &= TryWriteRegSz(hKey, L"_created", SandyLogger::Timestamp());
-        commitOk &= TryWriteRegSz(hKey, L"_toml", createConfig.tomlText);
         commitOk &= WriteConfigToRegistry(hKey, createConfig.config);
         if (commitOk)
             commitOk &= (RegDeleteValueW(hKey, L"_staging") == ERROR_SUCCESS);
@@ -848,16 +848,19 @@ namespace Sandbox {
         if (!LoadProfileCreateConfig(configPath, createConfig))
             return SandyExit::ConfigError;
 
+        ProfileCreateIdentity identity;
+        if (createConfig.isAppContainer)
+            identity.containerName = std::wstring(kContainerPrefix) + name;
+
         HKEY hKey = nullptr;
         ProfileCreateTransactionStatus transactionStatus =
-            BeginProfileCreationTransaction(name, hKey);
+            BeginProfileCreationTransaction(name, identity.containerName, hKey);
         if (transactionStatus == ProfileCreateTransactionStatus::AlreadyExists)
             return SandyExit::ConfigError;
         if (transactionStatus == ProfileCreateTransactionStatus::InternalError)
             return SandyExit::InternalError;
 
-        ProfileCreateIdentity identity;
-        if (!CreateProfileIdentity(name, createConfig, identity)) {
+        if (!CreateProfileIdentity(createConfig, identity)) {
             RegCloseKey(hKey);
             DeleteProfileRegistryState(name, L"CREATE_PROFILE_STAGE");
             return SandyExit::SetupError;
@@ -1063,7 +1066,6 @@ namespace Sandbox {
         out.sidString = summary.sidString;
         out.containerName = summary.containerName;
         out.created = summary.created;
-        out.tomlText = ReadRegSz(hKey, L"_toml");
 
         // Read config from discrete registry values (no TOML parsing)
         out.config = ReadConfigFromRegistry(hKey);
@@ -1303,7 +1305,7 @@ namespace Sandbox {
         if (exeFolder.empty())
             return SandyExit::SetupError;
 
-        BeginRunSession(exePath, L"profile:" + prof.name, prof.name);
+        BeginRunSession(L"profile:" + prof.name, prof.name);
         g_logger.Log((L"PROFILE_SID: " + prof.sidString).c_str());
 
         PSID pSid = nullptr;
@@ -1352,7 +1354,6 @@ namespace Sandbox {
         identity.pSid = pSid;
         identity.hToken = hRestrictedToken;
         identity.containerName = prof.containerName;
-        identity.profileName = prof.name;
         identity.persistentProfile = true;
         identity.grantsPreexisting = true;
         identity.deleteContainerOnExit = false;
@@ -1381,8 +1382,6 @@ namespace Sandbox {
                                  identity);
 
         // Cleanup SID and token (RunPipeline doesn't own these in profile mode)
-        ClearLiveState();
-        FinalizeCleanupTaskForCurrentRun();
         if (hRestrictedToken) CloseHandle(hRestrictedToken);
         if (isAppContainer)
             FreeSid(pSid);

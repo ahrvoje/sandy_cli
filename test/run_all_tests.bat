@@ -17,6 +17,9 @@ for %%F in (
     test_allow_limits.bat
     test_lpac.bat
     test_lpac_capabilities.bat
+    test_pipe_hook.bat
+    test_audit_regressions.bat
+    test_audit_harness.bat
     test_allow_limits_rt.bat
     test_deep_acl.bat
     test_deep_acl_rt.bat

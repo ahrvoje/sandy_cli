@@ -77,8 +77,8 @@ namespace Sandbox {
     //   GetNamedSecurityInfoW -> build new ACL -> Set*SecurityInfo
     // Without serialization, concurrent instances can lose each other's ACEs.
     //
-    // Uses a named mutex per path (CRC32 hash) for filesystem objects, or a
-    // single named mutex for Desktop/WinSta objects.  Mutex is auto-released
+    // Uses one named mutex for filesystem, registry, and desktop objects.
+    // The mutex is auto-released
     // by the OS if the holder crashes (WAIT_ABANDONED is treated as acquired).
     // -----------------------------------------------------------------------
     // Global mutex name — one mutex serializes all Sandy DACL operations.
@@ -100,6 +100,7 @@ namespace Sandbox {
 
         explicit AclMutexGuard(const wchar_t* fixedName)
         {
+            if (!fixedName || !*fixedName) return;
             Acquire(fixedName);
         }
 
@@ -612,7 +613,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // RemoveSidFromDacl — remove all ACEs for a specific SID from an object.
+    // RemoveSidFromDaclDetailed — remove all ACEs for a specific SID from an object.
     //
     // Multi-instance safe: only removes ACEs matching the given SID string.
     // Other ACEs (from other instances, users, system) are untouched.
@@ -767,18 +768,6 @@ namespace Sandbox {
         g_logger.LogFmt(L"ACL_REMOVE: %s -> FAILED (0x%08X: %s)",
                         path.c_str(), rc, GetSystemErrorMessage(rc).c_str());
         return result;
-    }
-
-    // Returns number of ACEs removed.
-    // -----------------------------------------------------------------------
-    inline int RemoveSidFromDacl(const std::wstring& path,
-                                 const std::wstring& sidString,
-                                 SE_OBJECT_TYPE objType,
-                                 bool skipTreeSet = false,
-                                 OwnerAce ownerAce = OwnerAce::None)
-    {
-        return RemoveSidFromDaclDetailed(path, sidString, objType,
-                                         skipTreeSet, ownerAce).removed;
     }
 
 } // namespace Sandbox

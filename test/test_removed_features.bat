@@ -16,8 +16,8 @@ echo  Sandy Removed-Feature Surface Test
 echo =====================================================================
 
 if not exist "!SANDY!" (
-    echo   [SKIP] sandy.exe not found at !SANDY!
-    exit /b 0
+    echo   [FAIL] sandy.exe not found at !SANDY!
+    exit /b 1
 )
 
 echo.

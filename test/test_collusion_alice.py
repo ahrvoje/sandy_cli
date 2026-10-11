@@ -113,10 +113,10 @@ except Exception as e:
 # ===========================================================================
 print("\n=== ALICE EXITING FIRST ===")
 with open(os.path.join(SIGNALS, 'alice_done'), 'w') as f:
-    f.write('exit')
+    f.write(str(int(any(r[0] in ('FAIL', 'ERR', 'SKIP') for r in results))))
 
 print(f"\n  ALICE: {sum(1 for r in results if r[0]=='PASS')} pass, "
       f"{sum(1 for r in results if r[0]=='FAIL')} fail, "
       f"{sum(1 for r in results if r[0]=='INFO')} info")
 
-sys.exit(0)
+sys.exit(int(any(r[0] in ('FAIL', 'ERR', 'SKIP') for r in results)))

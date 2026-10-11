@@ -16,7 +16,6 @@ set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PASS=0
 set FAIL=0
 
-set DRYRUN_OUT=%TEMP%\sandy_dryrun_unicode.txt
 
 echo === Sandy Resilience Test Battery ===
 echo.
@@ -491,28 +490,16 @@ REM Test 12: --print-config / --dry-run preserve Unicode output path text
 REM ===================================================================
 echo.
 echo --- Test 12: Unicode dry-run / print-config output ---
-REM Use the external RT config file (test_resilience_rt.toml)
-"!SANDY!" --dry-run -c "!RT_CONFIG!" -x "!PYTHON!" >"!DRYRUN_OUT!" 2>nul
-REM dry-run/print-config output is UTF-8 — findstr works directly
-findstr /C:"Working dir" "!DRYRUN_OUT!" >nul 2>nul
+REM The focused case checks non-ASCII paths, parses the resulting TOML,
+REM and checks the complete UTF-8 diagnostic after the path is removed.
+"!PYTHON!" "%~dp0test_audit_regressions.py" AuditRegressions.test_unicode_output_and_diagnostic
 if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Dry-run prints actual working directory
+    echo   [PASS] Unicode dry-run, TOML output, and diagnostics
     set /a PASS+=1
 ) else (
-    echo   [FAIL] Dry-run missing actual working directory
+    echo   [FAIL] Unicode output regression
     set /a FAIL+=1
 )
-
-"!SANDY!" --print-config -c "!RT_CONFIG!" >"!DRYRUN_OUT!" 2>nul
-findstr /C:"workdir" "!DRYRUN_OUT!" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] Print-config preserves workdir text
-    set /a PASS+=1
-) else (
-    echo   [FAIL] Print-config missing workdir text
-    set /a FAIL+=1
-)
-del "!DRYRUN_OUT!" 2>nul
 
 REM ===================================================================
 REM Test 13: Malformed persisted records are skipped, cleanup still succeeds

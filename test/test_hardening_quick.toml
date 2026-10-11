@@ -6,7 +6,7 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-read = ['%LOCALAPPDATA%\Programs\Python\Python314', 'C:\repos\sandy_cli\test\test_hardening_exit.py']
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%SANDY_TEST_DIR%test_hardening_exit.py']
 
 [environment]
 inherit = true

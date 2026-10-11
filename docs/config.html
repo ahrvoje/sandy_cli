@@ -154,7 +154,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
 
     <div class="callout warning">
       <div class="callout-title">⛔ Wrong-mode keys are rejected</div>
-      <p>Using an AC-only key (e.g. <code>loopback</code>) in an RT config, or an RT-only key (<code>desktop</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected.</p>
+      <p>Using an AC-only key (e.g. <code>loopback</code>) in an RT config, or an RT-only key (<code>desktop</code>, <code>integrity</code>) in an AC config, is a configuration error → exit 128. Unknown keys/sections are also rejected. These checks apply even to empty tables and arrays, or false values.</p>
     </div>
   </div>
 </section>
@@ -304,7 +304,7 @@ names = ['registryRead', 'lpacCom']</code></pre>
       <table>
         <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>loopback</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Add a sandbox loopback exemption. Requires <code>privateNetworkClientServer</code> in <code>[capabilities] names</code>; no capability is added implicitly.</td></tr>
+          <tr><td>loopback</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status na">N/A</span></td><td>Add a sandbox loopback exemption. Requires an administrator and <code>privateNetworkClientServer</code> in <code>[capabilities] names</code>; no capability is added implicitly.</td></tr>
           <tr><td>desktop</td><td>bool</td><td><code>true</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>WinSta0 + Desktop access. Default <code>true</code>. <code>false</code> isolates through job-object UI limits: the sandbox cannot list or use windows of other processes. It does not hide the desktop object itself. Set <code>false</code> only for headless services.</td></tr>
           <tr><td>stdin</td><td>bool / absolute path</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td><code>false</code>=NUL; <code>true</code>=inherit parent stdin; absolute path=redirect from file</td></tr>
           <tr><td>clipboard_read</td><td>bool</td><td><code>false</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Remove Sandy's clipboard-read job restriction; other Windows checks still apply</td></tr>
@@ -328,7 +328,7 @@ names = ['registryRead', 'lpacCom']</code></pre>
       <table>
         <thead><tr><th>Key</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>read</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant read access to specific registry keys</td></tr>
+          <tr><td>read</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant read access to specific registry keys; paths must start with <code>HKCU\</code> or <code>HKLM\</code></td></tr>
           <tr><td>write</td><td><code>[]</code></td><td><span class="status na">N/A</span></td><td><span class="status opt">Optional</span></td><td>Grant write access to specific registry keys</td></tr>
         </tbody>
       </table>
@@ -362,9 +362,9 @@ names = ['registryRead', 'lpacCom']</code></pre>
       <table>
         <thead><tr><th>Key</th><th>Unit</th><th>Default</th><th>AC / LPAC</th><th>RT</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>End the whole process tree after N seconds. <code>0</code>=no limit. The limit covers the root process and every descendant in the job. Sandy waits for the root and then for every descendant; the watchdog stays active until the tree is gone. Sandy exits 130 on timeout.</td></tr>
-          <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap. <code>0</code>=no limit. Enforced via job objects.</td></tr>
-          <tr><td>processes</td><td>count</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Max active process count. <code>0</code>=no limit.</td></tr>
+          <tr><td>timeout</td><td>seconds</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>End the whole process tree after N seconds (maximum 86400). <code>0</code>=no limit. The limit covers the root process and every descendant in the job. Sandy waits for the root and then for every descendant; the watchdog stays active until the tree is gone. Sandy exits 130 on timeout.</td></tr>
+          <tr><td>memory</td><td>MB</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Job-wide memory cap (maximum 65536 MB). <code>0</code>=no limit. Enforced via job objects.</td></tr>
+          <tr><td>processes</td><td>count</td><td><code>0</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Max active process count (maximum 1024). <code>0</code>=no limit.</td></tr>
         </tbody>
       </table>
     </div>

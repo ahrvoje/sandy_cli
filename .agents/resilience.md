@@ -57,6 +57,13 @@ Keep the existing container-based recovery and deletion paths for both.
 
 ---
 
+Ledger writers and snapshots hold the per-user `Global\Sandy_Ledger_<user SID>` mutex through initialization.
+The `_pid` value is written last. While holding this lock, an incomplete key
+has no live writer and can be recovered as stale. If the lock is unavailable,
+writers fail closed and snapshots keep incomplete keys protected.
+Transient run ledgers exist before AppContainer creation; startup also removes
+orphaned transient containers that have no ledger.
+
 ## Liveness Detection
 
 PID existence is not enough. A killed process can remain as a zombie kernel object
@@ -77,6 +84,11 @@ Both normal startup and `--cleanup` must cover the same failure classes:
 - incomplete staging profiles
 - stale grant ledgers (file, registry and desktop ACEs)
 - stale cleanup tasks
+
+Publish container ownership before creating the Windows container: transient
+runs use the grant ledger; profile creation uses `_container` in its staging key.
+Container inventory must enumerate Windows containers before it reads their
+owners, so a new container cannot appear after the ownership snapshot.
 
 Recovery output of a normal run goes to the session log, not to the console
 (`RecoveryPrintf`): from `BeginRunSession` on, stdout belongs to the child.

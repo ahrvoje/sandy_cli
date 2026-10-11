@@ -68,6 +68,10 @@ inline int HandleDryRun(const SandboxConfig& config,
     PrintFolderEntries(L"deny.this", config.denyFolders, GrantScope::This);
 
     if (!isRestricted) {
+        printf("\n[pipes]\n");
+        if (config.pipeMap.empty()) printf("  (none)\n");
+        for (const auto& entry : config.pipeMap)
+            printf("  %ls -> %ls\n", entry.original.c_str(), entry.local.c_str());
         printf("\n[capabilities]\n");
         if (config.capabilityNames.empty()) printf("  (none)\n");
         for (const auto& name : config.capabilityNames)
@@ -151,7 +155,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
     }
     SandboxConfig config = ParseConfigFileText(tomlText);
     if (config.parseError) {
-        fprintf(stderr, "Error: config contains unknown sections or keys.\n");
+        fprintf(stderr, "Error: config could not be loaded or validated.\n");
         return SandyExit::ConfigError;
     }
 
@@ -186,8 +190,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
         for (auto& k : config.registryWrite) printf("  write: %ls\n", k.c_str());
     }
 
-    printf("\n=== Dry run complete. No system state modified. ===\n");
-    return 0;
+    return HandleDryRun(config, L"", L"");
 }
 
 // -----------------------------------------------------------------------

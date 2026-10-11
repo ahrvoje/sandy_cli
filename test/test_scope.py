@@ -83,8 +83,10 @@ test("allow.this all: parent write",   can_write(this_root / "write_test.txt"))
 test("allow.this all: parent listdir", can_listdir(this_root))
 
 # This all — child should NOT inherit
-test("allow.this all: child write DENIED",   not can_write(this_child / "write_test.txt"),
-     "child should NOT inherit this-scope grant")
+if MODE == "AC":
+    test("allow.this all: child write DENIED", not can_write(this_child / "write_test.txt"))
+else:
+    test("RT medium: baseline child write ALLOWED", can_write(this_child / "write_test.txt"))
 
 if MODE == "AC":
     # AC starts from zero — no baseline access, so child is fully blocked
@@ -133,6 +135,7 @@ if MODE == "RT":
     # deny.this all — should block write at parent
     test("deny.this all: parent write DENIED", not can_write(dt_root / "blocked.txt"),
          "deny.this should block parent write")
+    test("deny.this all: child write ALLOWED", can_write(dt_child / "allowed.txt"))
     # deny.this should NOT propagate to child — child reads and writes should work
     # via BUILTIN\Users baseline (reads) and owner access (writes)
     test("deny.this all: child read ALLOWED",  can_read(dt_child / "file.txt"),

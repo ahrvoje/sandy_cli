@@ -361,7 +361,7 @@ namespace Sandbox {
     constexpr size_t kMaxConfigPathLength = 32768;
     constexpr size_t kMaxRulesPerSection = 256;
 
-    enum class ConfigPathKind { Any, File, Directory };
+    enum class ConfigPathKind { File, Directory };
     // -----------------------------------------------------------------------
     // ExpandConfigPath — replace %NAME% environment references in a path.
     //
@@ -536,6 +536,9 @@ namespace Sandbox {
     inline void ValidateModeSpecificConfig(const SandboxConfig& config,
                                            bool integritySeen,
                                            bool registrySeen,
+                                           bool strictSeen,
+                                           bool denySeen,
+                                           bool pipesSeen,
                                            const std::set<std::wstring>& privSeen,
                                            bool& parseError)
     {
@@ -551,7 +554,7 @@ namespace Sandbox {
                 fprintf(stderr, "Error: 'integrity' is required in [sandbox] for restricted mode ('low' or 'medium').\n");
                 parseError = true;
             }
-            if (!config.pipeMap.empty()) {
+            if (pipesSeen) {
                 fprintf(stderr, "Error: [pipes] is not available in restricted mode (name interception is an appcontainer/lpac feature).\n");
                 parseError = true;
             }
@@ -566,7 +569,7 @@ namespace Sandbox {
                 fprintf(stderr, "Error: 'integrity' is not available in appcontainer/lpac mode (always Low).\n");
                 parseError = true;
             }
-            if (config.strict) {
+            if (strictSeen) {
                 fprintf(stderr, "Error: 'strict' is not available in appcontainer/lpac mode (use token = 'restricted' for strict mode).\n");
                 parseError = true;
             }
@@ -574,7 +577,7 @@ namespace Sandbox {
                 fprintf(stderr, "Error: [registry] section is not available in appcontainer/lpac mode.\n");
                 parseError = true;
             }
-            if (!config.denyFolders.empty()) {
+            if (denySeen) {
                 fprintf(stderr, "Error: [deny.*] is not available in appcontainer mode.\n");
                 fprintf(stderr, "  The Windows kernel ignores DENY ACEs for AppContainer SIDs.\n");
                 fprintf(stderr, "  Use token = 'restricted' for deny rules, or remove the deny sections.\n");
@@ -751,6 +754,7 @@ namespace Sandbox {
 
         // --- [sandbox] ---
         bool integritySeen = false;
+        bool strictSeen = false;
         bool tokenSeen = false;
         if (sandboxSeen) {
             const Toml::TomlSection& sec = doc.find(L"sandbox")->second;
@@ -774,6 +778,7 @@ namespace Sandbox {
                         config.parseError = true;
                     }
                 } else if (key == L"strict") {
+                    strictSeen = true;
                     TryParseBoolValue(val, L"sandbox", key, config.strict, config.parseError);
                 } else if (key == L"workdir") {
                     if (!RequireScalarValue(val, L"sandbox", key, config.parseError))
@@ -950,7 +955,9 @@ namespace Sandbox {
 
         // --- Mode-specific validation ---
         if (!config.parseError) {
-            ValidateModeSpecificConfig(config, integritySeen, registrySeen, privSeen, config.parseError);
+            ValidateModeSpecificConfig(config, integritySeen, registrySeen, strictSeen,
+                                      doc.count(L"deny.deep") || doc.count(L"deny.this"),
+                                      doc.count(L"pipes") > 0, privSeen, config.parseError);
         }
 
         // Normalize filesystem paths once at config-ingest time so the rest of

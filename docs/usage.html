@@ -184,13 +184,13 @@
           <tr><td class="td-flag"><code>-q</code>, <code>--quiet</code></td><td>Suppress the config banner printed to stderr on launch. The banner is also off when <code>-l</code> is active (it goes to the log)</td></tr>
 
           <tr class="group-row"><td colspan="2">Profiles</td></tr>
-          <tr><td class="td-flag"><code>--create-profile &lt;name&gt;</code></td><td>Create a persistent sandbox profile — saves SID, ACLs, and config derived from <code>-c</code></td></tr>
+          <tr><td class="td-flag"><code>--create-profile &lt;name&gt;</code></td><td>Create a persistent sandbox profile — saves SID, ACLs, and config derived from <code>-c</code>. Names contain 1–58 letters, digits, <code>._-</code>, starting with a letter or digit</td></tr>
           <tr><td class="td-flag"><code>--delete-profile &lt;name&gt;</code></td><td>Delete a saved profile and revoke its persistent ACLs</td></tr>
           <tr><td class="td-flag"><code>--profile-info &lt;name&gt;</code></td><td>Print profile details: type, SID, config, and grants</td></tr>
 
           <tr class="group-row"><td colspan="2">Inspection &amp; tooling</td></tr>
-          <tr><td class="td-flag"><code>--dry-run</code>, <code>--check</code></td><td>Validate config and show planned ACL changes — no system modifications made</td></tr>
-          <tr><td class="td-flag"><code>--print-config</code></td><td>Print resolved config to stdout with all defaults filled in — requires <code>-c</code> or <code>-s</code></td></tr>
+          <tr><td class="td-flag"><code>--dry-run</code>, <code>--check</code></td><td>Validate <code>-c</code>, <code>-s</code>, or <code>-p</code> and show ACLs, capabilities, pipes, loopback, and desktop settings; no child launch or sandbox state changes</td></tr>
+          <tr><td class="td-flag"><code>--print-config</code></td><td>Print resolved config to stdout with all defaults filled in — accepts <code>-c</code>, <code>-s</code>, or <code>-p</code>; never launches a child</td></tr>
           <tr><td class="td-flag"><code>--print-container-toml</code></td><td>Print the default AppContainer TOML template to stdout</td></tr>
           <tr><td class="td-flag"><code>--print-restricted-toml</code></td><td>Print the default Restricted Token TOML template to stdout</td></tr>
           <tr><td class="td-flag"><code>--status [--json]</code></td><td>Show instances, retry containers, cleanup tasks, saved profiles, and summary counts — optionally as JSON</td></tr>
@@ -208,6 +208,12 @@
   </div>
 </section>
 
+<section><div class="container">
+  <p><code>-s</code> converts literal <code>\n</code> outside strings and comments to a line break. Config files retain normal TOML semantics.</p>
+  <p>Windows PowerShell 5.1 writes UTF-16 with <code>&gt;</code>. Use <code>cmd /c "sandy.exe --print-container-toml &gt; myconfig.toml"</code> to keep Sandy's UTF-8 output without a BOM. Sandy rejects UTF-16 and UTF-8 BOMs.</p>
+  <p><code>--print-config</code> cannot be combined with <code>--create-profile</code>; inspect its config with <code>-c</code>. <code>-L</code> applies in all logging modes.</p>
+</div></section>
+
 <!-- ═══ Exit codes ═══ -->
 <section id="exit-codes">
   <div class="container fade-in">
@@ -221,7 +227,7 @@
         <tbody>
           <tr><td><span class="ec thru">0</span></td><td>Child / Sandy</td><td>Success — child exited cleanly, or info command succeeded</td></tr>
           <tr><td><span class="ec thru">1–124</span></td><td>Child</td><td>Child's own exit code, passed through unchanged</td></tr>
-          <tr><td><span class="ec sandy">125</span></td><td>Sandy</td><td>Internal / general error, or a command-line usage error (unknown option, missing argument)</td></tr>
+          <tr><td><span class="ec sandy">125</span></td><td>Sandy</td><td>Internal / general error, a command-line usage error, or incomplete cleanup after a successful child (recovery metadata retained)</td></tr>
           <tr><td><span class="ec sandy">126</span></td><td>Sandy</td><td>Cannot execute — <code>CreateProcess</code> failed (permission denied, bad format)</td></tr>
           <tr><td><span class="ec sandy">127</span></td><td>Sandy</td><td>Command not found — executable does not exist on disk</td></tr>
           <tr><td><span class="ec sandy">128</span></td><td>Sandy</td><td>Configuration error — invalid TOML, wrong-mode key, config file not found</td></tr>

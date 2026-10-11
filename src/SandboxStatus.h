@@ -329,7 +329,7 @@ inline int HandleExplain(const wchar_t* codeStr)
         { 0xC000008C, "STATUS_ARRAY_BOUNDS_EXCEEDED" },
         { 0xC0000135, "STATUS_DLL_NOT_FOUND" },
         { 0xC0000142, "STATUS_DLL_INIT_FAILED" },
-        { 0x40010004, "STATUS_DEBUGGER_INACTIVE" },
+        { 0x40010004, "DBG_TERMINATE_PROCESS" },
         { 0xE0434352, "CLR unhandled exception (.NET)" },
         { 0xE06D7363, "MSVC C++ unhandled exception (throw without catch)" },
     };

@@ -22,11 +22,11 @@ echo =====================================================================
 
 set "ROOT=%USERPROFILE%\test_collusion"
 set "SHARED=%ROOT%\shared"
-set "SANDY=c:\repos\sandy_cli\x64\Release\sandy.exe"
-set "ALICE_CFG=c:\repos\sandy_cli\test\test_collusion_alice.toml"
-set "BOB_CFG=c:\repos\sandy_cli\test\test_collusion_bob.toml"
-set "ALICE_PY=c:\repos\sandy_cli\test\test_collusion_alice.py"
-set "BOB_PY=c:\repos\sandy_cli\test\test_collusion_bob.py"
+set "SANDY=%~dp0..\x64\Release\sandy.exe"
+set "ALICE_CFG=%~dp0test_collusion_alice.toml"
+set "BOB_CFG=%~dp0test_collusion_bob.toml"
+set "ALICE_PY=%~dp0test_collusion_alice.py"
+set "BOB_PY=%~dp0test_collusion_bob.py"
 
 REM --- Pre-cleanup: ensure pristine state (NO blanket taskkill) ---
 "%SANDY%" --cleanup >nul 2>&1
@@ -56,11 +56,11 @@ echo   [OK] Folder tree created
 REM --- Capture pre-Sandy SDDLs ---
 echo.
 echo --- Pre-Sandy SDDL snapshots ---
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%').Sddl" 2^>nul') do set "PRE_SHARED=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%\locked').Sddl" 2^>nul') do set "PRE_LOCKED=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%SHARED%" 2^>nul') do set "PRE_SHARED=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%SHARED%\locked" 2^>nul') do set "PRE_LOCKED=%%S"
 REM A fidelity check against an empty snapshot passes for the wrong reason: stop here.
 for %%V in (PRE_SHARED PRE_LOCKED) do if not defined %%V (
-    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(Get-Acl gave no output^)
+    echo   [FAIL] Could not read the pre-Sandy SDDL %%V ^(DACL reader gave no output^)
     exit /b 1
 )
 echo   shared/:  %PRE_SHARED:~0,60%...
@@ -178,6 +178,15 @@ echo.
 
 set CLEANUP_PASS=0
 set CLEANUP_FAIL=0
+if "!LIVE!"=="1" set /a CLEANUP_FAIL+=1
+for %%A in (alice bob) do (
+    set "PROBE_RESULT=missing"
+    if exist "%SHARED%\signals\%%A_done" set /p "PROBE_RESULT="<"%SHARED%\signals\%%A_done"
+    if not "!PROBE_RESULT!"=="0" (
+        echo   [FAIL] %%A probe failed or did not report a result
+        set /a CLEANUP_FAIL+=1
+    )
+)
 
 REM --- Check for ANY AppContainer SIDs (S-1-15-*) remaining ---
 set "SID_FOUND=0"
@@ -210,8 +219,8 @@ if !REMAIN! EQU 0 (
 REM --- SDDL fidelity (THE KEY TEST) ---
 echo.
 echo --- SDDL Fidelity (the forensic proof) ---
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%').Sddl" 2^>nul') do set "POST_SHARED=%%S"
-for /f "delims=" %%S in ('powershell -NoProfile -Command "(Get-Acl '%SHARED%\locked').Sddl" 2^>nul') do set "POST_LOCKED=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%SHARED%" 2^>nul') do set "POST_SHARED=%%S"
+for /f "delims=" %%S in ('call "%LOCALAPPDATA%\Programs\Python\Python314\python.exe" "%~dp0test_dacl_fidelity.py" sddl "%SHARED%\locked" 2^>nul') do set "POST_LOCKED=%%S"
 
 if "!POST_SHARED!"=="!PRE_SHARED!" (
     echo   [PASS] shared/ DACL restored to true original

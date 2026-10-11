@@ -21,9 +21,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Loopback exemption — flag tracks runtime state
     //
-    // Lock-guarded: normal pipeline cleanup (main thread) and emergency
-    // cleanup (console-ctrl handler thread) can both reach DisableLoopback
-    // after a Ctrl+C terminates the child and unblocks the main wait.
+    // Normal and exception cleanup run on the main thread. The console
+    // handler only signals shutdown and terminates the child tree.
     // -----------------------------------------------------------------------
     inline bool g_loopbackGranted = false;
     inline std::wstring g_loopbackContainerName;  // the container name used for loopback
@@ -400,6 +399,10 @@ namespace Sandbox {
         std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -a -n=\"" + containerName + L"\"";
         DWORD exitCode = RunHiddenProcess(cmd, 5000, cniExe);
         bool ok = (exitCode == 0);
+        g_logger.LogFmt(L"LOOPBACK_ADD: %ls -> %s (exit %lu)",
+                        containerName.c_str(), ok ? L"OK" : L"FAILED", exitCode);
+        if (!ok)
+            fprintf(stderr, "Error: loopback exemption failed (exit %lu). Adding loopback access requires an administrator.\n", exitCode);
         if (ok && trackRunState) {
             AcquireSRWLockExclusive(&g_loopbackStateLock);
             g_loopbackGranted = true;
@@ -484,44 +487,18 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // ForceDisableLoopback — unconditional exemption removal for startup.
-    //
-    // Inputs:  containerName — the container name to remove (or empty to
-    //          remove the legacy "SandySandbox" moniker for compat)
-    // Effect:  removes the specified container from loopback exemption list
-    // Verifiable: exemption is absent after call
-    // -----------------------------------------------------------------------
-    inline void ForceDisableLoopback(const std::wstring& containerName = L"")
-    {
-        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        // Remove legacy hardcoded moniker (from pre-fix builds)
-        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"SandySandbox\"", 5000, cniExe);
-        // Remove per-instance moniker if provided
-        if (!containerName.empty()) {
-            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + containerName + L"\"";
-            RunHiddenProcess(cmd, 5000, cniExe);
-        }
-        g_logger.Log(L"LOOPBACK: force-disabled (stale cleanup)");
-    }
-
-    // -----------------------------------------------------------------------
     // ForceDisableLoopback (vector) — remove loopback exemptions for all
     // provided container names.  Used by --cleanup to sweep stale
     // per-instance exemptions discovered via EnumSandyProfiles().
     // -----------------------------------------------------------------------
     inline void ForceDisableLoopback(const std::vector<std::wstring>& containerNames)
     {
-        std::wstring cniExe = GetSystemDirectoryPath() + L"CheckNetIsolation.exe";
-        RunHiddenProcess(L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"SandySandbox\"", 5000, cniExe);
         for (const auto& name : containerNames) {
-            std::wstring cmd = L"\"" + cniExe + L"\" LoopbackExempt -d -n=\"" + name + L"\"";
-            RunHiddenProcess(cmd, 5000, cniExe);
-            RecoveryPrintf("  [LOOP] %ls -> loopback exemption removed\n", name.c_str());
+            bool ok = RemoveLoopbackExemption(name);
+            g_logger.LogFmt(L"LOOPBACK_REMOVE: %ls -> %s", name.c_str(), ok ? L"OK" : L"FAILED");
+            RecoveryPrintf("  [LOOP] %ls -> %s\n", name.c_str(),
+                           ok ? "loopback exemption removed" : "loopback removal failed");
         }
-        if (!containerNames.empty())
-            g_logger.LogFmt(L"LOOPBACK: force-disabled %zu stale exemption(s)", containerNames.size());
-        else
-            g_logger.Log(L"LOOPBACK: force-disabled (legacy only)");
     }
 
     // -----------------------------------------------------------------------
@@ -601,10 +578,14 @@ namespace Sandbox {
     inline std::vector<SandyContainerInventoryEntry> BuildSandyContainerInventory()
     {
         std::vector<SandyContainerInventoryEntry> inventory;
+        // Discover first, then read ownership. A new run publishes its ledger
+        // before creating its container, so a container discovered here cannot
+        // be newer than the ownership snapshot used to classify it.
+        auto containers = EnumSandyProfiles();
         std::set<std::wstring> liveContainers = GetLiveContainerNames();
         std::set<std::wstring> savedContainers = GetSavedProfileContainerNames();
 
-        for (const auto& profile : EnumSandyProfiles()) {
+        for (const auto& profile : containers) {
             SandyContainerInventoryEntry entry;
             entry.name = profile;
 
@@ -628,17 +609,18 @@ namespace Sandbox {
     // stale loopback exemptions for dead transient containers while preserving
     // live runs and durable saved-profile containers.
     // -----------------------------------------------------------------------
-    inline void CleanupStaleStartupState(const std::wstring& exePath)
+    inline void CleanupStaleStartupState()
     {
-        (void)exePath;
         std::vector<std::wstring> staleProfiles;
         for (const auto& entry : BuildSandyContainerInventory()) {
             if (entry.kind == SandyContainerKind::StaleTransient)
                 staleProfiles.push_back(entry.name);
         }
         ForceDisableLoopback(staleProfiles);
-
-        g_logger.Log(L"STARTUP_CLEANUP: cleared stale AppContainer/loopback state");
+        for (const auto& name : staleProfiles) {
+            if (!DeleteTransientContainerNow(name, L"STARTUP_CLEANUP"))
+                PersistTransientContainerCleanupForOrphanedContainer(name);
+        }
     }
 
     // -----------------------------------------------------------------------

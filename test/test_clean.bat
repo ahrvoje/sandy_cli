@@ -42,8 +42,8 @@ if not exist "!PYTHON!" (
     for /f "tokens=*" %%P in ('where python 2^>nul') do if not defined PYTHON set PYTHON=%%P
 )
 if not exist "!PYTHON!" (
-    echo   [SKIP] Python not found — test requires Python
-    exit /b 0
+    echo   [FAIL] Python not found — test requires Python
+    exit /b 1
 )
 REM Derive PYDIR from the PYTHON executable path (strip filename)
 for %%F in ("!PYTHON!") do set PYDIR=%%~dpF

@@ -4,7 +4,7 @@ setlocal EnableDelayedExpansion
 REM =====================================================================
 REM Sandy DACL Fidelity Test
 REM
-REM A Sandy run must leave every DACL as it found it: same ACEs, same
+REM For a tree with current inheritance, leave each DACL as found: same ACEs, same
 REM order, same protection flag.  The tree holds the cases that used to
 REM go wrong: a deny on a folder with a protected DACL, a carve-out under
 REM a deny, an allow on a protected folder, a deny on one file.
@@ -13,6 +13,7 @@ REM   Part 1  Restricted Token run: in-sandbox probe (a denied object stays
 REM           denied: no DACL rewrite, no delete, no rename), then compare
 REM   Part 2  AppContainer run, then compare
 REM   Part 3  Saved profile: create, delete, then compare
+REM   Part 4  Moved-file inheritance: verify Windows recalculates old inheritance
 REM =====================================================================
 
 set SANDY=%~dp0..\x64\Release\sandy.exe
@@ -111,6 +112,10 @@ if !REMAIN! EQU 0 (
     echo   [FAIL] !REMAIN! grant subkeys persist
     set /a FAIL+=1
 )
+
+REM === Moved-file inheritance exception ===
+"%PYTHON%" "%TOOL%" moved "%SANDY%"
+call :verdict !ERRORLEVEL! "Moved files: Windows recomputes inherited ACEs"
 
 REM === Final Cleanup ===
 "%SANDY%" --cleanup >nul 2>nul

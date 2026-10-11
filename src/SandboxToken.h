@@ -254,9 +254,8 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     // Desktop ACL tracking — store SID string, remove only our ACEs on cleanup
     //
-    // Lock-guarded: normal pipeline cleanup (main thread) and emergency
-    // cleanup (console-ctrl handler thread) can both reach RevokeDesktopAccess
-    // after a Ctrl+C terminates the child and unblocks the main wait.
+    // Normal and exception cleanup run on the main thread. The console
+    // handler only signals shutdown and terminates the child tree.
     // -----------------------------------------------------------------------
     struct DesktopGrant {
         std::wstring sidString;  // SID of principal we granted
@@ -266,9 +265,7 @@ namespace Sandbox {
     inline SRWLOCK                   g_desktopGrantsLock = SRWLOCK_INIT;
 
     // -----------------------------------------------------------------------
-    // Desktop ACL test hook — enabled only in unit-style test builds.
-    // Allows tests to exercise the ACL rebuild logic without mutating real
-    // desktop/window-station objects.
+    // Build a desktop/window-station ACL without this owner's SID entries.
     // -----------------------------------------------------------------------
     inline bool BuildAclWithoutSidAces(PACL pOldDacl, PSID pTargetSid,
                                        const wchar_t* objName,

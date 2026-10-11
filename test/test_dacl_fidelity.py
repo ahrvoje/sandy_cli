@@ -11,6 +11,8 @@ Inside the sandbox:
   noop                       do nothing (the run is only there to grant and revoke)
 """
 import ctypes, json, os, pathlib, re, sys
+import subprocess
+import tempfile
 from ctypes import wintypes
 
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -96,6 +98,45 @@ def compare(before_file, after_file):
     for path in residue[:10]:
         print(f"    {os.path.relpath(path, root)}: {after[path]}")
     test("no ACE of a sandbox SID on any object", not residue, f"{len(residue)} object(s)")
+    return 1 if fail_count else 0
+
+
+def moved_inheritance(sandy):
+    """Windows recomputes inherited ACEs after a same-volume move."""
+    sandy = str(pathlib.Path(sandy).resolve())
+    with tempfile.TemporaryDirectory(prefix="sandy_moved_acl_") as temp:
+        root = pathlib.Path(temp)
+        source, target = root / "source", root / "target"
+        source.mkdir()
+        target.mkdir()
+        subprocess.run(["icacls", str(source), "/grant", "*S-1-5-32-546:(OI)(CI)(RX)"],
+                       check=True, capture_output=True)
+        moved = source / "moved.txt"
+        moved.write_text("moved")
+        native = target / "native.txt"
+        native.write_text("native")
+        # Establish normal auto-inherited DACL flags before testing the move.
+        for parent in (source, target):
+            subprocess.run(["icacls", str(parent), "/inheritance:e", "/T"],
+                           check=True, capture_output=True)
+        moved.rename(target / moved.name)
+        moved = target / moved.name
+        before = {p: dacl_sddl(p) for p in (target, native, moved)}
+        test("moved file retains the former parent's Guests ACE before Sandy",
+             ";;;BG)" in before[moved], before[moved])
+        config = root / "moved.toml"
+        config.write_text(f"[sandbox]\ntoken='appcontainer'\n[allow.deep]\nread=['{target}']\n", encoding="utf-8")
+        result = subprocess.run([sandy, "-q", "-c", str(config), "-x",
+                                 os.path.join(os.environ['SystemRoot'], 'System32', 'cmd.exe'),
+                                 "/d", "/c", "exit 0"], capture_output=True, timeout=30)
+        test("moved-file grant and cleanup succeed", result.returncode == 0, result.stderr.decode(errors="replace"))
+        after = {p: dacl_sddl(p) for p in (target, native, moved)}
+        for path in (target, native):
+            test(f"{path.name}: DACL unchanged", before[path] == after[path],
+                 f"before={before[path]} after={after[path]}")
+        test("Windows removes the former parent's inherited ACE", ";;;BG)" not in after[moved])
+        test("moved file now has the current parent's inheritance", after[moved] == after[native])
+        test("no sandbox ACE remains", not any(SANDBOX_SID.search(value) for value in after.values()))
     return 1 if fail_count else 0
 
 
@@ -200,5 +241,14 @@ if __name__ == "__main__":
     if mode == "compare":
         sys.exit(compare(sys.argv[2], sys.argv[3]))
     if mode == "noop":
+        sys.exit(0)
+    if mode == "moved":
+        sys.exit(moved_inheritance(sys.argv[2]))
+    if mode == "sddl":
+        for path in sys.argv[2:]:
+            value = dacl_sddl(path)
+            if not value.startswith("D:"):
+                raise RuntimeError(f"Cannot read DACL: {path}: {value}")
+            print(value)
         sys.exit(0)
     sys.exit(probe())

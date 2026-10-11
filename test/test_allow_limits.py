@@ -108,6 +108,8 @@ def spawn_many():
                 spawn_errors += 1
         time.sleep(0.5)
         alive = sum(1 for p in procs if p.poll() is None)
+        if spawn_errors == 0 or alive > 2:
+            raise AssertionError(f"Process limit not enforced: {alive} alive, {spawn_errors} blocked")
         return f"{alive} alive, {spawn_errors} blocked (limit enforced)"
     finally:
         for p in procs:

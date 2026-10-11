@@ -21,8 +21,8 @@ echo  Sandy Config String Semantics Test
 echo =====================================================================
 
 if not exist "!SANDY!" (
-    echo   [SKIP] sandy.exe not found at !SANDY!
-    exit /b 0
+    echo   [FAIL] sandy.exe not found at !SANDY!
+    exit /b 1
 )
 
 echo [sandbox]\n token = 'appcontainer' > "!TMP_FILE!"
@@ -41,7 +41,7 @@ if !FILE_EC! NEQ 0 (
     set /a FAIL+=1
 )
 
-findstr /C:"Config contains unknown sections or keys. Aborting." "!FILE_ERR!" >nul 2>nul
+findstr /C:"Config could not be loaded or validated. Aborting." "!FILE_ERR!" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] SS1b: rejection surfaced through config error path
     set /a PASS+=1

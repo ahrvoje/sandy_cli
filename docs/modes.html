@@ -297,7 +297,7 @@
     </div>
 
     <p style="color:var(--text-muted);font-size:0.83rem;margin-top:8px;">
-      ¹ Loopback (AppContainer / LPAC) requires <code>privateNetworkClientServer</code> in <code>[capabilities] names</code> and <code>loopback = true</code> in <code>[privileges]</code>. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Loopback always implies LAN — there is no localhost-only capability in Windows.<br>
+      ¹ Loopback (AppContainer / LPAC) requires <code>privateNetworkClientServer</code> in <code>[capabilities] names</code> and <code>loopback = true</code> in <code>[privileges]</code>. Adding the exemption requires an administrator. Sandy uses <code>CheckNetIsolation.exe</code> to manage a per-instance loopback exemption. Loopback always implies LAN — there is no localhost-only capability in Windows.<br>
       ² Restricted Low writes to medium-integrity folders (most of <code>C:\Users</code>) are blocked by Mandatory Integrity Control even with <code>[allow.*]</code> grants. Use <code>AppData\LocalLow</code> or Restricted Medium for user profile writes.<br>
       ³ LPAC opts out of <code>ALL APPLICATION PACKAGES</code> (<code>S-1-15-2-1</code>). Windows system dirs (<code>C:\Windows</code>, <code>System32</code>, <code>Program Files</code>) carry <code>ALL RESTRICTED APPLICATION PACKAGES</code> (<code>S-1-15-2-2</code>) ACEs on Win10+ and are readable by LPAC. However, user-installed application dirs (e.g. Python under <code>AppData\Local\Programs</code>) typically carry only the APP ACE without ARAP, making them invisible to LPAC unless explicitly granted via <code>[allow.*]</code>. DLLs from those paths also need explicit execute grants.
     </p>
@@ -380,7 +380,7 @@
 
     <div class="callout success">
       <div class="callout-title">✅ Multi-instance safe</div>
-      <p>Because each instance uses a unique SID, cleanup is ACE-level: <code>RemoveSidFromDacl</code> removes only the ACEs that this instance added (the ACEs of its SID and the <code>OWNER RIGHTS</code> ACE next to its deny rules). Concurrent instances never interfere — one instance's cleanup cannot accidentally revoke another's grants.</p>
+      <p>Transient runs use unique SIDs; saved profiles reuse their durable SID. Cleanup uses <code>RemoveSidFromDaclDetailed</code> to remove only the owning identity's ACEs and its adjacent <code>OWNER RIGHTS</code> helper. Normal profile exit preserves profile grants; profile deletion is refused while a run still uses them.</p>
     </div>
   </div>
 </section>

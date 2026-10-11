@@ -71,6 +71,7 @@ if !SC! EQU 0 (
 
 if exist "%ROOT%" rmdir /s /q "%ROOT%"
 
+if !FAIL! GTR 0 set EXIT_CODE=1
 if !EXIT_CODE! EQU 0 (
     echo  ALL TESTS PASSED
 ) else (

@@ -20,7 +20,7 @@
     <ClInclude Include="src\Resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="src\sandy.h">
+    <ClInclude Include="src\SandboxPipeHook.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="src\Sandbox.h">

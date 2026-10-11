@@ -19,8 +19,8 @@ echo  Sandy Config Path Guard Test
 echo =====================================================================
 
 if not exist "!SANDY!" (
-    echo   [SKIP] sandy.exe not found at !SANDY!
-    exit /b 0
+    echo   [FAIL] sandy.exe not found at !SANDY!
+    exit /b 1
 )
 
 if exist "!TMP_DIR!" rmdir /s /q "!TMP_DIR!" 2>nul

@@ -11,6 +11,7 @@ set SANDY=%~dp0..\x64\Release\sandy.exe
 set CONFIG=%~dp0test_sandy_config.toml
 set RT_CONFIG=%~dp0test_resilience_rt.toml
 set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
+set "SANDY_TEST_DIR=%~dp0"
 set PASS=0
 set FAIL=0
 
@@ -264,7 +265,6 @@ if defined LOG_FOUND (
         echo   [FAIL] S6c: Unexpected LOG_DIAG in normal session
         set /a FAIL+=1
     )
-    del "!LOG_FOUND!" 2>nul
 ) else (
     echo   [FAIL] S6a: No log file created
     set /a FAIL+=1
@@ -281,7 +281,7 @@ echo.
 echo --- S7: Status Summary Counts ---
 
 "!SANDY!" --status >"%TEMP%\sandy_hard_status.txt" 2>nul
-findstr /C:"no active" "%TEMP%\sandy_hard_status.txt" >nul 2>nul
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "!LOG_FOUND!" --instance dead-test-hard-A0001
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] S7a: --status reports clean state
     set /a PASS+=1
@@ -300,6 +300,7 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
+if defined LOG_FOUND del "!LOG_FOUND!" 2>nul
 del "%TEMP%\sandy_hard_status.txt" 2>nul
 del "%TEMP%\sandy_hard_json.txt" 2>nul
 

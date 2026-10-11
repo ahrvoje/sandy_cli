@@ -516,7 +516,6 @@ namespace Sandbox {
         PSID         pSid = nullptr;
         HANDLE       hToken = nullptr;
         std::wstring containerName;
-        std::wstring profileName;
         bool         persistentProfile = false;
         bool         grantsPreexisting = false;
         bool         deleteContainerOnExit = false;
@@ -633,25 +632,14 @@ namespace Sandbox {
     inline bool ApplyRunOwnedGrantPhase(PSID pSid,
                                         const SandboxConfig& config,
                                         const ExecutionIdentity& identity,
-                                        bool isRestricted,
-                                        const std::wstring& containerName,
-                                        SandboxGuard& guard)
+                                        bool isRestricted)
     {
         if (identity.grantsPreexisting) {
             g_logger.Log(L"GRANTS: skipped (persistent profile ownership)");
             return true;
         }
 
-        // Reset first: a failure while the ledger is created must stay visible
-        // to the GrantTrackingHealthy() check below.
-        ResetGrantTrackingHealth();
-        // Only AppContainer runs own a container; a restricted run records none.
-        InitializeRunLedger(isRestricted ? L"" : containerName);
-        // P2: Create cleanup task AFTER the ledger exists so concurrent
-        // DeleteStaleCleanupTasks won't discard our freshly created task.
-        CreateCleanupTask(g_instanceId);
         ULONGLONG tGrantStart = GetTickCount64();
-        guard.Add([]() { RevokeAllGrants(); });
 
         bool grantFailed = false;
         if (!ApplyAccessPipeline(pSid, config))
@@ -1024,8 +1012,14 @@ namespace Sandbox {
         guard.RunAll();
 
         FinalizeCleanupTaskForCurrentRun();
-        g_logger.LogFmt(L"CLEANUP: complete (%lums)", GetTickCount() - cleanupStart);
+        bool pending = ShouldRetainCleanupTask(g_instanceId, DeferredCleanupRequested());
+        g_logger.LogFmt(L"CLEANUP: %s (%lums)", pending ? L"incomplete; retry pending" : L"complete",
+                        GetTickCount() - cleanupStart);
+        if (pending)
+            fprintf(stderr, "Error: sandbox cleanup is incomplete; recovery metadata and cleanup task retained. Run --cleanup to retry.\n");
         g_logger.Stop();
+        if (pending && exitCode == 0 && !timeoutCtx.timedOut)
+            return SandyExit::InternalError;
         return MapChildExitToSandyExit(exitCode, timeoutCtx.timedOut);
     }
 
@@ -1053,14 +1047,31 @@ namespace Sandbox {
         bool isAppContainer = !isRestricted;
 
         SandboxGuard guard;  // RAII — all cleanup goes through guard
+        if (identity.persistentProfile) {
+            // Added first so live state and extracted payload are removed last,
+            // before the cleanup-task decision and while the log is active.
+            guard.Add([]() { ClearLiveState(); });
+        } else {
+            ResetGrantTrackingHealth();
+            InitializeRunLedger(isRestricted ? L"" : identity.containerName);
+            guard.Add([]() { RevokeAllGrants(); });
+            if (!GrantTrackingHealthy()) {
+                guard.RunAll();
+                return SandyExit::SetupError;
+            }
+            CreateCleanupTask(g_instanceId);
+        }
 
         // =================================================================
         // PHASE 1: SETUP — create token/SID, log mode
         // =================================================================
 
         ResolvedRunIdentity resolved;
-        if (!ResolveRunIdentity(config, identity, guard, resolved))
+        if (!ResolveRunIdentity(config, identity, guard, resolved)) {
+            guard.RunAll();
+            FinalizeCleanupTaskForCurrentRun();
             return SandyExit::SetupError;
+        }
 
         ConfigureEmergencyCleanupState(resolved.containerName, identity.deleteContainerOnExit,
                                        identity.persistentProfile);
@@ -1071,8 +1082,7 @@ namespace Sandbox {
         // PHASE 2: GRANT — apply ACLs (ALLOW, then DENY)
         // =================================================================
 
-        if (!ApplyRunOwnedGrantPhase(resolved.pSid, config, identity, isRestricted,
-                                     resolved.containerName, guard)) {
+        if (!ApplyRunOwnedGrantPhase(resolved.pSid, config, identity, isRestricted)) {
             return AbortBeforeLaunch(isAppContainer, identity, resolved.containerName, guard,
                                      SandyExit::SetupError,
                                      L"CLEANUP: complete (grant setup failure)");
@@ -1190,15 +1200,14 @@ namespace Sandbox {
     // Forward declaration — defined in SandboxSavedProfile.h
     inline void CleanStagingProfiles();
 
-    inline void BeginRunSession(const std::wstring& exePath,
-                                const std::wstring& configSource,
+    inline void BeginRunSession(const std::wstring& configSource,
                                 const std::wstring& profileName = L"")
     {
         // From here on stdout belongs to the child (see RecoveryPrintf).
         g_recoveryConsoleOutput = false;
         ResetGrantMetadataPreservation();
         ResetDeferredCleanupRequest();
-        CleanupStaleStartupState(exePath);
+        CleanupStaleStartupState();
         CleanStagingProfiles();
         RestoreStaleGrants();
         DeleteStaleCleanupTasks();
@@ -1234,7 +1243,7 @@ namespace Sandbox {
         if (exeFolder.empty())
             return SandyExit::SetupError;
 
-        BeginRunSession(exePath, config.configSource);
+        BeginRunSession(config.configSource);
 
         ExecutionIdentity identity;
         identity.containerName = ContainerNameFromId(g_instanceId);

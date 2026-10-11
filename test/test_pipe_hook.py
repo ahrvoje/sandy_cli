@@ -254,6 +254,14 @@ def run_case(label, app, name, folder, config=None, profile=None, blocked=False,
             if not crash:
                 for artifact in proof['artifacts']:
                     require(not Path(artifact).exists(), 'Hook DLL was not cleaned up: ' + artifact)
+                if profile:
+                    session_log = proof['sandy_log']
+                    require('cleanup retry still pending' not in session_log,
+                            'Successful profile run reported a pending cleanup')
+                    for event in ('PIPEHOOK: remove ', 'REG_CLEAR: ', 'SCHTASK: deleted '):
+                        require(event in session_log, 'Profile cleanup was not logged: ' + event)
+                        require(session_log.index(event) < session_log.index('CLEANUP: complete'),
+                                'Profile cleanup was logged after completion: ' + event)
         print(f'[PASS] {label}: exit={code}', flush=True)
         return proof
     finally:

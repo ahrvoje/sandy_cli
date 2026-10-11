@@ -133,8 +133,8 @@ namespace detail {
     // Recursively flatten a toml::value table into TomlDocument sections.
     // `prefix` is the dotted section path accumulated so far.
     //
-    // Only creates a section in TomlDocument if the table has at least one
-    // non-table child.  Pure passthrough parents (tables containing only
+    // Keep empty tables so unknown and wrong-mode sections are validated.
+    // Pure passthrough parents (tables containing only
     // sub-tables, like `allow` when only `[allow.deep]` exists) are skipped
     // to avoid creating spurious empty sections the config mapper would reject.
     inline void FlattenTable(const toml::value& table,
@@ -149,8 +149,8 @@ namespace detail {
             if (!val.is_table()) { hasLeafChildren = true; break; }
         }
 
-        // Only create the section if it has leaf children (or is the root)
-        if (hasLeafChildren && !prefix.empty()) {
+        // Keep leaf sections and explicitly empty tables.
+        if ((hasLeafChildren || table.as_table().empty()) && !prefix.empty()) {
             doc[prefix];  // ensure section exists even before populating
         }
 
@@ -249,7 +249,7 @@ inline ParseResult ParseUtf8(const std::string& utf8Content) {
                 std::wstring wkey = Utf8ToWide(key);
                 wchar_t buf[256];
                 swprintf(buf, 256,
-                         L"Key '%ls' appears before any [section] header — it will be ignored. Place it under the appropriate section.",
+                         L"Key '%ls' appears before any [section] header — config rejected. Place it under the appropriate section.",
                          wkey.c_str());
                 result.errors.push_back(buf);
             }

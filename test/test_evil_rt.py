@@ -272,7 +272,7 @@ except OSError as e:
 # SUMMARY
 # ===========================================================================
 passed = sum(1 for r in results if r[0] == 'PASS')
-failed = sum(1 for r in results if r[0] == 'FAIL')
+failed = sum(1 for r in results if r[0] in ('FAIL', 'ERR'))
 errors = sum(1 for r in results if r[0] == 'ERR')
 skipped = sum(1 for r in results if r[0] == 'SKIP')
 

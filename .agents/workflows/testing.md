@@ -6,7 +6,7 @@ description: Rules for running Sandy test suite
 
 # Running Tests
 
-1. **NEVER auto-run `test_all.bat`, `run_all_tests.bat` or any test suite under ANY circumstances** unless the user explicitly and directly asks you to run the tests in their prompt.
+1. **NEVER auto-run `run_all_tests.bat` or any test suite under ANY circumstances** unless the user explicitly and directly asks you to run the tests in their prompt.
    It takes 10+ minutes and may require UAC elevation for filesystem and ACL scenarios.
    DO NOT proactively run these to "verify" changes. Wait for the user to tell you to run them.
 

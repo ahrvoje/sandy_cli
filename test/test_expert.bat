@@ -13,9 +13,9 @@ echo =====================================================================
 
 set "ROOT=%USERPROFILE%\test_expert"
 set "ARENA=%ROOT%\arena"
-set "SANDY=c:\repos\sandy_cli\x64\Release\sandy.exe"
-set "CONFIG=c:\repos\sandy_cli\test\test_expert_config.toml"
-set "SCRIPT=c:\repos\sandy_cli\test\test_expert.py"
+set "SANDY=%~dp0..\x64\Release\sandy.exe"
+set "CONFIG=%~dp0test_expert_config.toml"
+set "SCRIPT=%~dp0test_expert.py"
 
 REM --- Clean previous run ---
 if exist "%ROOT%" (

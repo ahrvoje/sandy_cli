@@ -25,6 +25,7 @@ set DIR_A=%USERPROFILE%\test_stress_A
 set DIR_B=%USERPROFILE%\test_stress_B
 set DIR_C=%USERPROFILE%\test_stress_C
 set SCRIPTS=%USERPROFILE%\test_stress_scripts
+del "%TEMP%\sandy_stress_*.log" 2>nul
 set PASS=0
 set FAIL=0
 
@@ -109,23 +110,23 @@ echo   (staggered 15s apart to avoid TreeSetNamedSecurityInfoW races)
 echo.
 
 echo [2.1] Launching I1 (3s, folders A+B)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I1 3 "!DIR_A!" "!DIR_B!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_stress_I1.log" -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I1 3 "!DIR_A!" "!DIR_B!"
 ping -n 16 127.0.0.1 >nul
 
 echo [2.2] Launching I2 (6s, folders A+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I2 6 "!DIR_A!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_stress_I2.log" -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I2 6 "!DIR_A!" "!DIR_C!"
 ping -n 16 127.0.0.1 >nul
 
 echo [2.3] Launching I3 (10s, folders B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I3 10 "!DIR_B!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_stress_I3.log" -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I3 10 "!DIR_B!" "!DIR_C!"
 ping -n 16 127.0.0.1 >nul
 
 echo [2.4] Launching I4 (15s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I4 15 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_stress_I4.log" -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I4 15 "!DIR_A!" "!DIR_B!" "!DIR_C!"
 ping -n 16 127.0.0.1 >nul
 
 echo [2.5] Launching I5 (8s, folders A+B+C)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_stress_I5.log" -x "!PYTHON!" "!SCRIPTS!\stress_probe.py" I5 8 "!DIR_A!" "!DIR_B!" "!DIR_C!"
 
 REM =====================================================================
 REM Phase 3: Mid-flight status check
@@ -167,9 +168,8 @@ REM Phase 4: Wait for all instances to exit
 REM =====================================================================
 echo.
 echo === Phase 4: Waiting for all instances to exit ===
-REM I5 launched at ~t+45, runs 8s -> exits ~t+53.  Add generous buffer.
-ping -n 65 127.0.0.1 >nul
-echo   All instances should have exited.
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_stress_I*.log" --wait 60
+if !ERRORLEVEL! NEQ 0 set /a FAIL+=1
 
 REM =====================================================================
 REM Phase 5: Post-exit verification — no leftover state
@@ -181,8 +181,8 @@ REM Run --cleanup to handle any stale entries that remain
 "!SANDY!" --cleanup >nul 2>nul
 
 REM 5.1: No Grants registry entries should remain
-set GREMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set GREMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_stress_*.log" --instance dead-test-stress-0001 --instance dead-test-stress-0002 --kind instances
+set GREMAIN=!ERRORLEVEL!
 if !GREMAIN! EQU 0 (
     echo   [PASS] All Grants registry entries cleaned
     set /a PASS+=1
@@ -195,8 +195,8 @@ if !GREMAIN! EQU 0 (
 REM 5.2: No Sandy AppContainer profiles should remain
 "!SANDY!" --status >"%TEMP%\sandy_stress_final.txt"
 
-findstr /c:"ACTIVE" "%TEMP%\sandy_stress_final.txt" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_stress_*.log" --instance dead-test-stress-0001 --instance dead-test-stress-0002 --kind instances
+if !ERRORLEVEL! EQU 0 (
     echo   [PASS] No active instances remain
     set /a PASS+=1
 ) else (
@@ -205,8 +205,8 @@ if !ERRORLEVEL! NEQ 0 (
     set /a FAIL+=1
 )
 
-findstr /c:"PROFILE" "%TEMP%\sandy_stress_final.txt" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_stress_*.log" --instance dead-test-stress-0001 --instance dead-test-stress-0002 --kind profiles
+if !ERRORLEVEL! EQU 0 (
     echo   [PASS] No orphaned AppContainer profiles
     set /a PASS+=1
 ) else (
@@ -216,8 +216,8 @@ if !ERRORLEVEL! NEQ 0 (
 )
 
 REM 5.3: No SandyCleanup_* scheduled tasks should remain
-set "TASK_FOUND=0"
-for /f "delims=" %%L in ('schtasks /Query /FO CSV /NH 2^>nul ^| findstr /c:"SandyCleanup_"') do set "TASK_FOUND=1"
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_stress_*.log" --instance dead-test-stress-0001 --instance dead-test-stress-0002 --kind tasks
+set "TASK_FOUND=!ERRORLEVEL!"
 if "!TASK_FOUND!"=="0" (
     echo   [PASS] No scheduled tasks remain
     set /a PASS+=1
@@ -324,5 +324,6 @@ if exist "!DIR_B!" rmdir /s /q "!DIR_B!"
 if exist "!DIR_C!" rmdir /s /q "!DIR_C!"
 if exist "!SCRIPTS!" rmdir /s /q "!SCRIPTS!"
 del "%TEMP%\sandy_stress_*.txt" 2>nul
+del "%TEMP%\sandy_stress_*.log" 2>nul
 if !FAIL! GTR 0 exit /b 1
 exit /b 0

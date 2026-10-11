@@ -112,11 +112,11 @@ test("scripts: write file", is_rt, lambda: (
 #   RT: user's native SID has access (no AC capability isolation)
 # ================================================================
 print("--- ungranted paths ---")
-user = os.environ.get('USERPROFILE', 'C:/Users/unknown')
-test("desktop: list",  is_rt, lambda: os.listdir(os.path.join(user, 'Desktop')))
-test("desktop: write", is_rt, lambda: (
-    open(os.path.join(user, 'Desktop', 'hack.txt'), 'w').write('x'),
-    os.remove(os.path.join(user, 'Desktop', 'hack.txt'))))
+ungranted = os.path.join(ROOT, 'ungranted')
+test("ungranted: list",  is_rt, lambda: os.listdir(ungranted))
+test("ungranted: write", is_rt, lambda: (
+    open(os.path.join(ungranted, 'hack.txt'), 'w').write('x'),
+    os.remove(os.path.join(ungranted, 'hack.txt'))))
 
 # ================================================================
 # Write mode marker for the orchestrator to verify both ran

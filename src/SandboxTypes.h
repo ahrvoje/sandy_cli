@@ -30,7 +30,6 @@ namespace Sandbox {
     // 8-bit) may alias Sandy codes — the EXIT_CLASS log line disambiguates.
     // -----------------------------------------------------------------------
     namespace SandyExit {
-        constexpr int Success      = 0;    // child exited 0, or info command succeeded
         constexpr int InternalError = 125; // Sandy internal / unspecified error
         constexpr int CannotExec   = 126;  // CreateProcess failed (permission denied, bad format)
         constexpr int NotFound     = 127;  // executable not found on disk
@@ -98,7 +97,7 @@ namespace Sandbox {
     // and stale cleanup operating on one consistent path representation.
     //
     // P2: Resolves . and .. segments via GetFullPathNameW for absolute
-    // filesystem paths.  Without this, PathDepth/IsPathUnder miscalculate
+    // filesystem paths.  Without this, path depth and ancestry checks miscalculate
     // depth and ancestry for paths like C:\base\. or C:\base\..\other.
     inline std::wstring NormalizeFsPath(std::wstring path)
     {
@@ -108,7 +107,7 @@ namespace Sandbox {
         // Canonicalize absolute filesystem paths (drive letter or UNC)
         // to resolve . and .. segments.  GetFullPathNameW is purely lexical
         // for absolute paths — no filesystem I/O occurs.  Must handle
-        // extended-limit paths (up to ~32K) so PathDepth/IsPathUnder don't
+        // extended-limit paths (up to ~32K) so path depth and ancestry checks don't
         // operate on un-canonicalized input for long configured paths.
         bool isAbsFs = (path.size() >= 3 && iswalpha(path[0]) && path[1] == L':' && path[2] == L'\\') ||
                        (path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\');
@@ -123,7 +122,7 @@ namespace Sandbox {
                     path.assign(buf.data(), len);
             }
         }
-        // Strip trailing backslashes — they break IsPathUnder prefix matching.
+        // Strip trailing backslashes so path comparisons use one representation.
         // Preserve root paths like "C:\" (3 chars: drive letter + colon + backslash).
         while (path.size() > 3 && path.back() == L'\\')
             path.pop_back();
@@ -349,9 +348,6 @@ namespace Sandbox {
         SIZE_T memoryLimitMB  = 0;
         DWORD  maxProcesses   = 0;
 
-        // Logging (set via -l CLI flag, not TOML)
-        std::wstring logPath;
-
         // Config source (set by CLI for forensic logging)
         std::wstring configSource;
 
@@ -374,7 +370,6 @@ namespace Sandbox {
     // and exit code to a file specified by -l <path>.
     // -----------------------------------------------------------------------
     struct SandyLogger {
-        std::wstring logFilePath;
         FILE* logFile = nullptr;
         bool active = false;
         int truncatedCount = 0;  // LogFmt truncation counter (reported in Stop)
@@ -443,7 +438,6 @@ namespace Sandbox {
             fwprintf(f, L"[%s] === Sandy Log ===\n", Timestamp().c_str());
             _commit(_fileno(f));
             logFile = f;
-            logFilePath = finalPath;
             active = true;
             ReleaseSRWLockExclusive(&lock);
             return true;

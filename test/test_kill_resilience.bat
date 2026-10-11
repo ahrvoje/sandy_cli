@@ -28,6 +28,7 @@ set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set PROBE=%~dp0kill_probe.py
 set DIR_A=%USERPROFILE%\test_kill_A
 set DIR_B=%USERPROFILE%\test_kill_B
+del "%TEMP%\sandy_kill_*.log" 2>nul
 set PASS=0
 set FAIL=0
 
@@ -55,7 +56,7 @@ REM =====================================================================
 echo === Scenario 1: Kill during active run ===
 echo.
 
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S1 30 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S1.log" -x "!PYTHON!" "!PROBE!" S1 30 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S1 S1_PID
 
@@ -102,8 +103,8 @@ if !SC! GEQ 1 (
 REM 1c: --cleanup ALONE must remove registry entries (no manual help)
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S1: --cleanup removed grant subkeys
     set /a PASS+=1
@@ -135,7 +136,7 @@ echo === Scenario 2: Kill with overlapping instance ===
 echo.
 
 echo   Starting S2a (30s, folders A+B)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S2a 30 "!DIR_A!" "!DIR_B!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S2a.log" -x "!PYTHON!" "!PROBE!" S2a 30 "!DIR_A!" "!DIR_B!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S2a S2A_PID
 set READY=0
@@ -153,7 +154,7 @@ echo   [OK] S2a running (PID !S2A_PID!)
 ping -n 4 127.0.0.1 >nul
 
 echo   Starting S2b (15s, folder A — overlapping)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S2b 15 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S2b.log" -x "!PYTHON!" "!PROBE!" S2b 15 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S2b S2B_PID
 set READY=0
@@ -209,8 +210,8 @@ if defined S2B_PID taskkill /f /pid !S2B_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S2: --cleanup removed all grant subkeys
     set /a PASS+=1
@@ -231,7 +232,7 @@ echo === Scenario 3: Kill then restart same folder ===
 echo.
 
 echo   Starting S3a (30s)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S3a 30 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S3a.log" -x "!PYTHON!" "!PROBE!" S3a 30 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S3a S3A_PID
 set READY=0
@@ -261,7 +262,7 @@ if !LEDGERS! GEQ 1 (
 
 REM 3b: Start new instance — MUST work despite stale state
 echo   Starting S3b (8s) on same folder...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S3b 8 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S3b.log" -x "!PYTHON!" "!PROBE!" S3b 8 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S3b S3B_PID
 set READY=0
@@ -300,8 +301,8 @@ if defined S3B_PID taskkill /f /pid !S3B_PID! >nul 2>nul
 ping -n 2 127.0.0.1 >nul
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S3: --cleanup removed all stale entries
     set /a PASS+=1
@@ -324,7 +325,7 @@ echo.
 echo   Rapid-fire: start+kill, start+kill, start+kill
 
 REM S4a
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4a 60 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S4a.log" -x "!PYTHON!" "!PROBE!" S4a 60 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S4a S4A_PID
 set READY=0
@@ -336,7 +337,7 @@ taskkill /f /pid !S4A_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
 REM S4b
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4b 60 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S4b.log" -x "!PYTHON!" "!PROBE!" S4b 60 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S4b S4B_PID
 set READY=0
@@ -348,7 +349,7 @@ taskkill /f /pid !S4B_PID! >nul 2>nul
 ping -n 3 127.0.0.1 >nul
 
 REM S4c
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S4c 60 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S4c.log" -x "!PYTHON!" "!PROBE!" S4c 60 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S4c S4C_PID
 set READY=0
@@ -374,8 +375,8 @@ if !STALE_COUNT! GEQ 1 (
 REM 4b: Single --cleanup MUST handle all of them
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S4: --cleanup cleared all 3 stale entries
     set /a PASS+=1
@@ -394,7 +395,7 @@ echo === Scenario 5: Kill both overlapping instances ===
 echo.
 
 echo   Starting S5a (30s, folders A+B)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S5a 30 "!DIR_A!" "!DIR_B!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S5a.log" -x "!PYTHON!" "!PROBE!" S5a 30 "!DIR_A!" "!DIR_B!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S5a S5A_PID
 set READY=0
@@ -412,7 +413,7 @@ echo   [OK] S5a running (PID !S5A_PID!)
 ping -n 4 127.0.0.1 >nul
 
 echo   Starting S5b (30s, folder A — overlapping)...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S5b 30 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S5b.log" -x "!PYTHON!" "!PROBE!" S5b 30 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S5b S5B_PID
 set READY=0
@@ -459,8 +460,8 @@ set /a FAIL+=1
 REM 5c: --cleanup ALONE must recover everything
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S5: --cleanup removed all stale entries
     set /a PASS+=1
@@ -472,8 +473,8 @@ if !REMAIN! EQU 0 (
 
 REM 5d: No orphaned profiles
 "!SANDY!" --status >"%TEMP%\sandy_kill_s5.txt"
-findstr /c:"PROFILE" "%TEMP%\sandy_kill_s5.txt" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind profiles
+if !ERRORLEVEL! EQU 0 (
     echo   [PASS] S5: No orphaned AppContainer profiles
     set /a PASS+=1
 ) else (
@@ -503,7 +504,7 @@ if !ERRORLEVEL! EQU 0 (
 
 REM Start and kill one more (to guarantee stale entries exist)
 echo   Starting and killing S6a...
-start /b "" "!SANDY!" -c "!CONFIG!" -q -x "!PYTHON!" "!PROBE!" S6a 30 "!DIR_A!"
+start /b "" "!SANDY!" -c "!CONFIG!" -q -l "%TEMP%\sandy_kill_S6a.log" -x "!PYTHON!" "!PROBE!" S6a 30 "!DIR_A!"
 ping -n 2 127.0.0.1 >nul
 call :GetSandyPid S6a S6A_PID
 set READY=0
@@ -517,7 +518,7 @@ ping -n 2 127.0.0.1 >nul
 REM 6a: Run clean instance synchronously — should warn if stale entries remain
 REM Note: ConsoleCtrlHandler may have cleaned S6a's state, so warning is optional
 echo   Starting S6b (8s) — should warn and run cleanly...
-"!SANDY!" -c "!CONFIG!" -x "!PYTHON!" "!PROBE!" S6b 8 "!DIR_A!" 2>"%TEMP%\sandy_kill_s6.txt"
+"!SANDY!" -c "!CONFIG!" -l "%TEMP%\sandy_kill_S6b.log" -x "!PYTHON!" "!PROBE!" S6b 8 "!DIR_A!" 2>"%TEMP%\sandy_kill_s6.txt"
 
 findstr /c:"WARNING" "%TEMP%\sandy_kill_s6.txt" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
@@ -545,8 +546,8 @@ if exist "!DIR_A!\kill_probe_S6b_result.json" (
 REM 6c: Final --cleanup MUST clear everything from the ENTIRE test
 "!SANDY!" --cleanup >nul 2>nul
 
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind instances
+set REMAIN=!ERRORLEVEL!
 if !REMAIN! EQU 0 (
     echo   [PASS] S6: --cleanup cleared all remaining stale state
     set /a PASS+=1
@@ -564,8 +565,8 @@ echo === Final: Verify pristine state (Sandy must leave nothing) ===
 echo.
 
 REM F1: No scheduled task (the task names are SandyCleanup_<uuid>)
-schtasks /Query /FO LIST 2>nul | findstr /C:"SandyCleanup_" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind tasks
+if !ERRORLEVEL! EQU 0 (
     echo   [PASS] No scheduled task remains
     set /a PASS+=1
 ) else (
@@ -575,8 +576,8 @@ if !ERRORLEVEL! NEQ 0 (
 
 REM F2: No orphaned profiles
 "!SANDY!" --status >"%TEMP%\sandy_kill_final.txt"
-findstr /c:"PROFILE" "%TEMP%\sandy_kill_final.txt" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --logs "%TEMP%\sandy_kill_*.log" --kind profiles
+if !ERRORLEVEL! EQU 0 (
     echo   [PASS] No orphaned AppContainer profiles
     set /a PASS+=1
 ) else (
@@ -615,6 +616,7 @@ echo =====================================================================
 echo  Results: !PASS! passed, !FAIL! failed (of !TOTAL!)
 echo =====================================================================
 echo.
+del "%TEMP%\sandy_kill_*.log" 2>nul
 if !FAIL! GTR 0 (
     echo  SOME TESTS FAILED!
     exit /b 1

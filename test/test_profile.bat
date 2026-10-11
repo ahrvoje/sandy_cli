@@ -691,13 +691,13 @@ if !ERRORLEVEL! EQU 0 (
     set /a FAIL+=1
 )
 
-REM P13d: Profile registry key has _toml (full config stored)
+REM P13d: Config is stored in discrete values, without an unused TOML copy
 reg query "HKCU\Software\Sandy\Profiles\test_ac" /v _toml >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    echo   [PASS] P13d: Full TOML config stored in profile
+if !ERRORLEVEL! NEQ 0 (
+    echo   [PASS] P13d: No unused TOML copy in profile
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P13d: _toml missing from profile
+    echo   [FAIL] P13d: Unused _toml value still stored
     set /a FAIL+=1
 )
 
@@ -716,8 +716,7 @@ REM ===================================================================
 REM P17 ? Discrete Config Values: verify registry-native storage
 REM
 REM Verifies that SandboxConfig fields are stored as discrete registry
-REM values (REG_DWORD for bools/ints, REG_SZ for strings), not just
-REM embedded in the _toml blob.
+REM values (REG_DWORD for bools/ints, REG_SZ for strings).
 REM ===================================================================
 echo.
 echo --- P17: Discrete Config Values ---
@@ -1263,12 +1262,12 @@ echo --- P16: Status Clean After Delete ---
 
 "!SANDY!" --status >"%TEMP%\sandy_p16.txt" 2>&1
 
-findstr /C:"SAVED_PROFILE" "%TEMP%\sandy_p16.txt" >nul 2>nul
-if !ERRORLEVEL! NEQ 0 (
-    echo   [PASS] P16a: No saved profiles in --status after delete
+"!PYTHON!" "%~dp0status_check.py" "!SANDY!" --profile test_ac --profile test_rt
+if !ERRORLEVEL! EQU 0 (
+    echo   [PASS] P16a: Deleted test profiles absent from --status
     set /a PASS+=1
 ) else (
-    echo   [FAIL] P16a: Saved profiles still show in --status
+    echo   [FAIL] P16a: Deleted test profiles still show in --status
     set /a FAIL+=1
 )
 
