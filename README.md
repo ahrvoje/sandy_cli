@@ -30,7 +30,7 @@ a lock, so abandoned incomplete records can be recovered without touching a live
 
 - 🔒 **Three sandbox modes** — AppContainer, LPAC, or Restricted Token with configurable integrity
 - 📁 **Granular access control** — read, write, execute, append, delete, or full access per file or folder
-- 🌐 **Network control** — Windows capability names for internet/LAN; a separate loopback switch (AppContainer / LPAC)
+- 🌐 **Network control** — internet/LAN capabilities and a loopback switch (AppContainer / LPAC)
 - 🏢 **Multi-instance safe** — true isolation with independent instance-specific grants
 - 💾 **Profile-first design** — persistent sandbox identities with reusable grants and config
 - 🛡️ **Explicit configuration** — uses a TOML model with strictly safe, locked-down defaults for omissions
