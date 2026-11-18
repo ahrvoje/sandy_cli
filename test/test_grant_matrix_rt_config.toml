@@ -4,7 +4,7 @@
 # Z6: allow.deep all + deny.deep write — deny subtracts write from all
 # Z7: deny.this read on parent + allow.deep all on child — child must NOT inherit deny
 # Z8: deny.deep all + allow.this read on SAME PATH — what wins?
-# Z9: deny.this write + allow.deep write on SAME PATH — scope mismatch
+# Z9: deny.this write + allow.deep read on the same directory
 
 [sandbox]
 token     = 'restricted'
@@ -12,22 +12,22 @@ integrity = 'low'
 
 [allow.deep]
 execute = ['%LOCALAPPDATA%\Programs\Python\Python314']
-read    = ['%USERPROFILE%\test_gmatrix\scripts', '%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\deep_hole', '%USERPROFILE%\test_gmatrix\file_vs_dir', '%USERPROFILE%\test_gmatrix\deny_scope']
-all     = ['%USERPROFILE%\test_gmatrix\overlap\inner', '%USERPROFILE%\test_gmatrix\deep_hole\gap\bottom', '%USERPROFILE%\test_gmatrix\deny_sub', '%USERPROFILE%\test_gmatrix\deny_parent\child']
-write   = ['%USERPROFILE%\test_gmatrix\deny_clash']
+read    = ['%TEST_ROOT%\scripts', '%TEST_ROOT%\same_path', '%TEST_ROOT%\deep_hole', '%TEST_ROOT%\file_vs_dir', '%TEST_ROOT%\deny_scope']
+all     = ['%TEST_ROOT%\overlap\inner', '%TEST_ROOT%\deep_hole\gap\bottom', '%TEST_ROOT%\deny_sub', '%TEST_ROOT%\deny_parent\child']
+write   = ['%TEST_ROOT%\deny_clash']
 
 [allow.this]
-read    = ['%USERPROFILE%\test_gmatrix\overlap', '%USERPROFILE%\test_gmatrix\multi_this', '%USERPROFILE%\test_gmatrix\deny_clash']
-write   = ['%USERPROFILE%\test_gmatrix\same_path', '%USERPROFILE%\test_gmatrix\multi_this\mid', '%USERPROFILE%\test_gmatrix\file_vs_dir\target.txt']
-all     = ['%USERPROFILE%\test_gmatrix\multi_this\mid\leaf']
+read    = ['%TEST_ROOT%\overlap', '%TEST_ROOT%\multi_this', '%TEST_ROOT%\deny_clash']
+write   = ['%TEST_ROOT%\same_path', '%TEST_ROOT%\multi_this\mid', '%TEST_ROOT%\file_vs_dir\target.txt']
+all     = ['%TEST_ROOT%\multi_this\mid\leaf']
 
 [deny.deep]
-write   = ['%USERPROFILE%\test_gmatrix\deny_sub']
-all     = ['%USERPROFILE%\test_gmatrix\deny_clash']
+write   = ['%TEST_ROOT%\deny_sub']
+all     = ['%TEST_ROOT%\deny_clash']
 
 [deny.this]
-read    = ['%USERPROFILE%\test_gmatrix\deny_parent']
-write   = ['%USERPROFILE%\test_gmatrix\deny_scope']
+read    = ['%TEST_ROOT%\deny_parent']
+write   = ['%TEST_ROOT%\deny_scope']
 
 [environment]
 inherit = true

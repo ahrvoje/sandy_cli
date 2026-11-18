@@ -66,7 +66,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `-l <path>`, `--log <path>` | Session log (operational events, config, exit code) |
 | `-L`, `--log-stamp` | Prepend `YYYYMMDD_HHMMSS_uid_` to log filenames |
 | `-p <name>`, `--profile <name>` | Run with a persistent saved profile (mutually exclusive with `-c`/`-s`) |
-| `--create-profile <name>` | Create a persistent sandbox profile with SID + ACLs from TOML config |
+| `--create-profile <name>` | Create a persistent sandbox profile from `-c`. Combining creation with `-p`, `-s`, or `-x` is a configuration error. |
 | `--delete-profile <name>` | Delete a saved profile and revoke its persistent ACLs |
 | `--profile-info <name>` | Show saved profile details (type, SID, config, grants) |
 | `-x <path>`, `--exec <path>` | Executable to run sandboxed (consumes remaining args) |
@@ -80,7 +80,7 @@ sandy.exe --print-config -c <config.toml>  (print resolved config)
 | `--json` | JSON output (with `--status`, includes summary counts) |
 | `--explain <code>` | Decode exit code (Sandy 125-131, NTSTATUS, Win32) |
 | `--dry-run`, `--check` | Validate config + show planned changes (no system modifications). Also supported with `--create-profile` to preview what would be created. |
-| `--print-config` | Print resolved config to stdout (requires `-c`/`-s`) |
+| `--print-config` | Print the resolved configuration from `-c`, `-s`, or a saved profile specified with `-p` |
 
 
 All sandy flags must come **before** `-x`. Everything after `-x <executable>` is forwarded to it, also tokens such as `-l` or `-q`.
@@ -116,7 +116,7 @@ All sandbox behavior is controlled by a TOML config. Every config **must** inclu
 **Environment variables in paths:** a path can hold variables in `%NAME%` form, for example `'%USERPROFILE%\project'` or `'%LOCALAPPDATA%\Programs\Python\Python314'`. Sandy replaces them with the values from its own environment when it loads the config, so a config does not have to hold a user name. A variable that is not set is a config error. `--print-config` shows the resolved paths.
 
 **Config limits (defense-in-depth):**
-- Config file size: max **1 MB**
+- Config file size: max **1 MiB (1,048,576 bytes)**
 - Path length: max **32,768 characters** per path (Win32 extended limit)
 - Rules per section: max **256** entries in `[allow.*]`, `[deny.*]`, or `[registry]`
 
@@ -174,7 +174,7 @@ stat    = ['C:\important_file.dat']             # attributes only
 | `run` | Execute only, no read (can't copy binary) |
 | `stat` | Read attributes only |
 | `touch` | Modify attributes only |
-| `create` | Create new files/subdirs, no overwrite |
+| `create` | Create files and subdirectories in an existing directory. Both scopes require a directory as the rule target. |
 
 > [!IMPORTANT]
 > **Scope controls inheritance.** In `[allow.deep]`, all access levels apply recursively. In `[allow.this]`, all access levels apply to the single object only. The access level determines *what* permissions are granted; the scope determines *where* they propagate.
@@ -439,7 +439,9 @@ processes = 10      # max total active processes (default: 0)
 > **The timeout covers the whole process tree.** Sandy waits for the root process and then for every descendant in the job. The watchdog stays active until the tree is gone. On timeout the whole tree is ended and Sandy exits with 130, also when the root process had already exited.
 
 > [!IMPORTANT]
-> **Resource limits are strictly enforced (fail-closed).** If a resource limit (memory, process count, or clipboard restriction) is configured but cannot be applied to the job object, Sandy will terminate the child and exit with code 129 (setup error). This includes scenarios where `SetInformationJobObject` fails as well as cases where the job cannot be assigned to the child process. The sandbox never runs with unenforced limits.
+> Sandy assigns every sandboxed root process to a kill-on-close job before it resumes the process. This also covers single-process runs with clipboard access and unlimited memory. If job setup or assignment fails, Sandy terminates the suspended child and exits with code 129.
+
+Saved profiles store the resolved limits, privilege switches, and rule counts. A missing or invalid value prevents launch and appears as an invalid profile in `--status`. Delete and recreate the profile from its TOML to restore it. This also applies to older profiles with a `create` rule on a regular file. Deleting the profile revokes its durable grants.
 
 > [!NOTE]
 > **Effective enforcement visibility.** `--status` reports instance state, transient retry-container metadata, scheduled tasks, AppContainer profiles, and saved profiles, but it is not yet a full structured "requested policy vs effective policy" report. Cleanup parsing errors and best-effort cleanup limitations are logged when encountered.

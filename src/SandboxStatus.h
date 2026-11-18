@@ -63,7 +63,7 @@ inline std::string EscapeStatusJson(const std::wstring& s)
     for (wchar_t c : s) {
         if (c == L'"') result += "\\\"";
         else if (c == L'\\') result += "\\\\";
-        else if (c < 128) result += static_cast<char>(c);
+        else if (c >= 32 && c < 128) result += static_cast<char>(c);
         else {
             char buf[8];
             snprintf(buf, sizeof(buf), "\\u%04X", static_cast<unsigned>(c));

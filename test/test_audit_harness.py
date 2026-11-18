@@ -16,6 +16,19 @@ ROOT = Path(__file__).resolve().parent
 
 
 class HarnessRegressions(unittest.TestCase):
+    def test_missing_acl_fixtures_fail(self):
+        with tempfile.TemporaryDirectory(prefix="sandy_missing_acl_") as temp:
+            snapshot = Path(temp) / "snapshot.json"
+            probe = [sys.executable, ROOT / "test_dacl_fidelity.py", "snapshot"]
+            self.assertNotEqual(subprocess.run(probe + [Path(temp) / "missing", snapshot],
+                                               capture_output=True).returncode, 0)
+            self.assertEqual(subprocess.run(probe + [temp, snapshot], capture_output=True).returncode, 0)
+            result = subprocess.run([sys.executable, ROOT / "test_grant_matrix.py"],
+                                    env=dict(os.environ, TEST_ROOT=str(Path(temp) / "missing"), TEST_MODE="AC"),
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("[FAIL] Z1: overlap/sibling/ list", result.stdout)
+
     def run_batch_fragment(self, text):
         with tempfile.TemporaryDirectory(prefix="sandy_verdict_") as temp:
             script = Path(temp) / "verdict.bat"

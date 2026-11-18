@@ -34,7 +34,7 @@ integrity = 'low'          # required: 'low' or 'medium'
 # run     = []              # execute only: start the binary, no read (recursive)
 # stat    = []              # existence, size and timestamps only (recursive)
 # touch   = []              # change timestamps and attributes (recursive)
-# create  = []              # create new files and sub-folders, no overwrite (recursive)
+# create  = []              # target directories where the child may create files and subdirectories
 
 # [deny.deep]                    # optional, default: no denies
 # A deny removes only the rights of its level (deny write keeps read).

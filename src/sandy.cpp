@@ -11,7 +11,7 @@
 #include "SandboxSavedProfile.h"
 #include <clocale>
 
-constexpr const char* kVersion = "0.9996";
+constexpr const char* kVersion = "0.9997";
 using namespace Sandbox;
 
 // -----------------------------------------------------------------------
@@ -240,6 +240,10 @@ static bool DispatchOneArgInfoAction(const std::vector<std::wstring>& rest,
             exitCode = SandyExit::InternalError;
             return true;
         }
+        if (rest.front() != L"--explain" && !ValidateProfileName(rest[1])) {
+            exitCode = SandyExit::ConfigError;
+            return true;
+        }
         ApplyPreambleLogging(preamble);
         if (rest.front() == L"--explain")
             exitCode = HandleExplain(rest[1].c_str());
@@ -281,6 +285,13 @@ static bool ParseRunMainOptions(int argc,
     for (int i = 1; i < argc; i++) {
         std::wstring arg = argv[i];
 
+        if (i + 1 < argc && !*argv[i + 1] &&
+            (arg == L"-c" || arg == L"--config" || arg == L"-s" || arg == L"--string" ||
+             arg == L"-x" || arg == L"--exec" || arg == L"--")) {
+            fprintf(stderr, "Error: %ls requires a nonempty argument.\n", arg.c_str());
+            exitCode = SandyExit::ConfigError;
+            return false;
+        }
         if (arg == L"-q" || arg == L"--quiet") {
             options.quiet = true;
         }
@@ -304,9 +315,17 @@ static bool ParseRunMainOptions(int argc,
         }
         else if ((arg == L"-p" || arg == L"--profile") && i + 1 < argc) {
             options.profileName = argv[++i];
+            if (!ValidateProfileName(options.profileName)) {
+                exitCode = SandyExit::ConfigError;
+                return false;
+            }
         }
         else if (arg == L"--create-profile" && i + 1 < argc) {
             options.createProfileName = argv[++i];
+            if (!ValidateProfileName(options.createProfileName)) {
+                exitCode = SandyExit::ConfigError;
+                return false;
+            }
         }
         else if ((arg == L"-x" || arg == L"--exec") && i + 1 < argc) {
             options.exePath = argv[++i];
@@ -333,6 +352,10 @@ static bool ParseRunMainOptions(int argc,
 
 static int RunCreateProfileMode(const RunMainOptions& options)
 {
+    if (!options.profileName.empty() || !options.configString.empty() || !options.exePath.empty()) {
+        fprintf(stderr, "Error: --create-profile takes a config file and cannot be combined with -p, -s or -x.\n");
+        return SandyExit::ConfigError;
+    }
     if (options.printConfig) {
         fprintf(stderr, "Error: --print-config cannot be used with --create-profile. Use -c instead.\n");
         return SandyExit::ConfigError;

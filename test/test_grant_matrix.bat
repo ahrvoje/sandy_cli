@@ -15,7 +15,8 @@ set SANDY=%~dp0..\x64\Release\sandy.exe
 set AC_CONFIG=%~dp0test_grant_matrix_config.toml
 set RT_CONFIG=%~dp0test_grant_matrix_rt_config.toml
 set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
-set ROOT=%USERPROFILE%\test_gmatrix
+set "TEST_ROOT=%TEMP%\sandy-gmatrix-%RANDOM%-%RANDOM%"
+set "ROOT=%TEST_ROOT%"
 set PASS=0
 set FAIL=0
 
@@ -24,11 +25,7 @@ echo  Grant Matrix Test — deep vs this scope stress
 echo =====================================================================
 echo.
 
-REM === Pre-clean ===
-"%SANDY%" --cleanup >nul 2>nul
-
-REM === Create folder tree ===
-if exist "%ROOT%" rmdir /s /q "%ROOT%"
+mkdir "%ROOT%" || exit /b 1
 mkdir "%ROOT%\scripts"
 
 REM Z1: overlap tree
@@ -48,6 +45,7 @@ echo data>"%ROOT%\multi_this\mid\leaf\file.txt"
 
 REM Z4: deep_hole with gap
 mkdir "%ROOT%\deep_hole\gap\bottom"
+echo data>"%ROOT%\deep_hole\file.txt"
 echo data>"%ROOT%\deep_hole\gap\bottom\file.txt"
 
 REM Z5: file vs dir
@@ -87,9 +85,8 @@ echo ===================================================================
 echo  Part 1: AppContainer
 echo ===================================================================
 echo.
-set TEST_ROOT=%ROOT%
 set TEST_MODE=AC
-"%SANDY%" -c "%AC_CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_grant_matrix.py"
+"%SANDY%" -c "%AC_CONFIG%" -l "%ROOT%\AC.log" -x "%PYTHON%" "%ROOT%\scripts\test_grant_matrix.py"
 set AC_EXIT=!ERRORLEVEL!
 echo.
 
@@ -105,19 +102,13 @@ if !AC_SID_CNT! EQU 0 (
     set /a FAIL+=1
 )
 
-REM Run --cleanup to handle grant cleanup race from Sandy exit
-"%SANDY%" --cleanup >nul 2>nul
-set GC=0
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set GC=%%N
-)
-if !GC! EQU 0 (
-    echo   [PASS] Grants registry key clean
-    set /a PASS+=1
-) else (
-    echo   [FAIL] !GC! grant subkeys persist after AC exit
+"%PYTHON%" "%~dp0status_check.py" "%SANDY%" --logs "%ROOT%\AC.log"
+if errorlevel 1 (
+    echo   [FAIL] AC run left recovery state or could not be checked
     set /a FAIL+=1
+) else (
+    echo   [PASS] AC run cleared its recovery state
+    set /a PASS+=1
 )
 echo.
 
@@ -149,7 +140,7 @@ echo  Part 2: Restricted Token
 echo ===================================================================
 echo.
 set TEST_MODE=RT
-"%SANDY%" -c "%RT_CONFIG%" -x "%PYTHON%" "%ROOT%\scripts\test_grant_matrix.py"
+"%SANDY%" -c "%RT_CONFIG%" -l "%ROOT%\RT.log" -x "%PYTHON%" "%ROOT%\scripts\test_grant_matrix.py"
 set RT_EXIT=!ERRORLEVEL!
 echo.
 
@@ -165,25 +156,19 @@ if !RT_SID_CNT! EQU 0 (
     set /a FAIL+=1
 )
 
-REM Run --cleanup to handle grant cleanup race from Sandy exit
-"%SANDY%" --cleanup >nul 2>nul
-set GC=0
-reg query "HKCU\Software\Sandy\Grants" >nul 2>nul
-if !ERRORLEVEL! EQU 0 (
-    for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set GC=%%N
-)
-if !GC! EQU 0 (
-    echo   [PASS] Grants registry key clean
-    set /a PASS+=1
-) else (
-    echo   [FAIL] !GC! grant subkeys persist after RT exit
+"%PYTHON%" "%~dp0status_check.py" "%SANDY%" --logs "%ROOT%\RT.log"
+if errorlevel 1 (
+    echo   [FAIL] RT run left recovery state or could not be checked
     set /a FAIL+=1
+) else (
+    echo   [PASS] RT run cleared its recovery state
+    set /a PASS+=1
 )
 echo.
 
 REM === Final cleanup ===
-"%SANDY%" --cleanup >nul 2>nul
-if exist "%ROOT%" rmdir /s /q "%ROOT%"
+rmdir /s /q "%ROOT%"
+if exist "%ROOT%" set /a FAIL+=1
 
 REM === Summary ===
 set /a TOTAL=!PASS!+!FAIL!

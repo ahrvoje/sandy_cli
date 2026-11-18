@@ -26,7 +26,7 @@ token = 'appcontainer'
 # run     = []              # execute only: start the binary, no read (recursive)
 # stat    = []              # existence, size and timestamps only (recursive)
 # touch   = []              # change timestamps and attributes (recursive)
-# create  = []              # create new files and sub-folders, no overwrite (recursive)
+# create  = []              # target directories where the child may create files and subdirectories
 
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 

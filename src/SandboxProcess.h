@@ -386,16 +386,6 @@ namespace Sandbox {
         return true;
     }
 
-    inline bool NeedJobTracking(const SandboxConfig& config)
-    {
-        return config.allowChildProcesses ||
-               config.memoryLimitMB > 0 ||
-               config.maxProcesses > 0 ||
-               !config.allowClipboardRead ||
-               !config.allowClipboardWrite ||
-               !config.allowDesktop;
-    }
-
     // -----------------------------------------------------------------------
     // WaitForJobTreeExit — wait until the job no longer contains any processes.
     //
@@ -432,14 +422,12 @@ namespace Sandbox {
     //
     // Inputs:  config    — sandbox config with memory/process/clipboard limits
     //          hProcess  — child process handle (suspended)
-    // Returns: job object handle (caller owns), or nullptr if no limits needed
+    // Returns: job object handle (caller owns), or nullptr on failure.
+    // Every sandbox needs kill-on-close, including single-process runs.
     // Verifiable: limits can be queried back from the job object
     // -----------------------------------------------------------------------
     inline HANDLE AssignJobObject(const SandboxConfig& config, HANDLE hProcess)
     {
-        bool needJob = NeedJobTracking(config);
-        if (!needJob) return nullptr;
-
         HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
         if (!hJob) return nullptr;
 
@@ -453,12 +441,10 @@ namespace Sandbox {
             jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
             jeli.BasicLimitInformation.ActiveProcessLimit = config.maxProcesses;
         }
-        if (jeli.BasicLimitInformation.LimitFlags != 0) {
-            if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
-                g_logger.LogFmt(L"JOB_LIMIT: SetInformationJobObject(Extended) failed (error %lu)", GetLastError());
-                CloseHandle(hJob);
-                return nullptr;
-            }
+        if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli))) {
+            g_logger.LogFmt(L"JOB_LIMIT: SetInformationJobObject(Extended) failed (error %lu)", GetLastError());
+            CloseHandle(hJob);
+            return nullptr;
         }
 
         // UI restrictions (clipboard blocking, desktop isolation)

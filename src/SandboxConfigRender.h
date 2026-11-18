@@ -6,16 +6,21 @@ namespace Sandbox {
 
 // -----------------------------------------------------------------------
 // TomlQuotedValue -- emit a string as TOML, using double-quotes with
-// escaping when the value contains an apostrophe.
+// escaping when the value contains an apostrophe or a control character.
 // -----------------------------------------------------------------------
 inline void TomlQuotedValue(const std::wstring& val)
 {
-    if (val.find(L'\'') != std::wstring::npos) {
-        // Escape backslashes and double-quotes for a TOML basic string
+    if (std::any_of(val.begin(), val.end(),
+            [](wchar_t ch) { return ch == L'\'' || ch < 32 || ch == 127; })) {
         std::wstring escaped;
         for (auto ch : val) {
             if (ch == L'\\') escaped += L"\\\\";
             else if (ch == L'"') escaped += L"\\\"";
+            else if (ch < 32 || ch == 127) {
+                wchar_t code[7];
+                swprintf(code, 7, L"\\u%04X", static_cast<unsigned>(ch));
+                escaped += code;
+            }
             else escaped += ch;
         }
         printf("\"%ls\"", escaped.c_str());

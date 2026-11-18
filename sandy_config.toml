@@ -37,7 +37,7 @@ token = 'appcontainer'     # 'appcontainer', 'lpac', or 'restricted'
 # run = []                  # execute only: start the binary, no read
 # stat = []                 # existence, size and timestamps only
 # touch = []                # change timestamps and attributes
-# create = []               # create new files and sub-folders, no overwrite
+# create = []               # target directories where the child may create files and subdirectories
 
 # [deny.deep] is NOT available in appcontainer mode (kernel ignores deny ACEs for AC SIDs)
 

@@ -144,7 +144,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
         <h3>⚠️ Config limits</h3>
         <div class="table-wrap" style="margin:0;">
           <table>
-            <tr><td>Config file</td><td>max 1 MB</td></tr>
+            <tr><td>Config file</td><td>max 1 MiB (1,048,576 bytes)</td></tr>
             <tr><td>Path length</td><td>max 32,768 chars</td></tr>
             <tr><td>Rules per section</td><td>max 256 in <code>[allow.*]</code>, <code>[deny.*]</code>, <code>[registry]</code></td></tr>
           </table>
@@ -205,7 +205,7 @@ token = <span class="code-string">'appcontainer'</span></pre>
           <tr><td>run</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Execute only, no read (can't copy binary)</td></tr>
           <tr><td>stat</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Read attributes only</td></tr>
           <tr><td>touch</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Modify attributes only</td></tr>
-          <tr><td>create</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create new files/subdirs, no overwrite. A recursive rule inherits to sub-folders only, not to files.</td></tr>
+          <tr><td>create</td><td><code>[]</code></td><td><span class="status opt">Optional</span></td><td><span class="status opt">Optional</span></td><td>Create files and subdirectories. Both scopes require a directory as the target. A recursive rule inherits to subdirectories only.</td></tr>
         </tbody>
       </table>
     </div>
@@ -370,7 +370,7 @@ names = ['registryRead', 'lpacCom']</code></pre>
     </div>
     <div class="callout danger">
       <div class="callout-title">🔒 Limits are fail-closed</div>
-      <p>If a limit is configured but cannot be enforced (job object failure), Sandy terminates the child and exits with code <strong>129</strong>. The sandbox never runs with unenforced limits.</p>
+      <p>Sandy assigns the suspended root process to a kill-on-close job, including single-process runs. If job setup or assignment fails, Sandy terminates the child and exits with code <strong>129</strong>. A saved profile with missing or invalid limits, privilege switches, or rule counts must be recreated before use.</p>
     </div>
   </div>
 </section>

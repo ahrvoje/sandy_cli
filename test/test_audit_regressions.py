@@ -1,6 +1,7 @@
 """Focused regressions for the October 2026 audit; all resources are test-owned."""
 import ctypes
 import json
+import msvcrt
 import os
 from pathlib import Path
 import re
@@ -73,6 +74,121 @@ class AuditRegressions(unittest.TestCase):
     def delete_profile(self, name):
         result = self.run_sandy("--delete-profile", name)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_profile_names_identify_one_registry_child(self):
+        name = self.profile(self.config("[sandbox]\ntoken='restricted'\nintegrity='medium'\n[privileges]\ndesktop=false\n"))
+        for invalid in ("", name + "\\", "\\" + name):
+            for args in (("--profile-info", invalid), ("-p", invalid, "--print-config")):
+                with self.subTest(args=args):
+                    result = self.run_sandy(*args)
+                    self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+                    self.assertIn("profile name", result.stderr)
+        missing = "audit-" + uuid.uuid4().hex
+        deleted = self.run_sandy("--delete-profile", missing + "\\child")
+        self.assertEqual(deleted.returncode, 128)
+        self.assertIn("profile name", deleted.stderr)
+
+    def test_create_rules_require_a_directory(self):
+        file = self.root / "existing.txt"
+        file.touch()
+        for mode in ("appcontainer", "lpac", "restricted"):
+            base = f"[sandbox]\ntoken='{mode}'\n"
+            if mode == "restricted":
+                base += "integrity='medium'\n"
+            for rule in (("allow", "deny") if mode == "restricted" else ("allow",)):
+                for scope in ("this", "deep"):
+                    for target, expected in ((file, 128), (self.root, 0)):
+                        with self.subTest(mode=mode, rule=rule, scope=scope, target=target):
+                            cfg = self.config(base + f"[{rule}.{scope}]\ncreate=['{target}']\n")
+                            result = self.run_sandy("--dry-run", "-c", cfg)
+                            self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    def test_create_profile_rejects_run_options(self):
+        cfg = self.config("[sandbox]\ntoken='lpac'\n")
+        name = "audit-" + uuid.uuid4().hex
+        for args in (("-p", "different"), ("-s", "[sandbox]"), ("-x", CMD), ("-s", ""), ("-x", "")):
+            with self.subTest(args=args):
+                result = self.run_sandy("--dry-run", "--create-profile", name, "-c", cfg, *args)
+                self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+
+    def test_config_rejects_float_limits_and_nul_strings(self):
+        for body in ("[limit]\ntimeout=3.0000001", '[environment]\npass=["A\\u0000B"]'):
+            with self.subTest(body=body):
+                result = self.run_sandy("--print-config", "-c", self.config("[sandbox]\ntoken='lpac'\n" + body))
+                self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+
+    def test_file_size_limit_uses_full_length(self):
+        cfg = self.config("[sandbox]\ntoken='lpac'\n")
+        with cfg.open("r+b") as file:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            count = wintypes.DWORD()
+            handle = wintypes.HANDLE(msvcrt.get_osfhandle(file.fileno()))
+            if not kernel.DeviceIoControl(handle, 0x900C4, None, 0, None, 0, ctypes.byref(count), None):
+                self.skipTest("Temporary filesystem does not support sparse files")
+            self.assertTrue(kernel.SetFilePointerEx(handle, ctypes.c_longlong((1 << 32) + cfg.stat().st_size),
+                                                    None, 0))
+            self.assertTrue(kernel.SetEndOfFile(handle))
+        for mode in (("--print-config",), ("--dry-run", "--create-profile", "size-" + uuid.uuid4().hex)):
+            result = self.run_sandy(*mode, "-c", cfg)
+            self.assertEqual(result.returncode, 128, result.stdout + result.stderr)
+            self.assertIn("size limit", result.stderr)
+
+    def test_single_process_run_uses_kill_on_close_job(self):
+        cfg = self.config("[sandbox]\ntoken='restricted'\nintegrity='medium'\n"
+                          "[privileges]\nchild_processes=false\nclipboard_read=true\nclipboard_write=true\n")
+        # Query the actual job of the child. LimitFlags is at offset 16 in
+        # JOBOBJECT_BASIC_LIMIT_INFORMATION, after two LARGE_INTEGER fields.
+        probe = ("import ctypes,sys; k=ctypes.windll.kernel32; "
+                 "b=ctypes.create_string_buffer(64 if ctypes.sizeof(ctypes.c_void_p)==8 else 48); "
+                 "ok=k.QueryInformationJobObject(None,2,b,len(b),None); "
+                 "sys.exit(0 if ok and ctypes.c_uint32.from_buffer(b,16).value & 0x2000 else 1)")
+        log = self.root / "job.log"
+        result = self.run_sandy("-q", "-l", log, "-c", cfg, "-x", sys.executable, "-c", probe)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("JOB: memory=0MB, processes=0, ui_flags=0x0", log.read_text(encoding="utf-8-sig"))
+
+    def test_status_rejects_invalid_saved_controls(self):
+        cfg = self.config("[sandbox]\ntoken='restricted'\nintegrity='medium'\n"
+                          "[privileges]\ndesktop=false\n[limit]\ntimeout=2\nmemory=128\nprocesses=3\n")
+        name = self.profile(cfg)
+        def saved_entry():
+            result = self.run_sandy("--status", "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return next(p for p in json.loads(result.stdout)["saved_profiles"] if p["name"] == name)
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software\\Sandy\\Profiles\\" + name, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+            for field, invalid in (("_timeout", None), ("_memory_limit_mb", 65537), ("_max_processes", 1025),
+                                   ("_allow_child_procs", 2), ("_env_inherit", 2), ("_deny_count", None),
+                                   ("_workdir", None), ("_stdin_mode", None)):
+                with self.subTest(field=field):
+                    original, kind = winreg.QueryValueEx(key, field)
+                    try:
+                        if invalid is None:
+                            winreg.DeleteValue(key, field)
+                        else:
+                            winreg.SetValueEx(key, field, 0, kind, invalid)
+                        self.assertEqual(saved_entry()["status"], "invalid")
+                    finally:
+                        winreg.SetValueEx(key, field, 0, kind, original)
+            self.assertEqual(saved_entry()["status"], "ok")
+
+    def test_print_config_escapes_control_characters(self):
+        value = "name\nwith\ta'postrophe"
+        cfg = self.config("[sandbox]\ntoken='lpac'\n[environment]\npass=[" + json.dumps(value) + "]")
+        result = self.run_sandy("--print-config", "-c", cfg)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(tomllib.loads(result.stdout)["environment"]["pass"], [value])
+
+    def test_status_json_escapes_control_characters(self):
+        name = "dead-test-" + uuid.uuid4().hex + "\t"
+        path = "Software\\Sandy\\Profiles\\" + name
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path):
+            pass
+        self.addCleanup(winreg.DeleteKey, winreg.HKEY_CURRENT_USER, path)
+        result = self.run_sandy("--status", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(name, [p["name"] for p in json.loads(result.stdout)["saved_profiles"]])
 
     def test_saved_profile_previews_do_not_launch(self):
         profile = self.profile(self.config("[sandbox]\ntoken='restricted'\nintegrity='medium'\n[privileges]\ndesktop=false\n"))

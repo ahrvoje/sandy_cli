@@ -157,7 +157,7 @@
           <span class="mode-badge" style="color:var(--accent);">AC</span>
         </div>
         <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:12px;">
-          Uses the same kernel-level isolation as UWP apps and Microsoft Edge. Each instance generates a UUID-based profile (<code>Sandy_&lt;uuid&gt;</code>) and receives a unique SID (<code>S-1-15-2-*</code>) from <code>CreateAppContainerProfile</code>.
+          A transient run creates a container named <code>Sandy_&lt;uuid&gt;</code> with its own SID (<code>S-1-15-2-*</code>). Runs from a saved profile reuse the SID of <code>Sandy_&lt;profile-name&gt;</code> and its durable grants.
         </p>
         <ul class="check-list">
           <li>Isolated object namespace — invisible to other processes</li>

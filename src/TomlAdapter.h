@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <stdexcept>
 
 // Suppress toml11 warnings for MSVC
 #pragma warning(push)
@@ -130,6 +131,12 @@ inline std::wstring ConvertLiteralNewlines(const std::wstring& s) {
 // -----------------------------------------------------------------------
 namespace detail {
 
+    inline std::wstring ConfigString(const std::string& value) {
+        if (value.find('\0') != std::string::npos)
+            throw std::invalid_argument("Config keys and values cannot contain a NUL character.");
+        return Utf8ToWide(value);
+    }
+
     // Recursively flatten a toml::value table into TomlDocument sections.
     // `prefix` is the dotted section path accumulated so far.
     //
@@ -155,7 +162,7 @@ namespace detail {
         }
 
         for (const auto& [key, val] : table.as_table()) {
-            std::wstring wkey = Utf8ToWide(key);
+            std::wstring wkey = ConfigString(key);
 
             if (val.is_table()) {
                 // This is a sub-table — recurse with dotted prefix
@@ -174,7 +181,7 @@ namespace detail {
                 bool allStrings = true;
                 for (const auto& elem : arr) {
                     if (elem.is_string()) {
-                        tv.arr.push_back(Utf8ToWide(elem.as_string()));
+                        tv.arr.push_back(ConfigString(elem.as_string()));
                     } else {
                         allStrings = false;
                         break;
@@ -194,7 +201,7 @@ namespace detail {
             }
             else if (val.is_string()) {
                 TomlValue tv;
-                tv.str = Utf8ToWide(val.as_string());
+                tv.str = ConfigString(val.as_string());
                 doc[prefix][wkey] = tv;
             }
             else if (val.is_boolean()) {
@@ -205,14 +212,6 @@ namespace detail {
             else if (val.is_integer()) {
                 TomlValue tv;
                 tv.str = std::to_wstring(val.as_integer());
-                doc[prefix][wkey] = tv;
-            }
-            else if (val.is_floating()) {
-                // Sandy doesn't use floats, but convert gracefully
-                TomlValue tv;
-                wchar_t buf[64];
-                swprintf(buf, 64, L"%g", val.as_floating());
-                tv.str = buf;
                 doc[prefix][wkey] = tv;
             }
             else {

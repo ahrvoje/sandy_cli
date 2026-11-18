@@ -19,9 +19,11 @@ REM =====================================================================
 set SANDY=%~dp0..\x64\Release\sandy.exe
 set PYTHON=%LOCALAPPDATA%\Programs\Python\Python314\python.exe
 set TOOL=%~dp0test_dacl_fidelity.py
-set ROOT=%USERPROFILE%\test_dacl_fidelity
-set SNAP=%TEMP%\sandy_fid
-set PROFILE=dacl_fidelity_test
+set "PROFILE=fidelity-%RANDOM%-%RANDOM%"
+set "WORK=%TEMP%\sandy-%PROFILE%"
+set "TEST_ROOT=%WORK%\tree"
+set "ROOT=%TEST_ROOT%"
+set "SNAP=%WORK%\snapshot"
 set PASS=0
 set FAIL=0
 
@@ -31,12 +33,7 @@ echo  Restricted Token run, AppContainer run, saved profile cycle
 echo =====================================================================
 echo.
 
-REM === Cleanup stale state ===
-"%SANDY%" --delete-profile %PROFILE% >nul 2>nul
-"%SANDY%" --cleanup >nul 2>nul
-
-REM === Create folder tree with seed files ===
-if exist "%ROOT%" rmdir /s /q "%ROOT%"
+mkdir "%WORK%" || exit /b 1
 mkdir "%ROOT%\scripts"
 mkdir "%ROOT%\single"
 mkdir "%ROOT%\arena\secret\sub"
@@ -60,14 +57,17 @@ icacls "%ROOT%\arena\lockfile.txt" /inheritance:d >nul
 copy /y "%TOOL%" "%ROOT%\scripts\test_dacl_fidelity.py" >nul
 echo   [OK] Folder tree created
 "%PYTHON%" "%TOOL%" snapshot "%ROOT%" "%SNAP%_before.json"
+if errorlevel 1 (
+    call :verdict 1 "Baseline DACL snapshot failed"
+    goto cleanup
+)
 echo.
 
 REM =====================================================================
 REM Part 1: Restricted Token run
 REM =====================================================================
 echo === Part 1: Restricted Token (deny, carve-out, delete guard) ===
-set TEST_ROOT=%ROOT%
-"%SANDY%" -c "%~dp0test_dacl_fidelity_rt_config.toml" -q -x "%PYTHON%" "%ROOT%\scripts\test_dacl_fidelity.py" probe
+"%SANDY%" -c "%~dp0test_dacl_fidelity_rt_config.toml" -l "%WORK%\rt.log" -q -x "%PYTHON%" "%ROOT%\scripts\test_dacl_fidelity.py" probe
 call :verdict !ERRORLEVEL! "Part 1: in-sandbox probe"
 REM The probe creates one file in carve/.  It is not part of the snapshot.
 del "%ROOT%\arena\frozen\carve\created.txt" 2>nul
@@ -78,7 +78,7 @@ REM =====================================================================
 REM Part 2: AppContainer run
 REM =====================================================================
 echo === Part 2: AppContainer (allow on protected and on inheriting objects) ===
-"%SANDY%" -c "%~dp0test_dacl_fidelity_ac_config.toml" -q -x "%PYTHON%" "%ROOT%\scripts\test_dacl_fidelity.py" noop
+"%SANDY%" -c "%~dp0test_dacl_fidelity_ac_config.toml" -l "%WORK%\ac.log" -q -x "%PYTHON%" "%ROOT%\scripts\test_dacl_fidelity.py" noop
 call :verdict !ERRORLEVEL! "Part 2: AppContainer run"
 call :compare "Part 2"
 echo.
@@ -88,7 +88,9 @@ REM Part 3: Saved profile cycle (the grants stay until the profile is deleted)
 REM =====================================================================
 echo === Part 3: Saved profile create / delete ===
 "%SANDY%" --create-profile %PROFILE% -c "%~dp0test_dacl_fidelity_rt_config.toml" >nul 2>nul
-call :verdict !ERRORLEVEL! "Part 3: profile created"
+set CREATED=!ERRORLEVEL!
+call :verdict !CREATED! "Part 3: profile created"
+if not !CREATED! EQU 0 goto cleanup
 icacls "%ROOT%\arena\secret" 2>nul | findstr /c:"S-1-9-" >nul 2>nul
 if !ERRORLEVEL! EQU 0 (
     echo   [PASS] Part 3: the profile holds its deny on secret/ while it exists
@@ -103,24 +105,17 @@ call :compare "Part 3"
 echo.
 
 REM === Post-run state ===
-set REMAIN=0
-for /f %%N in ('reg query "HKCU\Software\Sandy\Grants" 2^>nul ^| findstr /c:"Grants\\" ^| find /c /v ""') do set REMAIN=%%N
-if !REMAIN! EQU 0 (
-    echo   [PASS] No grant registry entries remain
-    set /a PASS+=1
-) else (
-    echo   [FAIL] !REMAIN! grant subkeys persist
-    set /a FAIL+=1
-)
+"%PYTHON%" "%~dp0status_check.py" "%SANDY%" --logs "%WORK%\ac.log" --logs "%WORK%\rt.log" --profile "%PROFILE%"
+call :verdict !ERRORLEVEL! "No test-owned recovery state remains"
 
 REM === Moved-file inheritance exception ===
 "%PYTHON%" "%TOOL%" moved "%SANDY%"
 call :verdict !ERRORLEVEL! "Moved files: Windows recomputes inherited ACEs"
 
 REM === Final Cleanup ===
-"%SANDY%" --cleanup >nul 2>nul
-del "%SNAP%_before.json" "%SNAP%_after.json" 2>nul
-if exist "%ROOT%" rmdir /s /q "%ROOT%"
+:cleanup
+rmdir /s /q "%WORK%"
+if exist "%WORK%" call :verdict 1 "Test directory cleanup failed"
 
 set /a TOTAL=!PASS!+!FAIL!
 echo.
@@ -150,6 +145,10 @@ REM :compare <label> — snapshot the tree and compare it with the first one
 REM ---------------------------------------------------------------------
 :compare
 "%PYTHON%" "%TOOL%" snapshot "%ROOT%" "%SNAP%_after.json" >nul
+if errorlevel 1 (
+    call :verdict 1 "%~1: DACL snapshot failed"
+    exit /b 1
+)
 "%PYTHON%" "%TOOL%" compare "%SNAP%_before.json" "%SNAP%_after.json"
 call :verdict !ERRORLEVEL! "%~1: every DACL identical to the one before Sandy"
 exit /b 0

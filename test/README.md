@@ -14,13 +14,14 @@ test\test_pipe_hook.bat
 ```
 
 `test_audit_regressions` covers preview safety, Unicode, mode validation,
-profile logging, incomplete ledgers, failed ACL cleanup, container recovery,
+profile logging and metadata validation, file size limits, directory-only create rules,
+single-process job membership, incomplete ledgers, failed ACL cleanup, container recovery,
 real registry access, and the loopback privilege requirement. It uses temporary
 folders and unique test-owned profile and registry names. The failed-cleanup
 case keeps an open DACL-write handle so it can restore its own test folder.
 
 `test_audit_harness` supplies failing and passing controls to the test scripts:
-missing dependencies, probe errors, unlimited child processes, missing actor
+missing dependencies, unreadable DACL snapshots, missing grant-matrix fixtures, unlimited child processes, missing actor
 results, and unrelated saved profiles. `status_check.py` limits recovery checks
 to the instance IDs read from test logs and to explicitly named test profiles.
 
@@ -28,9 +29,7 @@ to the instance IDs read from test logs and to explicitly named test profiles.
 inherited ACE. Windows recalculates inheritance on DACL writes; the test checks
 that exception separately from normal DACL preservation.
 
-The main runner includes both audit scripts and the pipe-hook test. The full
-runner was not run for this audit. See [the audit record](audit_findings.md) for
-the focused checks and each finding's resolution.
+The main runner includes both audit scripts and the pipe-hook test.
 
 ## LibreOffice integration
 

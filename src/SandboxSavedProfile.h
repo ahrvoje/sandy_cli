@@ -55,6 +55,11 @@ namespace Sandbox {
     inline bool DeleteProfileRegistryState(const std::wstring& profileName,
                                            const wchar_t* contextTag)
     {
+        // Rollback and recovery also call this function without going through the CLI.
+        if (profileName.empty() || profileName.find(L'\\') != std::wstring::npos) {
+            g_logger.LogFmt(L"%ls: refusing to delete an invalid profile key", contextTag);
+            return false;
+        }
         std::wstring regKey = std::wstring(kProfilesParentKey) + L"\\" + profileName;
         LSTATUS st = DeleteRegTreeBestEffort(HKEY_CURRENT_USER, regKey);
         if (st == ERROR_SUCCESS || st == ERROR_FILE_NOT_FOUND || st == ERROR_PATH_NOT_FOUND) {
@@ -195,13 +200,24 @@ namespace Sandbox {
         return ok;
     }
 
+    inline bool ReadProfileDword(HKEY key, const wchar_t* name, DWORD maximum, DWORD& value)
+    {
+        if (TryReadRegDword(key, name, value) && value <= maximum)
+            return true;
+        g_logger.LogFmt(L"PROFILE_LOAD: %s missing or invalid", name);
+        return false;
+    }
+
     inline bool ReadIndexedStringValues(HKEY hKey,
                                         const wchar_t* countName,
                                         const wchar_t* valuePrefix,
                                         const wchar_t* fieldTag,
-                                        std::vector<std::wstring>& out)
+                                        std::vector<std::wstring>& out,
+                                        DWORD maxCount = kMaxRulesPerSection)
     {
-        DWORD count = ReadRegDword(hKey, countName);
+        DWORD count = 0;
+        if (!ReadProfileDword(hKey, countName, maxCount, count))
+            return false;
         for (DWORD i = 0; i < count; i++) {
             wchar_t name[32];
             BuildIndexedValueName(valuePrefix, i, name);
@@ -222,7 +238,9 @@ namespace Sandbox {
                                          const wchar_t* fieldTag,
                                          std::vector<FolderEntry>& out)
     {
-        DWORD count = ReadRegDword(hKey, countName);
+        DWORD count = 0;
+        if (!ReadProfileDword(hKey, countName, kMaxRulesPerSection, count))
+            return false;
         for (DWORD i = 0; i < count; i++) {
             wchar_t name[32];
             BuildIndexedValueName(valuePrefix, i, name);
@@ -232,6 +250,12 @@ namespace Sandbox {
             if (!TryDeserializeFolderEntry(value, entry, error)) {
                 g_logger.LogFmt(L"PROFILE_LOAD: malformed %s entry '%s' (%s) — rejecting profile",
                                 fieldTag, name, error.c_str());
+                return false;
+            }
+            if (entry.access == AccessLevel::Create &&
+                GetConfiguredPathValidationError(entry.path, ConfigPathKind::Directory)
+                    != ConfigPathValidationError::None) {
+                g_logger.LogFmt(L"PROFILE_LOAD: create rule requires a directory: %s", entry.path.c_str());
                 return false;
             }
             out.push_back(std::move(entry));
@@ -359,12 +383,18 @@ namespace Sandbox {
         }
 
         // --- Strings ---
-        cfg.workdir   = NormalizeFsPath(ReadRegSz(hKey, L"_workdir"));
+        if (!TryReadRegSz(hKey, L"_workdir", cfg.workdir)) {
+            g_logger.Log(L"PROFILE_LOAD: _workdir missing or invalid");
+            cfg.parseError = true;
+        }
+        cfg.workdir = NormalizeFsPath(cfg.workdir);
         cfg.stdinMode = ReadRegSz(hKey, L"_stdin_mode");
         if (cfg.stdinMode == L"INHERIT")
             cfg.stdinMode.clear();  // inherit stdin
-        else if (cfg.stdinMode.empty())
-            cfg.stdinMode = L"NUL";  // default (unspecified)
+        else if (cfg.stdinMode.empty()) {
+            g_logger.Log(L"PROFILE_LOAD: _stdin_mode missing or invalid");
+            cfg.parseError = true;
+        }
         else
             cfg.stdinMode = NormalizeFsPath(cfg.stdinMode);
 
@@ -404,59 +434,29 @@ namespace Sandbox {
                             GetConfiguredPathValidationError(cfg.stdinMode, ConfigPathKind::File));
         }
 
-        // --- Booleans ---
-        // P1a: _allow_desktop and _allow_child_procs must exist in the registry.
-        // Missing values previously defaulted to 1 (enabled), silently granting
-        // permissions the user never configured.  Now fail closed.
-        DWORD capabilityCount = 0, loopback = 0;
-        if (!TryReadRegDword(hKey, L"_capability_count", capabilityCount) ||
-            capabilityCount > kMaxRulesPerSection ||
-            !TryReadRegDword(hKey, L"_allow_loopback", loopback) || loopback > 1) {
-            g_logger.Log(L"PROFILE_LOAD: missing or invalid capability/loopback metadata; recreate this profile");
+        auto readDword = [&](const wchar_t* name, DWORD maximum) -> DWORD {
+            DWORD value = 0;
+            if (ReadProfileDword(hKey, name, maximum, value))
+                return value;
             cfg.parseError = true;
-        } else {
-            cfg.allowLoopback = loopback != 0;
-            if (!ReadIndexedStringValues(hKey, L"_capability_count", L"_capability_",
-                                         L"capability", cfg.capabilityNames))
-                cfg.parseError = true;
-            ValidateCapabilityConfig(cfg, cfg.parseError);
-        }
+            return 0;
+        };
 
-        {
-            DWORD desktopVal = 0;
-            if (!TryReadRegDword(hKey, L"_allow_desktop", desktopVal)) {
-                g_logger.Log(L"PROFILE_LOAD: _allow_desktop missing — rejecting profile");
-                cfg.parseError = true;
-            } else {
-                cfg.allowDesktop = desktopVal != 0;
-            }
-        }
-        {
-            DWORD strictVal = 0;
-            if (!TryReadRegDword(hKey, L"_strict", strictVal)) {
-                g_logger.Log(L"PROFILE_LOAD: _strict missing — rejecting profile");
-                cfg.parseError = true;
-            } else {
-                cfg.strict = strictVal != 0;
-            }
-        }
-        cfg.allowClipboardRead  = ReadRegDword(hKey, L"_allow_clipboard_r") != 0;
-        cfg.allowClipboardWrite = ReadRegDword(hKey, L"_allow_clipboard_w") != 0;
-        {
-            DWORD childVal = 0;
-            if (!TryReadRegDword(hKey, L"_allow_child_procs", childVal)) {
-                g_logger.Log(L"PROFILE_LOAD: _allow_child_procs missing — rejecting profile");
-                cfg.parseError = true;
-            } else {
-                cfg.allowChildProcesses = childVal != 0;
-            }
-        }
-        cfg.envInherit          = ReadRegDword(hKey, L"_env_inherit")       != 0;
+        cfg.allowLoopback       = readDword(L"_allow_loopback", 1) != 0;
+        cfg.allowDesktop        = readDword(L"_allow_desktop", 1) != 0;
+        cfg.strict              = readDword(L"_strict", 1) != 0;
+        cfg.allowClipboardRead  = readDword(L"_allow_clipboard_r", 1) != 0;
+        cfg.allowClipboardWrite = readDword(L"_allow_clipboard_w", 1) != 0;
+        cfg.allowChildProcesses = readDword(L"_allow_child_procs", 1) != 0;
+        cfg.envInherit          = readDword(L"_env_inherit", 1) != 0;
+        cfg.timeoutSeconds      = readDword(L"_timeout", kMaxTimeoutSeconds);
+        cfg.memoryLimitMB       = readDword(L"_memory_limit_mb", kMaxMemoryMB);
+        cfg.maxProcesses        = readDword(L"_max_processes", kMaxProcesses);
 
-        // --- Integers ---
-        cfg.timeoutSeconds = ReadRegDword(hKey, L"_timeout");
-        cfg.memoryLimitMB  = ReadRegDword(hKey, L"_memory_limit_mb");
-        cfg.maxProcesses   = ReadRegDword(hKey, L"_max_processes");
+        if (!ReadIndexedStringValues(hKey, L"_capability_count", L"_capability_",
+                                     L"capability", cfg.capabilityNames))
+            cfg.parseError = true;
+        ValidateCapabilityConfig(cfg, cfg.parseError);
 
         if (!ReadIndexedFolderEntries(hKey, L"_allow_count", L"_allow_", L"allow", cfg.folders))
             cfg.parseError = true;
@@ -466,7 +466,7 @@ namespace Sandbox {
             cfg.parseError = true;
         if (!ReadIndexedStringValues(hKey, L"_reg_write_count", L"_reg_write_", L"registry write", cfg.registryWrite))
             cfg.parseError = true;
-        if (!ReadIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", L"environment pass", cfg.envPass))
+        if (!ReadIndexedStringValues(hKey, L"_env_pass_count", L"_env_pass_", L"environment pass", cfg.envPass, MAXDWORD))
             cfg.parseError = true;
 
         {
@@ -486,6 +486,7 @@ namespace Sandbox {
                 cfg.parseError = true;
         }
 
+        ValidateConfigSanityLimits(cfg, cfg.parseError);
         return cfg;
     }
 
@@ -541,7 +542,7 @@ namespace Sandbox {
     //
     // Allowed: alphanumeric, '.', '_', '-'.  First char must be alphanumeric.
     // Length: 1..58 chars (leaving 6 chars for the "Sandy_" prefix).
-    inline bool ValidateProfileCreateName(const std::wstring& name)
+    inline bool ValidateProfileName(const std::wstring& name)
     {
         if (name.empty()) {
             fprintf(stderr, "Error: profile name cannot be empty.\n");
@@ -577,13 +578,7 @@ namespace Sandbox {
     inline bool LoadProfileCreateConfig(const std::wstring& configPath,
                                         ProfileCreateConfig& createConfig)
     {
-        std::wstring tomlText = ReadTomlFileText(configPath);
-        if (tomlText.empty()) {
-            fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
-            return false;
-        }
-
-        createConfig.config = ParseConfigFileText(tomlText);
+        createConfig.config = LoadConfig(configPath);
         if (createConfig.config.parseError) {
             fprintf(stderr, "Error: config could not be loaded or validated.\n");
             return false;
@@ -841,9 +836,6 @@ namespace Sandbox {
     // -----------------------------------------------------------------------
     inline int HandleCreateProfile(const std::wstring& name, const std::wstring& configPath)
     {
-        if (!ValidateProfileCreateName(name))
-            return SandyExit::ConfigError;
-
         ProfileCreateConfig createConfig;
         if (!LoadProfileCreateConfig(configPath, createConfig))
             return SandyExit::ConfigError;

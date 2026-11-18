@@ -321,6 +321,11 @@ namespace Sandbox {
     {
         DWORD attrs = GetFileAttributesW(rules.path.c_str());
         bool isDirectory = attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+        if (!isDirectory && std::any_of(rules.entries.begin(), rules.entries.end(),
+                [](const PipelineEntry& entry) { return entry.access == AccessLevel::Create; })) {
+            g_logger.LogFmt(L"ERROR: create rule requires a directory: %s", rules.path.c_str());
+            return false;
+        }
         DWORD rc = AddAcesToObject(rules.path, SE_FILE_OBJECT, pSid, sidStr,
                                    CompilePathAces(rules, isDirectory),
                                    neutralizeOwner, RecordGrantCallback);
@@ -911,7 +916,7 @@ namespace Sandbox {
         }
 
         child.hJob = AssignJobObject(config, child.pi.hProcess);
-        if (NeedJobTracking(config) && !child.hJob) {
+        if (!child.hJob) {
             child.status = ChildStartStatus::JobAssignmentFailed;
             return;
         }

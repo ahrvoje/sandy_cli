@@ -56,19 +56,26 @@ def dacl_sddl(path):
     err = advapi32.GetNamedSecurityInfoW(str(path), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                                          None, None, None, None, ctypes.byref(sd))
     if err:
-        return f"<error {err}>"
+        raise OSError(err, ctypes.FormatError(err), str(path))
     text = wintypes.LPWSTR()
-    advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION,
-                                                                  ctypes.byref(text), None)
-    sddl = text.value or ""
-    kernel32.LocalFree(text)
-    kernel32.LocalFree(sd)
-    return sddl
+    try:
+        if not advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, ctypes.byref(text), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not text.value or not text.value.startswith("D:"):
+            raise ValueError(f"No DACL in security descriptor for {path}")
+        return text.value
+    finally:
+        kernel32.LocalFree(text)
+        kernel32.LocalFree(sd)
 
 
 def snapshot(root, out_file):
+    def traversal_failed(error):
+        raise error
+
     result = {root: dacl_sddl(root)}
-    for base, dirs, files in os.walk(root):
+    for base, dirs, files in os.walk(root, onerror=traversal_failed):
         for entry in dirs + files:
             path = os.path.join(base, entry)
             result[path] = dacl_sddl(path)
@@ -191,7 +198,7 @@ def can_rewrite_dacl(path):
 
 
 def probe():
-    root = pathlib.Path(os.environ.get("TEST_ROOT", os.path.expanduser("~\\test_dacl_fidelity")))
+    root = pathlib.Path(os.environ["TEST_ROOT"])
     arena = root / "arena"
     secret, frozen, keep = arena / "secret", arena / "frozen", arena / "keep"
 
@@ -246,9 +253,6 @@ if __name__ == "__main__":
         sys.exit(moved_inheritance(sys.argv[2]))
     if mode == "sddl":
         for path in sys.argv[2:]:
-            value = dacl_sddl(path)
-            if not value.startswith("D:"):
-                raise RuntimeError(f"Cannot read DACL: {path}: {value}")
-            print(value)
+            print(dacl_sddl(path))
         sys.exit(0)
     sys.exit(probe())

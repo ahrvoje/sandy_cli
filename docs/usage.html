@@ -211,7 +211,7 @@
 <section><div class="container">
   <p><code>-s</code> converts literal <code>\n</code> outside strings and comments to a line break. Config files retain normal TOML semantics.</p>
   <p>Windows PowerShell 5.1 writes UTF-16 with <code>&gt;</code>. Use <code>cmd /c "sandy.exe --print-container-toml &gt; myconfig.toml"</code> to keep Sandy's UTF-8 output without a BOM. Sandy rejects UTF-16 and UTF-8 BOMs.</p>
-  <p><code>--print-config</code> cannot be combined with <code>--create-profile</code>; inspect its config with <code>-c</code>. <code>-L</code> applies in all logging modes.</p>
+  <p>Profile creation takes a name and <code>-c</code>. Use <code>--dry-run</code> to preview creation. Sandy rejects <code>-p</code>, <code>-s</code>, <code>-x</code>, and <code>--print-config</code> in this mode. Use <code>--print-config -c</code> to inspect the TOML. <code>-L</code> applies in all logging modes.</p>
 </div></section>
 
 <!-- ═══ Exit codes ═══ -->

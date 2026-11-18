@@ -22,21 +22,33 @@ namespace Sandbox {
                               static_cast<DWORD>((val.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
     }
 
-    inline std::wstring ReadRegSz(HKEY hKey, const wchar_t* name)
+    inline bool TryReadRegSz(HKEY hKey, const wchar_t* name, std::wstring& value)
     {
         DWORD size = 0, type = 0;
         if (RegQueryValueExW(hKey, name, nullptr, &type, nullptr, &size) != ERROR_SUCCESS)
-            return {};
-        if (type != REG_SZ && type != REG_EXPAND_SZ)
-            return {};
-        if (size < sizeof(wchar_t))
-            return {};
+            return false;
+        if ((type != REG_SZ && type != REG_EXPAND_SZ) ||
+            size < sizeof(wchar_t) || size % sizeof(wchar_t) != 0)
+            return false;
         std::wstring val(size / sizeof(wchar_t), L'\0');
-        if (RegQueryValueExW(hKey, name, nullptr, nullptr,
-                         reinterpret_cast<BYTE*>(&val[0]), &size) != ERROR_SUCCESS)
-            return {};
+        if (RegQueryValueExW(hKey, name, nullptr, &type,
+                             reinterpret_cast<BYTE*>(val.data()), &size) != ERROR_SUCCESS ||
+            (type != REG_SZ && type != REG_EXPAND_SZ) || size < sizeof(wchar_t) ||
+            size % sizeof(wchar_t) != 0)
+            return false;
+        val.resize(size / sizeof(wchar_t));
         while (!val.empty() && val.back() == L'\0') val.pop_back();
-        return val;
+        if (val.find(L'\0') != std::wstring::npos)
+            return false;
+        value.swap(val);
+        return true;
+    }
+
+    inline std::wstring ReadRegSz(HKEY hKey, const wchar_t* name)
+    {
+        std::wstring value;
+        TryReadRegSz(hKey, name, value);
+        return value;
     }
 
     // -----------------------------------------------------------------------
@@ -54,23 +66,18 @@ namespace Sandbox {
                               reinterpret_cast<const BYTE*>(&val), sizeof(ULONGLONG)) == ERROR_SUCCESS;
     }
 
-    inline DWORD ReadRegDword(HKEY hKey, const wchar_t* name, DWORD defaultVal = 0)
-    {
-        DWORD val = 0, size = sizeof(val), type = 0;
-        if (RegQueryValueExW(hKey, name, nullptr, &type,
-                             reinterpret_cast<BYTE*>(&val), &size) != ERROR_SUCCESS)
-            return defaultVal;
-        if (type != REG_DWORD)
-            return defaultVal;
-        return val;
-    }
-
     inline bool TryReadRegDword(HKEY hKey, const wchar_t* name, DWORD& out)
     {
         DWORD size = sizeof(out), type = 0;
         return RegQueryValueExW(hKey, name, nullptr, &type,
                                 reinterpret_cast<BYTE*>(&out), &size) == ERROR_SUCCESS
-            && type == REG_DWORD;
+            && type == REG_DWORD && size == sizeof(out);
+    }
+
+    inline DWORD ReadRegDword(HKEY hKey, const wchar_t* name)
+    {
+        DWORD value = 0;
+        return TryReadRegDword(hKey, name, value) ? value : 0;
     }
 
     // -----------------------------------------------------------------------

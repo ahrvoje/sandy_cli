@@ -49,15 +49,17 @@ namespace Sandbox {
     {
         HANDLE hFile = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hFile == INVALID_HANDLE_VALUE)
+        if (hFile == INVALID_HANDLE_VALUE) {
+            fprintf(stderr, "Error: cannot read config file: %ls (error %lu).\n", configPath.c_str(), GetLastError());
             return {};
+        }
 
-        DWORD fileSize = GetFileSize(hFile, nullptr);
-        if (fileSize == INVALID_FILE_SIZE) {
+        LARGE_INTEGER fileSize{};
+        if (!GetFileSizeEx(hFile, &fileSize)) {
             CloseHandle(hFile);
             return {};
         }
-        if (fileSize == 0) {
+        if (fileSize.QuadPart == 0) {
             // Distinguish empty file from a missing file / read failure so the
             // user gets a targeted diagnostic instead of a generic
             // "Config contains unknown sections" message.
@@ -68,20 +70,20 @@ namespace Sandbox {
         }
 
         constexpr DWORD kMaxConfigFileSize = 1024 * 1024;
-        if (fileSize > kMaxConfigFileSize) {
+        if (fileSize.QuadPart > kMaxConfigFileSize) {
             CloseHandle(hFile);
-            fprintf(stderr, "Error: Config file exceeds 1 MB size limit (%lu bytes).\n", fileSize);
+            fprintf(stderr, "Error: Config file exceeds 1 MiB size limit (%lld bytes).\n", fileSize.QuadPart);
             return {};
         }
 
-        std::string buf(fileSize, '\0');
+        DWORD length = static_cast<DWORD>(fileSize.QuadPart);
+        std::string buf(length, '\0');
         DWORD bytesRead = 0;
-        if (!ReadFile(hFile, &buf[0], fileSize, &bytesRead, nullptr) || bytesRead == 0) {
+        if (!ReadFile(hFile, &buf[0], length, &bytesRead, nullptr) || bytesRead != length) {
             CloseHandle(hFile);
             return {};
         }
         CloseHandle(hFile);
-        buf.resize(bytesRead);
 
         // UTF-8 BOM (EF BB BF) passes through to toml11 as U+FEFF,
         // invisibly corrupting the first token and causing cryptic parse errors.
@@ -111,20 +113,6 @@ namespace Sandbox {
         }
 
         return buf;
-    }
-
-    // -----------------------------------------------------------------------
-    // ReadTomlFileText — load a TOML config file as raw wide text.
-    //
-    // Uses the same UTF-8 validation as ReadTomlFileUtf8 so dry-run/profile
-    // flows can store or print the original TOML without reparsing from disk.
-    // -----------------------------------------------------------------------
-    inline std::wstring ReadTomlFileText(const std::wstring& configPath)
-    {
-        std::string utf8 = ReadTomlFileUtf8(configPath);
-        if (utf8.empty())
-            return {};
-        return Toml::Utf8ToWide(utf8);
     }
 
     inline const std::map<std::wstring, AccessLevel>& FolderAccessKeyMap()
@@ -342,6 +330,9 @@ namespace Sandbox {
     }
 
     enum class LimitKeyKind { Timeout, Memory, Processes };
+    constexpr DWORD kMaxTimeoutSeconds = 86400;
+    constexpr DWORD kMaxMemoryMB = 65536;
+    constexpr DWORD kMaxProcesses = 1024;
 
     struct LimitKeyBinding {
         LimitKeyKind kind;
@@ -351,9 +342,9 @@ namespace Sandbox {
     inline const std::map<std::wstring, LimitKeyBinding>& LimitKeyMap()
     {
         static const std::map<std::wstring, LimitKeyBinding> kLimitKeys = {
-            {L"timeout", { LimitKeyKind::Timeout, 86400 }},
-            {L"memory", { LimitKeyKind::Memory, 65536 }},
-            {L"processes", { LimitKeyKind::Processes, 1024 }}
+            {L"timeout", { LimitKeyKind::Timeout, kMaxTimeoutSeconds }},
+            {L"memory", { LimitKeyKind::Memory, kMaxMemoryMB }},
+            {L"processes", { LimitKeyKind::Processes, kMaxProcesses }}
         };
         return kLimitKeys;
     }
@@ -600,11 +591,15 @@ namespace Sandbox {
                         e.path.c_str(), section);
                 parseError = true;
             }
-            if (GetFileAttributesW(e.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            DWORD attrs = GetFileAttributesW(e.path.c_str());
+            if (attrs == INVALID_FILE_ATTRIBUTES) {
                 fprintf(stderr, "Error: Path does not exist: %ls (in [%ls])\n",
                         e.path.c_str(), section);
                 HintUnsetVariable(e.path);
                 parseError = true;
+            } else if (e.access == AccessLevel::Create && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+                ReportConfiguredPathValidationError(e.path, section, L"create",
+                    ConfigPathValidationError::ExpectedDirectory, parseError);
             }
 
             std::wstring lowerPath = NormalizeLookupKey(e.path);
@@ -995,18 +990,7 @@ namespace Sandbox {
     }
 
     // -----------------------------------------------------------------------
-    // Parse file-backed TOML text -> SandboxConfig.
-    //
-    // Unlike ParseConfig(), this keeps exact file semantics and must not apply
-    // inline literal-newline conversion.
-    // -----------------------------------------------------------------------
-    inline SandboxConfig ParseConfigFileText(const std::wstring& content)
-    {
-        return MapConfig(Toml::ParseUtf8(Toml::WideToUtf8(content)));
-    }
-
-    // -----------------------------------------------------------------------
-    // Load config from a TOML file (reads file, then delegates to ParseConfig)
+    // Load a UTF-8 file without applying the inline newline conversion.
     // -----------------------------------------------------------------------
     inline SandboxConfig LoadConfig(const std::wstring& configPath)
     {

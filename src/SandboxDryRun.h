@@ -136,10 +136,6 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
 {
     printf("=== Sandy Dry Run: create-profile '%ls' ===\n\n", name.c_str());
 
-    // --- Validate name (same rules as HandleCreateProfile) ---
-    if (!ValidateProfileCreateName(name))
-        return SandyExit::ConfigError;
-
     // --- Duplicate check ---
     if (ProfileExists(name)) {
         fprintf(stderr, "Error: profile '%ls' already exists. Use --delete-profile first.\n",
@@ -148,12 +144,7 @@ inline int HandleDryRunCreateProfile(const std::wstring& name,
     }
 
     // --- Read and parse TOML ---
-    std::wstring tomlText = ReadTomlFileText(configPath);
-    if (tomlText.empty()) {
-        fprintf(stderr, "Error: cannot read config file: %ls\n", configPath.c_str());
-        return SandyExit::ConfigError;
-    }
-    SandboxConfig config = ParseConfigFileText(tomlText);
+    SandboxConfig config = LoadConfig(configPath);
     if (config.parseError) {
         fprintf(stderr, "Error: config could not be loaded or validated.\n");
         return SandyExit::ConfigError;

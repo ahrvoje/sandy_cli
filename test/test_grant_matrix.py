@@ -9,11 +9,11 @@ Tests risky grant combinations designed to provoke incorrect ACL state:
   Z6: (RT) deny.deep write on allow.deep all
   Z7: (RT) deny.this read on parent, allow.deep all on child
   Z8: (RT) deny.deep all + allow.this read same path
-  Z9: (RT) deny.this write + allow.deep write same path
+  Z9: (RT) deny.this write + allow.deep read on the same path
 """
 import os, sys, pathlib
 
-ROOT = pathlib.Path(os.environ["USERPROFILE"]) / "test_gmatrix"
+ROOT = pathlib.Path(os.environ["TEST_ROOT"])
 MODE = os.environ.get("TEST_MODE", "AC")  # AC or RT
 
 pass_count = 0
@@ -29,29 +29,14 @@ def test(name, should_pass, fn):
         else:
             print(f"  [FAIL] {name}: succeeded (SHOULD BE DENIED)")
             fail_count += 1
-    except (PermissionError, OSError) as e:
-        winerr = getattr(e, 'winerror', 0)
-        if winerr in (None, 0):
-            winerr = 0
-        if winerr in (5, 1314) or isinstance(e, PermissionError):
-            if not should_pass:
-                print(f"  [PASS] {name}: denied")
-                pass_count += 1
-            else:
-                print(f"  [FAIL] {name}: denied (SHOULD BE ALLOWED)")
-                fail_count += 1
-        elif not should_pass:
-            print(f"  [PASS] {name}: error (w={winerr})")
+    except OSError as e:
+        winerror = getattr(e, "winerror", None)
+        denied = winerror in (5, 1314) or (winerror is None and isinstance(e, PermissionError))
+        if not should_pass and denied:
+            print(f"  [PASS] {name}: denied")
             pass_count += 1
         else:
-            print(f"  [FAIL] {name}: OSError w={winerr}: {e}")
-            fail_count += 1
-    except FileNotFoundError:
-        if not should_pass:
-            print(f"  [PASS] {name}: not found (treated as denied)")
-            pass_count += 1
-        else:
-            print(f"  [FAIL] {name}: file not found")
+            print(f"  [FAIL] {name}: {e}")
             fail_count += 1
 
 def p(*parts):
@@ -141,18 +126,12 @@ print()
 
 # =====================================================================
 # Z4: Deep grant gap
-#   deep_hole/         allow.deep all (but NOT deep_hole/gap/)
-#   deep_hole/gap/     NO GRANT — gap in the chain
-#   deep_hole/gap/bottom/  allow.deep read
-# AC: gap is blocked (no grant, OI|CI from deep_hole can't reach through)
-#     Actually: deep inheritance DOES propagate through gap in AC!
-#     OI|CI on deep_hole includes gap and all descendants.
-#     So gap inherits all from deep_hole.
-# The bottom also gets allow.deep read (explicit) + inherited all.
+# deep_hole has a recursive read grant. The gap inherits it.
+# bottom has an additional explicit recursive all grant.
 # =====================================================================
 print(f"=== [{MODE}] Z4: deep grant gap ===")
 test("Z4: deep_hole/ list",          True,  lambda: os.listdir(p("deep_hole")))
-test("Z4: deep_hole/ read",          True,  lambda: open(p("deep_hole", "gap", "bottom", "file.txt"), "r").read())
+test("Z4: deep_hole/ read",          True,  lambda: open(p("deep_hole", "file.txt"), "r").read())
 test("Z4: deep_hole/ write (read-only)", False,
      lambda: open(p("deep_hole", "hack.tmp"), "w").write("x"))
 # Gap — in AC, deep_hole's OI|CI read ACE auto-inherits to gap
@@ -161,7 +140,7 @@ if MODE == "AC":
          lambda: os.listdir(p("deep_hole", "gap")))
     test("Z4: deep_hole/gap/ write (AC, read-only inherited)", False,
          lambda: open(p("deep_hole", "gap", "hack.tmp"), "w").write("x"))
-# Bottom has explicit deep read + inherited all
+# Bottom has explicit all access and inherited read access.
 test("Z4: deep_hole/gap/bottom/ list",  True,  lambda: os.listdir(p("deep_hole", "gap", "bottom")))
 test("Z4: deep_hole/gap/bottom/ read",  True,  lambda: open(p("deep_hole", "gap", "bottom", "file.txt"), "r").read())
 test("Z4: deep_hole/gap/bottom/ write", True,

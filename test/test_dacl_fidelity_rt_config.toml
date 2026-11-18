@@ -23,19 +23,19 @@ token = 'restricted'
 integrity = 'medium'
 
 [allow.deep]
-read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%USERPROFILE%\test_dacl_fidelity\scripts']
-all  = ['%USERPROFILE%\test_dacl_fidelity\arena', '%USERPROFILE%\test_dacl_fidelity\arena\frozen\carve']
+read = ['%LOCALAPPDATA%\Programs\Python\Python314', '%TEST_ROOT%\scripts']
+all  = ['%TEST_ROOT%\arena', '%TEST_ROOT%\arena\frozen\carve']
 
 [allow.this]
-read = ['%USERPROFILE%\test_dacl_fidelity\single']
+read = ['%TEST_ROOT%\single']
 
 [deny.deep]
-all   = ['%USERPROFILE%\test_dacl_fidelity\arena\secret']
-write = ['%USERPROFILE%\test_dacl_fidelity\arena\frozen']
+all   = ['%TEST_ROOT%\arena\secret']
+write = ['%TEST_ROOT%\arena\frozen']
 
 [deny.this]
-all    = ['%USERPROFILE%\test_dacl_fidelity\arena\lockfile.txt']
-delete = ['%USERPROFILE%\test_dacl_fidelity\arena\keep\victim.txt']
+all    = ['%TEST_ROOT%\arena\lockfile.txt']
+delete = ['%TEST_ROOT%\arena\keep\victim.txt']
 
 [environment]
 inherit = true
